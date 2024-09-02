@@ -1,0 +1,2 @@
+from .gen_tibetan_doc import TibetanDocument
+from .gen_booklet_doc import BookletDocument
