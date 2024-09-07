@@ -6,15 +6,19 @@ from .format_doc import FormatDocument
 
 
 class BookletDocument:
-    def __init__(self, in_file, template=None):
+    def __init__(self, in_file, template=None, no_phon=False):
+        self.no_phon = no_phon
         self.parsed = []
         self.in_file = Path(in_file)
         self.__parse()
         self.fd = FormatDocument(template=template)
 
     def format(self, out_folder):
-        out_file = Path(out_folder) / (self.in_file.stem + '.docx')
-        self.fd.format_booklet(self.parsed, out_file)
+        if self.no_phon:
+            out_file = Path(out_folder) / (self.in_file.stem + '_nophon.docx')
+        else:
+            out_file = Path(out_folder) / (self.in_file.stem + '.docx')
+        self.fd.format_booklet(self.parsed, out_file, no_phon=self.no_phon)
 
     def __parse(self, ):
         LEVEL2_SPLIT_PATTERN = r'(\/[^\/]+)\/'

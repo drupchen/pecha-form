@@ -1,5 +1,6 @@
 from pathlib import Path
 import re
+import csv
 
 from .format_doc import FormatDocument
 
@@ -21,9 +22,21 @@ class TibetanDocument:
         LEVEL2_BOUNDARY = '/'
         LEVEL2_SPLIT = '-'
 
-        raw = self.in_file.read_text()
+        with self.in_file.open(newline='') as csvfile:
+            reader = csv.reader(csvfile, delimiter='\t', quotechar='"')
+            table = list(reader)
+            # remove header
+            table.pop(0)
+            # keep only first two columns
+            lines = []
+            for t in table:
+                lines.append(''.join(t[:2]))
+
+        raw = '\n'.join(lines)
         # 1. primary segments
         lines = re.split(LEVEL1_SPLIT_PATTERN, raw)
+        # remove header
+        lines.pop(0)
         while not lines[0]:
             lines = lines[1:]
         segments = [[lines[i], lines[i+1]] for i in range(0, len(lines)-1, 2)]

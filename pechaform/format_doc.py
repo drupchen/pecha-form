@@ -77,7 +77,7 @@ class FormatDocument:
             'b': self.s_bo_char_big
         }
 
-    def format_booklet(self, parsed_content, out_file):
+    def format_booklet(self, parsed_content, out_file, no_phon=False):
         def is_long(string):
             if len(string.split(' ')) >= 15:
                 return True
@@ -86,17 +86,21 @@ class FormatDocument:
         for s, parts in parsed_content:
             for part in parts:
                 # if there is phonetic or sanskrit
-                if part['tib']:
+                if part['tib'] or part['skt']:
                     if part['skt']:
                         par = self.document.add_paragraph(style=self.s_mtr)
                         run = par.add_run(part['skt'], style=self.s_char_mtr)
                         run.bold = True
                         if is_long(part['skt']): par.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
-                    if part['phon']:
+                    if not no_phon and part['phon']:
                         par = self.document.add_paragraph(style=self.s_phon)
                         par.add_run(part['phon'], style=self.s_char_phon)
                         if is_long(part['phon']): par.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+
+                    # hack: remove empty translations. should be done in the parsing function
+                    if len(part['trans']) == 1 and not part['trans'][0]:
+                        part['trans'].pop()
 
                 # translation
                 if not part['trans']:  # pass empty translations
