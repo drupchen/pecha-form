@@ -24,5 +24,8 @@ def parse_text(parser, conf_file):
         urlretrieve(link, filename)
 
         # process
-        p = parser(filename, template=tmplt)
-        p.format(out_folder)
+        try:
+            p = parser(filename, template=tmplt)
+            p.format(out_folder)
+        except:
+            exit('The spreadsheet is not correctly formatted. Please correct it.')
