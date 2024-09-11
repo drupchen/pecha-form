@@ -18,6 +18,7 @@ def parse_text(parser, conf_file):
     files, in_folder, out_folder, tmplt = c.conf['files'], c.conf['in_folder'], c.conf['out_folder'], c.conf['template']
 
     for filename, link in c.conf['files'].items():
+        print(f'\t{filename}')
         # download from Google Drive
         filename = Path(in_folder) / filename
         urlretrieve(link, filename)
