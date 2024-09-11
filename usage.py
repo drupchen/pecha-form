@@ -6,11 +6,13 @@ if __name__ == '__main__':
 
     if mode == 1:
         print('parsing Tibetan texts')
+
         conf = 'texts_bo_conf.yaml'
         parse_bo_docs(conf)
 
     elif mode == 2:
         print('parsing translations')
+
         conf = 'texts_trans_conf.yaml'
         parse_trans_docs(conf)
 
