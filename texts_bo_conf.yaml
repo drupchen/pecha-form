@@ -1,0 +1,7 @@
+in_folder: input
+out_folder: output
+template: template.docx
+files:
+    rpn_daily_bo: https://docs.google.com/spreadsheets/d/1RpOex38h2ft7kKCcTVBIy9-7IyuoozoOiEpBeye8Xtk/pub?gid=0&single=true&output=tsv
+    rpn_medium_bo: https://docs.google.com/spreadsheets/d/1dsbidhuIv0Axk8nHSvqYY0Xur6vji1e7zhU5trfa5A0/pub?gid=0&single=true&output=tsv
+    bima_ladrup_phowa_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=1934229687&single=true&output=tsv

@@ -1,0 +1,11 @@
+in_folder: input
+out_folder: output
+template: template.docx
+files:
+    #rpn_daily_fr: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=588367815&single=true&output=tsv
+    #rpn_daily_en: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=1282995497&single=true&output=tsv
+    #rpn_daily_pt: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=192513481&single=true&output=tsv
+    #rpn_daily_de: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=951198963&single=true&output=tsv
+    rpn_medium_en: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=1282995497&single=true&output=tsv
+    #rpn_medium_fr: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=588367815&single=true&output=tsv
+    #rpn_medium_pt: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=192513481&single=true&output=tsv
