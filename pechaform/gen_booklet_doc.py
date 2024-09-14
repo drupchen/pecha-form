@@ -6,10 +6,11 @@ from .format_doc import FormatDocument
 
 
 class BookletDocument:
-    def __init__(self, in_file, template=None, no_phon=False):
+    def __init__(self, in_file, template=None, no_phon=False, debug=False):
         self.no_phon = no_phon
         self.parsed = []
         self.in_file = Path(in_file)
+        self.debug = debug
         self.__parse()
         self.fd = FormatDocument(template=template)
 
@@ -62,6 +63,8 @@ class BookletDocument:
         # parse segments
         segments_parsed = []
         for seg in segments_raw:
+            if self.debug:
+                print(seg)
             seg_type = seg[0][keys[HUB]].strip('|')
             content = []
             for line in seg:

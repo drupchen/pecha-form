@@ -15,6 +15,7 @@ def parse_trans_docs(conf_file):
 
 def parse_text(parser, conf_file):
     c = ConfParse(conf_file)
+    debug = c.conf['debug']
     files, in_folder, out_folder, tmplt = c.conf['files'], c.conf['in_folder'], c.conf['out_folder'], c.conf['template']
 
     for filename, link in c.conf['files'].items():
@@ -25,7 +26,7 @@ def parse_text(parser, conf_file):
 
         # process
         try:
-            p = parser(filename, template=tmplt)
+            p = parser(filename, template=tmplt, debug=debug)
             p.format(out_folder)
         except:
-            exit('The spreadsheet is not correctly formatted. Please correct it.')
+            raise SyntaxError('The spreadsheet is not correctly formatted. Please correct it.')

@@ -6,9 +6,10 @@ from .format_doc import FormatDocument
 
 
 class TibetanDocument:
-    def __init__(self, in_file, template=None):
+    def __init__(self, in_file, template=None, debug=False):
         self.parsed = []
         self.in_file = Path(in_file)
+        self.debug = debug
         self.__parse()
         self.fd = FormatDocument(template=template)
 
