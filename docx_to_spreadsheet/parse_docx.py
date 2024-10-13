@@ -88,6 +88,7 @@ def split_in_verses(string):
     # reinsert spaces + split at verse boundaries
     joined = ' '.join(out)
     joined = joined.replace('\n ', ' \n')
+    joined = joined.replace('\n།', '།\n')  # include second shad in the previous verse
     joined = re.sub(r' +', ' ', joined)
     if '\n' in joined:
         joined = [j for j in joined.split('\n') if j]
