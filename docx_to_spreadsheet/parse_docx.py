@@ -53,12 +53,14 @@ def gen_tibetan_rows(chunks):
             cur_type = type
             if prev_type and prev_type != cur_type:
                 new[0] = types[cur_type]
+                rows.append(['', ''])
             if isinstance(c, str):
                 new[1] = cleanup_line(c)
             elif isinstance(c, tuple):
                 new[1] = cleanup_line(c[1])
                 if prev_type and prev_type != cur_type:
                     new[0] = types[cur_type]
+                    rows.append(['', ''])
 
             rows.append(new)
             prev_type = cur_type
@@ -76,6 +78,7 @@ def gen_translation_rows(chunks):
             cur_type = type
             if prev_type and prev_type != cur_type:
                 new[0] = types[cur_type]
+                rows.append(['', '', '', '', '', ''])
             if isinstance(c, str):
                 clean = cleanup_line(c)
                 if type == 'big':
@@ -90,6 +93,7 @@ def gen_translation_rows(chunks):
                 elif type == 'small':
                     new[1] = clean
                 new[0] = types[cur_type]
+                rows.append(['', '', '', '', '', ''])
 
             rows.append(new)
             prev_type = cur_type
