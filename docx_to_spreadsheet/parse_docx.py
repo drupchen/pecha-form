@@ -1,12 +1,16 @@
 from pathlib import Path
 import re
 from collections import OrderedDict, defaultdict
+import csv
 
 from docx import Document # package name: python-docx
-from botok import TokChunks
+from botok import TokChunks, WordTokenizer, ChunkTokenizer
+
+t = WordTokenizer()
 
 
 def docx_to_spread(in_file, letter_sizes=None):
+    # A. parse docx + detect big and small letters
     if not letter_sizes:
         letter_sizes = {
             20: 'big',
@@ -16,24 +20,125 @@ def docx_to_spread(in_file, letter_sizes=None):
         }
     parsed = parse_docx(in_file, letter_sizes)
 
-    # split in verses
+    # B. split in verses and detect sanskrit
     for i, p in enumerate(parsed):
         chunk = split_in_verses(parsed[i][1])
         parsed[i][1] = chunk
 
-    # format in spreadsheet
+    # C. format in spreadsheet
+    # a. generate Tibetan sheet
+    tib_rows = gen_tibetan_rows(parsed)
+    #write to csv
+    trans_csv = in_file.parent.parent / 'output' / (in_file.stem + '_tib.csv')
+    with open(trans_csv, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(tib_rows)
 
-    print()
+    # b. generate translation sheet
+    trans_rows = gen_translation_rows(parsed)
+    #write to csv
+    trans_csv = in_file.parent.parent / 'output' / (in_file.stem + '_trans.csv')
+    with open(trans_csv, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(trans_rows)
+
+
+def gen_tibetan_rows(chunks):
+    rows = [['hub', 'Tibetan']]
+    types = {'big': '|b|', 'small': '|s|'}
+    prev_type = None
+    for type, chunk in chunks:
+        for c in chunk:
+            new = ['', '']
+            cur_type = type
+            if prev_type and prev_type != cur_type:
+                new[0] = types[cur_type]
+            if isinstance(c, str):
+                new[1] = cleanup_line(c)
+            elif isinstance(c, tuple):
+                new[1] = cleanup_line(c[1])
+                if prev_type and prev_type != cur_type:
+                    new[0] = types[cur_type]
+
+            rows.append(new)
+            prev_type = cur_type
+
+    return rows
+
+
+def gen_translation_rows(chunks):
+    rows = [['hub', 'Tibetan- no phonetics', 'Translation', 'Tibetan', 'Phonetics', 'Sanskrit']]
+    types = {'big': '|n|', 'small': '|s|', 'skrt': '|k|'}
+    prev_type = None
+    for type, chunk in chunks:
+        for c in chunk:
+            new = ['', '', '', '', '', '']
+            cur_type = type
+            if prev_type and prev_type != cur_type:
+                new[0] = types[cur_type]
+            if isinstance(c, str):
+                clean = cleanup_line(c)
+                if type == 'big':
+                    new[3] = clean
+                elif type == 'small':
+                    new[1] = clean
+            elif isinstance(c, tuple):
+                clean = cleanup_line(c[1])
+                cur_type = c[0]
+                if type == 'big':
+                    new[3] = clean
+                elif type == 'small':
+                    new[1] = clean
+                new[0] = types[cur_type]
+
+            rows.append(new)
+            prev_type = cur_type
+
+    return rows
+
+
+def cleanup_line(string):
+    string = string.strip()
+    if string.endswith(' །') or string.endswith(' །'):
+        string = string[:-2] + string[-1]
+    return string
 
 
 def split_in_verses(string):
-    chunks = re.split(r'\s', string)
+    # join all non-text chunks
+    raw = ChunkTokenizer(string).tokenize()
+    raw_chunks = []
+    for type, c in raw:
+        if not raw_chunks:
+            raw_chunks.append([type, c])
+        else:
+            if type != 'TEXT' and raw_chunks[-1][0] != 'TEXT':
+                raw_chunks[-1][1] += c
+            else:
+                raw_chunks.append([type, c])
+
+    chunks = []
+    cur = []
+    for type, c in raw_chunks:
+        if type == 'TEXT':
+            cur.append(c)
+        elif type == 'PUNCT' and not cur:
+            cur.append(c)
+        else:
+            cur.append(c)
+            chunks.append(''.join(cur))
+            cur = []
+    if cur:
+        chunks.append(''.join(cur))
     chunks = [{'text': c} for c in chunks]
 
     # find syl size of each chunk
     for c in chunks:
         t = TokChunks(c['text']).get_syls()
         c['size'] = len(t)
+        is_skrt = contains_skrt(c['text'])
+        if is_skrt:
+            c['skrt'] = True
 
     # 1. Detect verses
     sizes = [c['size'] for c in chunks if c['size']]
@@ -67,35 +172,47 @@ def split_in_verses(string):
 
     # join initial sanskrit syllables
     for i, c in enumerate(chunks):
-        if i > 1 and 'verse' in c and chunks[i-1]['size'] <= 3:
-            c['text'] = ' '.join([chunks[i-1]['text'], c['text']])
+        if i >= 1 and 'verse' in c and chunks[i-1]['size'] <= 3:
+            c['text'] = ''.join([chunks[i-1]['text'], c['text']])
             chunks[i-1]['text'] = ''
+    # remove empty elements
+    chunks = [c for c in chunks if c['text']]
 
     # join non verses together and add \n to mark verse boundaries
     out = []
     cur = []
     for c in chunks:
-        if 'verse' not in c:
+        if 'verse' not in c and 'skrt' not in c:
             cur.append(c['text'])
+        elif 'skrt' in c:
+            if cur:
+                out.append(''.join(cur))
+                cur = []
+            out.append(('skrt', c['text']))
         else:
             if cur:
-                out.extend(cur)
+                out.append(''.join(cur))
                 cur = []
-            out.append(c['text'] + '\n')
+            out.append(c['text'])
     if cur:
-        out.extend(cur)
+        out.append(''.join(cur))
 
-    # reinsert spaces + split at verse boundaries
-    joined = ' '.join(out)
-    joined = joined.replace('\n ', ' \n')
-    joined = joined.replace('\n།', '།\n')  # include second shad in the previous verse
-    joined = re.sub(r' +', ' ', joined)
-    if '\n' in joined:
-        joined = [j for j in joined.split('\n') if j]
-    if isinstance(joined, str):
-        joined = [joined]
+    return out
 
-    return joined
+
+def contains_skrt(string):
+    tokens = t.tokenize(string)
+    skrt_total = 0
+    for tk in tokens:
+        if tk.skrt:
+            skrt_total += 1
+
+    if skrt_total and skrt_total == len(tokens):
+        return True
+    elif skrt_total >= 3:
+        return True
+    else:
+        return False
 
 
 def find_size_distrib(sizes):
