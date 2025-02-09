@@ -16,6 +16,8 @@ def docx_to_spread(in_file, letter_sizes=None):
             20: 'big',
             21: 'big',
             22: 'big',
+            26: 'big',
+            23: 'small',
             14: 'small'
         }
     parsed = parse_docx(in_file, letter_sizes)
@@ -147,7 +149,7 @@ def split_in_verses(string):
     # 1. Detect verses
     sizes = [c['size'] for c in chunks if c['size']]
     # remove sanskrit initial syllables
-    if sizes[0] == 1 or sizes[0] == 2 or sizes[0] == 3:
+    if sizes and (sizes[0] == 1 or sizes[0] == 2 or sizes[0] == 3):
         sizes = sizes[1:]
     # two chunks of the same size, either at beginning or at end, is considered proof of verses
     verse_size = None
@@ -248,7 +250,14 @@ def parse_docx(in_file, letter_sizes):
                 cur[-1][1] += run.text
                 continue
 
-            size = run.font.size.pt
+            try:
+                size = run.font.size.pt
+            except:
+                try:
+                    size = run.style.font.size.pt
+                except AttributeError:
+                    print(run.text)
+                    print('there must be some superscript somewhere')
             if cur and size in letter_sizes and letter_sizes[size] == cur[-1][0]:
                 cur[-1][1] += run.text
             elif size in letter_sizes:
@@ -271,7 +280,12 @@ if __name__ == '__main__':
         20: 'big',
         21: 'big',
         22: 'big',
+        26: "big",
+        23: "small",
         14: 'small'
     }
     for f in Path('./input').glob('*.docx'):
+        if not f.name.startswith('RAN'):
+            continue
+        print(f)
         docx_to_spread(f, letter_sizes)

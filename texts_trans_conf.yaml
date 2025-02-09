@@ -8,12 +8,37 @@ files:
 #    rpn_daily_pt: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=192513481&single=true&output=tsv
 #    rpn_daily_de: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=951198963&single=true&output=tsv
 
-    rpn_medium_en: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=1282995497&single=true&output=tsv
-    rpn_medium_fr: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=588367815&single=true&output=tsv
-    rpn_medium_pt: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=192513481&single=true&output=tsv
-    rpn_medium_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vRde6E5Hxda2V5Ii9y6iLbGOMNbrIBCJotbwuGcpBwdZAOaOs40plgUmk4wLFWrkcg-FNX9qUzeLi83/pub?gid=951198963&single=true&output=tsv
+#    rpn_medium_en: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=1282995497&single=true&output=tsv
+#    rpn_medium_fr: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=588367815&single=true&output=tsv
+#    rpn_medium_pt: https://docs.google.com/spreadsheets/d/1pc5IUDqk7V54mT1FL6OwB4HYn_1qoRlHnxSursFLMCs/pub?gid=192513481&single=true&output=tsv
+#    rpn_medium_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vRde6E5Hxda2V5Ii9y6iLbGOMNbrIBCJotbwuGcpBwdZAOaOs40plgUmk4wLFWrkcg-FNX9qUzeLi83/pub?gid=951198963&single=true&output=tsv
 
 #    bima_ladrup_phowa_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=0&single=true&output=tsv
 #    bima_ladrup_phowa_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=860369244&single=true&output=tsv
 #    bima_ladrup_phowa_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=656762690&single=true&output=tsv
 #    bima_ladrup_phowa_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=196788586&single=true&output=tsv
+
+#    rpn_tsedrup_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf9AAc6UPzYSoI2Kl3TNimqxjwSajkyGdk1Sm4bwIImX-eRYmZThFFEBzDHzdZDsCRoZc1D5HI9Znq/pub?gid=331308053&single=true&output=tsv
+#    rpn_tsedrup_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf9AAc6UPzYSoI2Kl3TNimqxjwSajkyGdk1Sm4bwIImX-eRYmZThFFEBzDHzdZDsCRoZc1D5HI9Znq/pub?gid=576735800&single=true&output=tsv
+#    rpn_tsedrup_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf9AAc6UPzYSoI2Kl3TNimqxjwSajkyGdk1Sm4bwIImX-eRYmZThFFEBzDHzdZDsCRoZc1D5HI9Znq/pub?gid=1364624810&single=true&output=tsv
+#    rpn_tsedrup_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf9AAc6UPzYSoI2Kl3TNimqxjwSajkyGdk1Sm4bwIImX-eRYmZThFFEBzDHzdZDsCRoZc1D5HI9Znq/pub?gid=1588546045&single=true&output=tsv
+
+    #rpn_lineage_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vRiSkidjBcav8HM_OScWib9sFqSAhDuCp1Gg9aUjbYUM8ShhbSIExU_d7QVfLCbUPkE6twNbdEdihcV/pub?gid=2137533568&single=true&output=tsv
+#    rpn_lineage_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vRiSkidjBcav8HM_OScWib9sFqSAhDuCp1Gg9aUjbYUM8ShhbSIExU_d7QVfLCbUPkE6twNbdEdihcV/pub?gid=59955142&single=true&output=tsv
+#    rpn_lineage_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vRiSkidjBcav8HM_OScWib9sFqSAhDuCp1Gg9aUjbYUM8ShhbSIExU_d7QVfLCbUPkE6twNbdEdihcV/pub?gid=1033889054&single=true&output=tsv
+#    rpn_lineage_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vRiSkidjBcav8HM_OScWib9sFqSAhDuCp1Gg9aUjbYUM8ShhbSIExU_d7QVfLCbUPkE6twNbdEdihcV/pub?gid=1637176242&single=true&output=tsv
+
+#    beginning_prayers_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vTvf1wUxdcrL8myzhrpBFQ2WiVx4KdM7ZY4BZ72s_YMtixgSYN8hiCRr4MvMBC8DMsNFh1owiSvZN4Y/pub?gid=1214391786&single=true&output=tsv
+#    beginning_prayers_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vTvf1wUxdcrL8myzhrpBFQ2WiVx4KdM7ZY4BZ72s_YMtixgSYN8hiCRr4MvMBC8DMsNFh1owiSvZN4Y/pub?gid=1212585466&single=true&output=tsv
+#    beginning_prayers_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vTvf1wUxdcrL8myzhrpBFQ2WiVx4KdM7ZY4BZ72s_YMtixgSYN8hiCRr4MvMBC8DMsNFh1owiSvZN4Y/pub?gid=20097645&single=true&output=tsv
+#    beginning_prayers_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vTvf1wUxdcrL8myzhrpBFQ2WiVx4KdM7ZY4BZ72s_YMtixgSYN8hiCRr4MvMBC8DMsNFh1owiSvZN4Y/pub?gid=1955860659&single=true&output=tsv
+#
+#    kyerim_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=0&single=true&output=tsv
+#    kyerim_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=1976386403&single=true&output=tsv
+#    kyerim_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=1336575241&single=true&output=tsv
+#    kyerim_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=1903600953&single=true&output=tsv
+
+    ending_prayers_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=766235004&single=true&output=tsv
+    ending_prayers_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1583372131&single=true&output=tsv
+    ending_prayers_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=626583379&single=true&output=tsv
+    ending_prayers_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1398758400&single=true&output=tsv
