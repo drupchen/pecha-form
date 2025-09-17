@@ -3,7 +3,7 @@ out_folder: output
 template: template.docx
 debug: True
 files:
-    nyenyig: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=0&single=true
+    nyenyig_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=0&single=true
     #rpn_long_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=632069813&single=true
     #rpn_daily_bo: https://docs.google.com/spreadsheets/d/1RpOex38h2ft7kKCcTVBIy9-7IyuoozoOiEpBeye8Xtk/pub?gid=0&single=true&output=tsv
     #rpn_medium_bo: https://docs.google.com/spreadsheets/d/1dsbidhuIv0Axk8nHSvqYY0Xur6vji1e7zhU5trfa5A0/pub?gid=0&single=true&output=tsv

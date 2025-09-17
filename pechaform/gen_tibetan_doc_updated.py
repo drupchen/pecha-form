@@ -29,6 +29,17 @@ class TibetanDocument:
         where formatting_dict contains: {'bold': bool, 'italic': bool}
         """
         SMALL_LETTER_MAX_SIZE = 10
+
+        def remove_multiple_newlines(parts):
+            for n, p in enumerate(parts):
+                text, style = p
+                if 'ཀརྨ་ཐོད་ཕྲེང་གི་དྲ' in text:
+                    print()
+
+                text = re.sub(r'\n+', '\n', text)
+                parts[n] = (text, style)
+            return parts
+
         formatted = []
         for cell in cells:
             cell = str(cell)
@@ -51,11 +62,16 @@ class TibetanDocument:
                         style = {'small letters': False}
                         parts.append((s, style))
                 parts[-1] = (parts[-1][0]+'\n', parts[-1][1])
+                parts = remove_multiple_newlines(parts)
                 formatted.extend(parts)
             else:
                 style = {'small letters': False}
-                formatted.append((cell+'\n', style))
+                parts = remove_multiple_newlines([(cell+'\n', style)])
+                formatted.extend(parts)
 
+        # remove trailing newlines
+        while formatted and formatted[-1][0] == '\n':
+            formatted = formatted[:-1]
         return formatted
 
     def __parse_html(self):
