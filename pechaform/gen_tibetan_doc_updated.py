@@ -33,9 +33,6 @@ class TibetanDocument:
         def remove_multiple_newlines(parts):
             for n, p in enumerate(parts):
                 text, style = p
-                if 'ཀརྨ་ཐོད་ཕྲེང་གི་དྲ' in text:
-                    print()
-
                 text = re.sub(r'\n+', '\n', text)
                 parts[n] = (text, style)
             return parts
