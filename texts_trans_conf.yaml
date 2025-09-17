@@ -3,6 +3,16 @@ out_folder: output
 template: template.docx
 debug: False  # True or False
 files:
+    #nyenyig_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=783390635&single=true
+    #nyenyig_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1426824812&single=true
+    #nyenyig_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1937521466&single=true
+    #nyenyig_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1931193106&single=true
+    rpn_long_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=1728711452&single=true
+    rpn_long_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=0&single=true
+
+    #drupkhok: https://docs.google.com/spreadsheets/d/e/2PACX-1vTRCFE16AnZpPZx_zx6Qy8vWWCN9GW7IxoU63RqUFOJnOxfCLFhQOu8B7kWEFQ16FnGrEasrAmHogv3/pub?gid=1823959597&single=true&output=tsv
+    #dakjuk: https://docs.google.com/spreadsheets/d/e/2PACX-1vQAqfcCVxrtYk5_Q9dlXsS_a8TMJZHKzbrTSvOD15AKRnE4B0iuUrJGx_6F7ysOGsl0yNcMJhmOJ3Jb/pub?gid=0&single=true&output=tsv
+
 #    rpn_daily_fr: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=588367815&single=true&output=tsv
 #    rpn_daily_en: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=1282995497&single=true&output=tsv
 #    rpn_daily_pt: https://docs.google.com/spreadsheets/d/1BgVGx2h_ULTUBU1MjCINI5akEGfR4B58MJLPhGsAv2s/pub?gid=192513481&single=true&output=tsv
@@ -38,7 +48,7 @@ files:
 #    kyerim_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=1336575241&single=true&output=tsv
 #    kyerim_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vT7NKlt_5ke5WPPB_7zWCZxa1Piuvmm4oAEnEnrff8hIkyEmb3RkCusC3cdh-i_DqS9v8hSiuWRJAXh/pub?gid=1903600953&single=true&output=tsv
 
-    ending_prayers_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=766235004&single=true&output=tsv
-    ending_prayers_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1583372131&single=true&output=tsv
-    ending_prayers_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=626583379&single=true&output=tsv
-    ending_prayers_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1398758400&single=true&output=tsv
+#    ending_prayers_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=766235004&single=true&output=tsv
+#    ending_prayers_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1583372131&single=true&output=tsv
+#    ending_prayers_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=626583379&single=true&output=tsv
+#    ending_prayers_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=1398758400&single=true&output=tsv

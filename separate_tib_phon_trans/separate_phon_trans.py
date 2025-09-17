@@ -25,10 +25,10 @@ def separate(string, mode=2):
         trans = []
         tib = []
         for part in parts:
-            print(parts)
             lines = part.split('\n')
             lines = [l.strip() for l in lines]
             for i in range(0, len(lines)-1, 3):
+                print(lines[i])
                 phon.append(lines[i+1])
                 trans.append(lines[i+2])
                 tib.append(lines[i])

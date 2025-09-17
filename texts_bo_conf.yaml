@@ -3,10 +3,12 @@ out_folder: output
 template: template.docx
 debug: True
 files:
+    nyenyig: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=0&single=true
+    #rpn_long_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=632069813&single=true
     #rpn_daily_bo: https://docs.google.com/spreadsheets/d/1RpOex38h2ft7kKCcTVBIy9-7IyuoozoOiEpBeye8Xtk/pub?gid=0&single=true&output=tsv
     #rpn_medium_bo: https://docs.google.com/spreadsheets/d/1dsbidhuIv0Axk8nHSvqYY0Xur6vji1e7zhU5trfa5A0/pub?gid=0&single=true&output=tsv
     #rpn_tsedrup_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vTf9AAc6UPzYSoI2Kl3TNimqxjwSajkyGdk1Sm4bwIImX-eRYmZThFFEBzDHzdZDsCRoZc1D5HI9Znq/pub?gid=0&single=true&output=tsv
     #bima_ladrup_phowa_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vT_lHulu8fstqZyLo0PnxSJoygWCqBhk8oA8VlI5mD6cVwXs302BPKR8zj0I7XlIO7jd3vdFgSOyTOZ/pub?gid=1934229687&single=true&output=tsv
     #rpn_lineage_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vRiSkidjBcav8HM_OScWib9sFqSAhDuCp1Gg9aUjbYUM8ShhbSIExU_d7QVfLCbUPkE6twNbdEdihcV/pub?gid=0&single=true&output=tsv
 #    beginning_prayers_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vTvf1wUxdcrL8myzhrpBFQ2WiVx4KdM7ZY4BZ72s_YMtixgSYN8hiCRr4MvMBC8DMsNFh1owiSvZN4Y/pub?gid=0&single=true&output=tsv
-    ending_prayers_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=0&single=true&output=tsv
+    #ending_prayers_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSh9LJhTsZTVt15qOf83YhyaDSB51yoLHhgXEvCoR-5cVzUNum1YfQAfk5MGjK-Xb622GSslFd5kvgx/pub?gid=0&single=true&output=tsv
