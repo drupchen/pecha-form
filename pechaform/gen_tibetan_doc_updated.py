@@ -141,6 +141,10 @@ class TibetanDocument:
                 cur_type = raw[hub]
                 cur_cells.append(html[tibetan])
 
+        # last element
+        if cur_cells:
+            segments.append((cur_type, cur_cells))
+
         parsed = []
         for t, text in segments:
             t = t.replace('|', '')
