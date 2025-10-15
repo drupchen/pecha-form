@@ -256,6 +256,7 @@ def parse_docx(in_file, letter_sizes):
                 try:
                     size = run.style.font.size.pt
                 except AttributeError:
+                    size = 32.0  # hack for when no size applied == big letters
                     print(run.text)
                     print('there must be some superscript somewhere')
             if cur and size in letter_sizes and letter_sizes[size] == cur[-1][0]:
@@ -280,12 +281,13 @@ if __name__ == '__main__':
         20: 'big',
         21: 'big',
         22: 'big',
-        26: "big",
+        26: "small",
+        32: "big",
         23: "small",
         14: 'small'
     }
     for f in Path('./input').glob('*.docx'):
-        if not f.name.startswith('RAN'):
+        if not f.name.startswith('RPN'):
             continue
         print(f)
         docx_to_spread(f, letter_sizes)
