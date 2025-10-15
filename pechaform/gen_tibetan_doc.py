@@ -1,8 +1,11 @@
 from pathlib import Path
 import re
 import csv
+import sys
 
 from .format_doc import FormatDocument
+
+csv.field_size_limit(sys.maxsize)
 
 
 class TibetanDocument:
