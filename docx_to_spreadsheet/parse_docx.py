@@ -107,6 +107,7 @@ def cleanup_line(string):
     string = string.strip()
     if string.endswith(' །') or string.endswith(' །'):
         string = string[:-2] + string[-1]
+    string = string.replace(" ", " ")
     return string
 
 
@@ -287,7 +288,7 @@ if __name__ == '__main__':
         14: 'small'
     }
     for f in Path('./input').glob('*.docx'):
-        if not f.name.startswith('RPN'):
+        if not f.name.startswith('NYAK-24'):
             continue
         print(f)
         docx_to_spread(f, letter_sizes)
