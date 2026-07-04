@@ -1,0 +1,55 @@
+/* 
+ * Tibetan typography rules
+ * - Ensure legible text size for Tibetan script
+ * - Correct vertical stacking
+ */
+
+.tibetan-text {
+  font-family: "Jomolhari", "Noto Sans Tibetan", "Tibetan Machine Uni", "Microsoft Himalaya", serif;
+  /* Tibetan characters typically need more line-height than Latin scripts due to vertical stacks */
+  line-height: 1.8;
+  font-size: 1.25rem; /* 20px */
+}
+
+/* For dense areas */
+.tibetan-text-sm {
+  font-family: "Jomolhari", "Noto Sans Tibetan", "Tibetan Machine Uni", "Microsoft Himalaya", serif;
+  line-height: 1.6;
+  font-size: 1rem;
+}
+
+/*
+ * Tagger pane injects visual text for accepted-suggestion replacements and
+ * pure-insertion suggestions. Render that text via a ::before pseudo-element
+ * so it stays out of the DOM textContent — selections, copy/paste and Ctrl+F
+ * see only what's actually in raw_text, but the user still sees the suggested
+ * text on screen.
+ */
+[data-inserted-text]::before {
+  content: attr(data-inserted-text);
+  white-space: pre;
+}
+
+/*
+ * Passage runs — the app's first colored *foreground* text. A passage is a
+ * linked, ordered sequence of syllables drawn from elsewhere in the SAME text,
+ * rendered inline at an anchor in a distinct font color. The content is
+ * display-only (links, not real syllables) so it is excluded from tagger
+ * selection via `contentEditable={false}` on the span. `--passage-fg` may be
+ * overridden per-passage via an inline style; otherwise this default applies.
+ */
+.passage-run {
+  color: var(--passage-fg, #1E7A6B); /* jade/teal — distinct from ink + tag backgrounds */
+  user-select: none;
+  cursor: default;
+}
+
+/* Cross-pane link click feedback — applied transiently when scrolling a partner element into view */
+@keyframes link-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(99, 102, 241, 0.55); }
+  60%  { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0.18); }
+  100% { box-shadow: 0 0 0 0   rgba(99, 102, 241, 0);    }
+}
+.link-pulse {
+  animation: link-pulse 1.2s ease-out;
+}

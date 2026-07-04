@@ -1,0 +1,15 @@
+[project]
+name = "pecha-form-backend"
+version = "0.1.0"
+description = "pecha-form: Tibetan text segmentation & big/small/title tagging (vendored from sapche_discovery)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[all]",
+    "pydantic",
+    "uvicorn",
+    "botok @ git+https://github.com/OpenPecha/Botok.git",
+    "python-multipart",
+    "thefuzz",
+    "rapidfuzz",
+    "python-docx"
+]

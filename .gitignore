@@ -160,3 +160,16 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# --- pecha-form sapche stack (backend/ + frontend/) ---
+# Local SQLite DB (schema is recreated by db.init_db on first run) and any backups.
+backend/sapche.db
+backend/sapche.db.backup*
+backend/sapche.db.bak*
+# Node deps / build output for the Vite frontend.
+node_modules/
+frontend/dist/
+# The Python `lib/` build-artifact rule above also matches the vendored
+# frontend source dir `frontend/src/lib/` — keep that under version control.
+!frontend/src/lib/
+!frontend/src/lib/**
