@@ -3,10 +3,29 @@ out_folder: output
 template: template.docx
 debug: False  # True or False
 files:
-    rpn_long_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=1728711452&single=true
-    rpn_long_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=123311762&single=true
-    rpn_long_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=0&single=true
-    rpn_long_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=698948375&single=true
+#    ngondro_short_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vToGCrwFx0c0UvkKJa4EhTfo_JZVQN_alnRBHa2BVKKQffTEXRtvJk1MIApt1P22EROscJFhO_XDUfO/pubhtml?gid=1100523423&single=true
+    rpn_daily_tsok: https://docs.google.com/spreadsheets/d/e/2PACX-1vTqo6371AfXx1s6mUPtEvYDFaIpMFtuCfNUtt9alvYQTh5a5Sn7qz8sFW0Cglk3sIRcVuJ4ljiE74Su/pubhtml?gid=1282995497&single=true
+    #logyu_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vRzcrYrVGKStuF-Y_PI67VA-9SYAuUJBLMjx6BY2_1Nn9ms1PsSbInwq2QRaPvQm4DXnuJuFmx4LAJX/pubhtml?gid=57299421&single=true
+
+    #nyenyig_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=783390635&single=true
+    #nyenyig_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1426824812&single=true
+    #nyenyig_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1937521466&single=true
+    #nyenyig_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=1931193106&single=true
+
+#    rpn_long_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=1728711452&single=true
+#    rpn_long_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=0&single=true
+#    rpn_long_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=123311762&single=true
+#    rpn_long_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=698948375&single=true
+
+    #rpn_kangwa_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vRCJl15k1rncqO3C1atqwcA6JAqN-EKbHWqm94TlHuib6tn0SCTJUGQN7YLCaPvDqffD3_e_slJ3D8c/pubhtml?gid=0&single=true
+    #rpn_kangwa_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vRCJl15k1rncqO3C1atqwcA6JAqN-EKbHWqm94TlHuib6tn0SCTJUGQN7YLCaPvDqffD3_e_slJ3D8c/pubhtml?gid=195140382&single=true
+    #rpn_kangwa_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vRCJl15k1rncqO3C1atqwcA6JAqN-EKbHWqm94TlHuib6tn0SCTJUGQN7YLCaPvDqffD3_e_slJ3D8c/pubhtml?gid=1455486088&single=true
+    #rpn_kangwa_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vRCJl15k1rncqO3C1atqwcA6JAqN-EKbHWqm94TlHuib6tn0SCTJUGQN7YLCaPvDqffD3_e_slJ3D8c/pubhtml?gid=1269762609&single=true
+
+    #rpn_gyunsol_en: https://docs.google.com/spreadsheets/d/e/2PACX-1vReo692kEJ9esZVtQGNNneDZPOdNkQnTal8qm4wvVRmOs5dd9sbXOET1DGR8HL87PxWvma_tZS9R55w/pubhtml?gid=313349352&single=true
+    #rpn_gyunsol_fr: https://docs.google.com/spreadsheets/d/e/2PACX-1vReo692kEJ9esZVtQGNNneDZPOdNkQnTal8qm4wvVRmOs5dd9sbXOET1DGR8HL87PxWvma_tZS9R55w/pubhtml?gid=413772218&single=true
+    #rpn_gyunsol_pt: https://docs.google.com/spreadsheets/d/e/2PACX-1vReo692kEJ9esZVtQGNNneDZPOdNkQnTal8qm4wvVRmOs5dd9sbXOET1DGR8HL87PxWvma_tZS9R55w/pubhtml?gid=883227573&single=true
+    #rpn_gyunsol_de: https://docs.google.com/spreadsheets/d/e/2PACX-1vReo692kEJ9esZVtQGNNneDZPOdNkQnTal8qm4wvVRmOs5dd9sbXOET1DGR8HL87PxWvma_tZS9R55w/pubhtml?gid=879966224&single=true
 
     #drupkhok: https://docs.google.com/spreadsheets/d/e/2PACX-1vTRCFE16AnZpPZx_zx6Qy8vWWCN9GW7IxoU63RqUFOJnOxfCLFhQOu8B7kWEFQ16FnGrEasrAmHogv3/pub?gid=1823959597&single=true&output=tsv
     #dakjuk: https://docs.google.com/spreadsheets/d/e/2PACX-1vQAqfcCVxrtYk5_Q9dlXsS_a8TMJZHKzbrTSvOD15AKRnE4B0iuUrJGx_6F7ysOGsl0yNcMJhmOJ3Jb/pub?gid=0&single=true&output=tsv

@@ -112,12 +112,14 @@ class TibetanDocument:
 
         # Extract headers from the first row
         headers, _ = table_data[1]
-        hub, tibetan =  None, None
+        hub, tibetan, tib_no_phon =  None, None, None
         for n, h in enumerate(headers):
             if h == 'Tibetan':
                 tibetan = n
             if h == 'hub':
                 hub = n
+            if h == 'Tibetan- no phonetics':
+                tib_no_phon = n
         if not hub or not tibetan:
             raise ValueError("the tibetan sheet should have a column named 'Tibetan' and another column named 'hub'")
 
@@ -133,13 +135,21 @@ class TibetanDocument:
                 cur_type = raw[hub]
 
             if raw[hub] == cur_type or raw[hub] == '':
-                cur_cells.append(html[tibetan])
+                if raw[tibetan]:
+                    cur_cells.append(html[tibetan])
+                elif raw[tib_no_phon]:
+                    cur_cells.append(html[tib_no_phon])
+                else:
+                    cur_cells.append(raw[tibetan])
             else:
                 segments.append((cur_type, cur_cells))
                 cur_cells = []
 
                 cur_type = raw[hub]
-                cur_cells.append(html[tibetan])
+                if raw[tibetan]:
+                    cur_cells.append(html[tibetan])
+                elif raw[tib_no_phon]:
+                    cur_cells.append(html[tib_no_phon])
 
         # last element
         if cur_cells:

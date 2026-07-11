@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pecha Form</title>
+  <style>
+    :root {
+      --bg: #f5f3ee; --card: #fff; --ink: #2a2620; --muted: #857c6e;
+      --line: #e3ddd0; --accent: #8a5a2b; --accent-soft: #f0e6d8;
+      --ok: #3c7a4b; --err: #b13a2e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--ink); line-height: 1.5;
+    }
+    header {
+      padding: 20px 24px; border-bottom: 1px solid var(--line); background: var(--card);
+    }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    main { max-width: 900px; margin: 0 auto; padding: 24px; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab {
+      padding: 8px 18px; border: 1px solid var(--line); background: var(--card);
+      border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--muted);
+    }
+    .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .card {
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 18px; margin-bottom: 18px;
+    }
+    .settings { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+    .settings label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+    select, input[type=text] {
+      padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px;
+      font-size: 14px; background: #fff; color: var(--ink);
+    }
+    input[type=text] { width: 100%; }
+    .row {
+      display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center;
+      padding: 8px 6px; border-bottom: 1px solid var(--line);
+    }
+    .row:last-child { border-bottom: none; }
+    .row .name { font-weight: 600; font-size: 14px; }
+    .row .url {
+      font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; max-width: 100%;
+    }
+    .row.disabled .name, .row.disabled .url { opacity: .45; }
+    .row .actions { display: flex; gap: 6px; }
+    .icon-btn {
+      border: 1px solid var(--line); background: #fff; border-radius: 6px; cursor: pointer;
+      font-size: 12px; padding: 4px 8px; color: var(--muted);
+    }
+    .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+    input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+    .add-row { display: grid; grid-template-columns: 1fr 2fr auto; gap: 8px; margin-top: 12px; }
+    button.primary {
+      background: var(--accent); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 18px; font-size: 14px; cursor: pointer;
+    }
+    button.primary:disabled { opacity: .5; cursor: default; }
+    button.ghost {
+      background: var(--accent-soft); color: var(--accent); border: none; border-radius: 8px;
+      padding: 9px 18px; font-size: 14px; cursor: pointer;
+    }
+    .bar { display: flex; gap: 10px; align-items: center; }
+    .bar .spacer { flex: 1; }
+    .status-msg { font-size: 13px; color: var(--muted); }
+    .status-msg.ok { color: var(--ok); }
+    .status-msg.err { color: var(--err); }
+    pre.log {
+      background: #201d18; color: #e8e0d2; border-radius: 10px; padding: 14px;
+      font-size: 12.5px; max-height: 320px; overflow: auto; white-space: pre-wrap;
+      margin: 0;
+    }
+    h3 { margin: 0 0 10px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .empty { color: var(--muted); font-size: 14px; padding: 10px 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Pecha Form</h1>
+    <p>Select the texts to generate, then click Generate. Files are written to the <code>output/</code> folder.</p>
+  </header>
+  <main>
+    <div class="tabs" id="tabs">
+      <div class="tab" data-mode="bo">Tibetan texts</div>
+      <div class="tab" data-mode="trans">Translations</div>
+    </div>
+
+    <div class="card">
+      <div class="settings">
+        <label>Template
+          <select id="template"></select>
+        </label>
+        <label>Debug
+          <select id="debug">
+            <option value="false">Off</option>
+            <option value="true">On</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Texts</h3>
+      <div id="list"></div>
+      <div class="add-row">
+        <input type="text" id="add-name" placeholder="new_text_name">
+        <input type="text" id="add-url" placeholder="Google Sheets published URL">
+        <button class="ghost" id="add-btn">Add</button>
+      </div>
+      <div class="hint">Checked = will be processed. Add / edit / delete are saved to the config file when you click Save.</div>
+    </div>
+
+    <div class="card">
+      <div class="bar">
+        <button class="ghost" id="save-btn">Save config</button>
+        <button class="primary" id="run-btn">Generate</button>
+        <span class="spacer"></span>
+        <span class="status-msg" id="status-msg"></span>
+      </div>
+    </div>
+
+    <div class="card" id="log-card" style="display:none">
+      <h3>Progress</h3>
+      <pre class="log" id="log"></pre>
+    </div>
+  </main>
+
+  <script>
+    const state = { mode: 'bo', entries: [], settings: {}, templates: [] };
+    const $ = (id) => document.getElementById(id);
+
+    function setStatus(msg, kind = '') {
+      const el = $('status-msg');
+      el.textContent = msg;
+      el.className = 'status-msg' + (kind ? ' ' + kind : '');
+    }
+
+    async function loadConfig(mode) {
+      state.mode = mode;
+      document.querySelectorAll('.tab').forEach(t =>
+        t.classList.toggle('active', t.dataset.mode === mode));
+      const res = await fetch('/api/config?mode=' + mode);
+      const data = await res.json();
+      state.entries = data.entries || [];
+      state.settings = data.settings || {};
+      state.templates = data.templates || [];
+      renderSettings();
+      renderList();
+      setStatus('');
+    }
+
+    function renderSettings() {
+      const tSel = $('template');
+      tSel.innerHTML = '';
+      state.templates.forEach(t => {
+        const o = document.createElement('option');
+        o.value = t; o.textContent = t;
+        if (t === state.settings.template) o.selected = true;
+        tSel.appendChild(o);
+      });
+      $('debug').value = state.settings.debug ? 'true' : 'false';
+    }
+
+    function renderList() {
+      const list = $('list');
+      list.innerHTML = '';
+      if (!state.entries.length) {
+        list.innerHTML = '<div class="empty">No texts yet. Add one below.</div>';
+        return;
+      }
+      state.entries.forEach((e, i) => {
+        const row = document.createElement('div');
+        row.className = 'row' + (e.enabled ? '' : ' disabled');
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!e.enabled;
+        cb.onchange = () => { e.enabled = cb.checked; row.classList.toggle('disabled', !cb.checked); };
+
+        const mid = document.createElement('div');
+        mid.innerHTML = `<div class="name"></div><div class="url"></div>`;
+        mid.querySelector('.name').textContent = e.name;
+        mid.querySelector('.url').textContent = e.url;
+
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const edit = document.createElement('button');
+        edit.className = 'icon-btn'; edit.textContent = 'Edit';
+        edit.onclick = () => editEntry(i);
+        const del = document.createElement('button');
+        del.className = 'icon-btn'; del.textContent = 'Delete';
+        del.onclick = () => { state.entries.splice(i, 1); renderList(); };
+        actions.append(edit, del);
+
+        row.append(cb, mid, actions);
+        list.appendChild(row);
+      });
+    }
+
+    function editEntry(i) {
+      const e = state.entries[i];
+      const name = prompt('Name:', e.name);
+      if (name === null) return;
+      const url = prompt('Google Sheets URL:', e.url);
+      if (url === null) return;
+      e.name = name.trim();
+      e.url = url.trim();
+      renderList();
+    }
+
+    $('add-btn').onclick = () => {
+      const name = $('add-name').value.trim();
+      const url = $('add-url').value.trim();
+      if (!name || !url) { setStatus('Enter both a name and a URL.', 'err'); return; }
+      state.entries.push({ name, url, enabled: true });
+      $('add-name').value = ''; $('add-url').value = '';
+      renderList();
+      setStatus('Added (remember to Save).');
+    };
+
+    function currentSettings() {
+      return {
+        ...state.settings,
+        template: $('template').value,
+        debug: $('debug').value === 'true',
+      };
+    }
+
+    $('save-btn').onclick = async () => {
+      setStatus('Saving…');
+      const res = await fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: state.mode, settings: currentSettings(), entries: state.entries }),
+      });
+      const data = await res.json();
+      if (data.ok) setStatus('Saved.', 'ok');
+      else setStatus('Save failed: ' + (data.error || '?'), 'err');
+    };
+
+    $('run-btn').onclick = async () => {
+      const enabled = state.entries.filter(e => e.enabled);
+      if (!enabled.length) { setStatus('Select at least one text.', 'err'); return; }
+      $('run-btn').disabled = true;
+      setStatus('Starting…');
+      $('log-card').style.display = '';
+      $('log').textContent = '';
+      const res = await fetch('/api/run', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: state.mode, settings: currentSettings(), entries: state.entries }),
+      });
+      const data = await res.json();
+      if (data.error) { setStatus(data.error, 'err'); $('run-btn').disabled = false; return; }
+      pollStatus(data.job_id);
+    };
+
+    async function pollStatus(jobId) {
+      const res = await fetch('/api/status/' + jobId);
+      const job = await res.json();
+      $('log').textContent = (job.log || []).join('\n');
+      $('log').scrollTop = $('log').scrollHeight;
+      if (job.running) {
+        setStatus('Processing…');
+        setTimeout(() => pollStatus(jobId), 800);
+      } else {
+        $('run-btn').disabled = false;
+        if (job.error) setStatus('Finished with error.', 'err');
+        else setStatus(`Done — ${(job.results || []).length} file(s) in output/.`, 'ok');
+      }
+    }
+
+    document.querySelectorAll('.tab').forEach(t =>
+      t.onclick = () => loadConfig(t.dataset.mode));
+    loadConfig('bo');
+  </script>
+</body>
+</html>

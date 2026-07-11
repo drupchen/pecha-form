@@ -68,13 +68,17 @@ class FormatDocumentUpdated:
             'T': self.s_bo_par_title1,
             't': self.s_bo_par_title2,
             's': self.s_bo_par,
-            'b': self.s_bo_par
+            'n': self.s_bo_par,
+            'b': self.s_bo_par,
+            'k': self.s_bo_par,
         }
         self.bo_char_styles = {
             'T': self.s_bo_char_title1,
             't': self.s_bo_char_small,
             's': self.s_bo_char_small,
-            'b': self.s_bo_char_big
+            'n': self.s_bo_char_big,
+            'b': self.s_bo_char_big,
+            'k': self.s_bo_char_big,
         }
 
     def format_booklet(self, parsed_content, out_file, no_phon=False):
@@ -138,12 +142,17 @@ class FormatDocumentUpdated:
         for t, strings in parsed_content:
             par = self.document.add_paragraph(style=self.bo_par_styles[t])
             for s in strings:
-                if isinstance(s, str):
-                    par.add_run(s, style=self.bo_char_styles[t])
+                text, style = s
+                if style['small letters']:
+                    p = 's'
                 else:
-                    par.add_run(s[1], style=self.bo_char_styles[s[0]])
+                    p = t
+                par.add_run(text, style=self.bo_char_styles[p])
             if t == 'T':
-                par.runs[-1].add_break(WD_BREAK.PAGE)
+                if par.runs:
+                    par.runs[-1].add_break(WD_BREAK.PAGE)
+                else:
+                    par.add_run('').add_break(WD_BREAK.PAGE)
         self.document.save(out_file)
 
     def __initiate_document(self):

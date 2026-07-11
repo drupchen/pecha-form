@@ -3,7 +3,11 @@ out_folder: output
 template: template.docx
 debug: True
 files:
-    nyenyig_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=0&single=true
+
+    #rpn_gyunsol_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vReo692kEJ9esZVtQGNNneDZPOdNkQnTal8qm4wvVRmOs5dd9sbXOET1DGR8HL87PxWvma_tZS9R55w/pubhtml?gid=769452444&single=true
+    #rpn_kangwa_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vRCJl15k1rncqO3C1atqwcA6JAqN-EKbHWqm94TlHuib6tn0SCTJUGQN7YLCaPvDqffD3_e_slJ3D8c/pubhtml?gid=1898824681&single=true
+    #rpn_long_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=632069813&single=true
+    #nyenyig_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vTmP_49S_BH1XRzvfDeHshs73hWZPsvT3p4et9D3tqtYU7ljbapybIlneCFtRK8eRwzj41itbHd19Ab/pubhtml?gid=0&single=true
     #rpn_long_bo: https://docs.google.com/spreadsheets/d/e/2PACX-1vSsuRQHiRPJaTqGIH6L66bpF3nSkmZsbqd3MmXNdVQm1CDdRGG4f_TYCuHIZZgcQg4rI4zvdZtXAWdG/pubhtml?gid=632069813&single=true
     #rpn_daily_bo: https://docs.google.com/spreadsheets/d/1RpOex38h2ft7kKCcTVBIy9-7IyuoozoOiEpBeye8Xtk/pub?gid=0&single=true&output=tsv
     #rpn_medium_bo: https://docs.google.com/spreadsheets/d/1dsbidhuIv0Axk8nHSvqYY0Xur6vji1e7zhU5trfa5A0/pub?gid=0&single=true&output=tsv
