@@ -94,8 +94,12 @@ export const TreeNodeCard: React.FC<Props> = ({
   // Linked iff the node has a segment_start offset (and that offset is still
   // within the document — orphan links are silently treated as not-linked
   // when the segment can't be found, but the accent strip stays on so the
-  // user knows the link metadata is there).
-  const isLinked = node.segment_start != null;
+  // user knows the link metadata is there). A node may instead link a PASSAGE
+  // occurrence (node.passage_id) — its own standalone card in the tagger.
+  const isLinked = node.segment_start != null || node.passage_id != null;
+  // Cross-pane link key: segment offset, or the passage key space (negative id).
+  const linkKey: number | null =
+    node.segment_start ?? (node.passage_id != null ? -node.passage_id : null);
   // Compute the segment_end for preview: next marker after segment_start, or
   // raw_text.length if there is no later marker.
   const segmentRange: [number, number] | null = (() => {
@@ -186,16 +190,22 @@ export const TreeNodeCard: React.FC<Props> = ({
     try { await updateNode(node.id, { transparent: !node.transparent }); } catch {}
   };
 
-  // Release the node from its linked segment. Works even when that segment no longer
-  // exists (e.g. its marker was removed / it was merged away), which strands the node
-  // with no segment-side "tree:" badge to click. Clearing segment_start unlinks it.
+  // Release the node from whatever it links (a segment, or a passage occurrence).
+  // Works even when the linked segment no longer exists (e.g. its marker was removed),
+  // which strands the node with no segment-side "tree:" badge to click.
   const handleUnlinkSegment = async () => {
     setMenuOpen(false);
-    // CHECK constraint: title OR segment_start_syl_id must stay non-null — give an
-    // untitled (segment-derived) node a concrete title before clearing the link.
-    const params: { segment_start: null; title?: string } = { segment_start: null };
-    if (!node.title?.trim()) params.title = displayTitle;
-    try { await updateNode(node.id, params); } catch (e: any) { alert(e.message); }
+    try {
+      if (node.passage_id != null) {
+        await updateNode(node.id, { passage_id: null });
+        return;
+      }
+      // CHECK constraint: title OR segment_start_syl_id must stay non-null — give an
+      // untitled (segment-derived) node a concrete title before clearing the link.
+      const params: { segment_start: null; title?: string } = { segment_start: null };
+      if (!node.title?.trim()) params.title = displayTitle;
+      await updateNode(node.id, params);
+    } catch (e: any) { alert(e.message); }
   };
 
   // The ⋯ menu is portaled with fixed positioning, so close it on any scroll so it can
@@ -216,9 +226,9 @@ export const TreeNodeCard: React.FC<Props> = ({
     }
   };
 
-  // Link-overlay wiring: only segment-linked nodes participate. The link key
-  // is the segment_start offset.
-  const isLinkHovered = node.segment_start != null && hoveredKey === node.segment_start;
+  // Link-overlay wiring: linked nodes participate. The link key is the segment_start
+  // offset, or the passage key space (-passage_id) for passage-linked nodes.
+  const isLinkHovered = linkKey != null && hoveredKey === linkKey;
   const isActive = activeNodeId === node.id;
   const lastHoveredTreeNodeId = useUIStore(s => s.lastHoveredTreeNodeId);
   const setLastHoveredTreeNodeId = useUIStore(s => s.setLastHoveredTreeNodeId);
@@ -241,6 +251,7 @@ export const TreeNodeCard: React.FC<Props> = ({
    *  when this node itself isn't linked). */
   const findFirstLinkedSegmentStart = (n: NestedTreeNode): number | null => {
     if (n.segment_start != null) return n.segment_start;
+    if (n.passage_id != null) return -n.passage_id;  // passage key space
     for (const c of n.children) {
       const found = findFirstLinkedSegmentStart(c);
       if (found != null) return found;
@@ -259,14 +270,14 @@ export const TreeNodeCard: React.FC<Props> = ({
     'data-node-id': node.id,
     'data-node-depth': depth,
     onMouseEnter: () => {
-      if (node.segment_start != null) setHovered(node.segment_start);
+      if (linkKey != null) setHovered(linkKey);
     },
     onMouseLeave: () => {
-      if (node.segment_start != null) setHovered(null);
+      if (linkKey != null) setHovered(null);
     },
   };
-  if (node.segment_start != null) {
-    linkProps['data-link-key'] = node.segment_start;
+  if (linkKey != null) {
+    linkProps['data-link-key'] = linkKey;
   }
   // Active state takes precedence visually: indigo ring signals "selecting
   // text in the tagger will auto-fill this node's title". Last-hovered is a
@@ -406,7 +417,7 @@ export const TreeNodeCard: React.FC<Props> = ({
           className={`relative group/accent w-1.5 rounded-l-md shrink-0 ${isLinked ? 'cursor-pointer' : ''}`}
           style={{ backgroundColor: indentColor(depth) }}
           onClick={() => {
-            if (node.segment_start != null) scrollToLinkPartner(node.segment_start, rootRef.current);
+            if (linkKey != null) scrollToLinkPartner(linkKey, rootRef.current);
           }}
           title={isLinked ? 'Click to find the linked tagger segment' : undefined}
         >
@@ -612,13 +623,13 @@ export const TreeNodeCard: React.FC<Props> = ({
                         {node.transparent ? <Eye size={12} /> : <EyeOff size={12} />}
                         {node.transparent ? 'Remove transparent' : 'Mark transparent'}
                       </button>
-                      {node.segment_start != null && (
+                      {isLinked && (
                         <button
                           onClick={handleUnlinkSegment}
                           className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
-                          title="Break this node's link to its segment so it can be linked to a different one"
+                          title="Break this node's link (segment or passage) so it can be linked elsewhere"
                         >
-                          <Unlink size={12} /> Unlink from segment
+                          <Unlink size={12} /> {node.passage_id != null ? 'Unlink from passage' : 'Unlink from segment'}
                         </button>
                       )}
                       <div className="my-1" style={{ borderTop: '1px solid var(--cline)' }} />

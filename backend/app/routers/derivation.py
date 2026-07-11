@@ -51,7 +51,8 @@ def post_transclude(text_id: int, payload: TranscludeIn):
     conn = get_db()
     try:
         transclude(conn, text_id, payload.anchor_syl_id, payload.src_text_id,
-                   payload.src_start_syl_id, payload.src_end_syl_id)
+                   payload.src_start_syl_id, payload.src_end_syl_id,
+                   anchor_op_id=payload.anchor_op_id)
         conn.commit()
         return _composed_payload(conn, text_id)
     finally:
@@ -63,7 +64,8 @@ def post_insert_break(text_id: int, payload: InsertBreakIn):
     """Insert a manual line break (a hosted "\\n" token) before a composed token."""
     conn = get_db()
     try:
-        insert_break(conn, text_id, payload.before_syl_id)
+        insert_break(conn, text_id, payload.before_syl_id,
+                     anchor_op_id=payload.anchor_op_id)
         conn.commit()
         return _composed_payload(conn, text_id)
     finally:

@@ -135,6 +135,9 @@ function tokenAtEndpoint(container: HTMLElement, node: Node, offset: number): HT
  */
 export function readTokenSelection(container: HTMLElement): {
   start: number; end: number; startSylId: string; endSylId: string; rect: DOMRect;
+  /** Set when BOTH endpoints are inside the same passage run — the selection targets
+   *  that passage occurrence (notes attach per-occurrence; tags stay shared). */
+  passageId?: number;
 } | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
@@ -182,11 +185,16 @@ export function readTokenSelection(container: HTMLElement): {
   snapped.setEndAfter(b);
   sel.removeAllRanges();
   sel.addRange(snapped);
+  const passageId =
+    a.dataset.passageId && a.dataset.passageId === b.dataset.passageId
+      ? Number(a.dataset.passageId)
+      : undefined;
   return {
     start, end,
     startSylId: a.dataset.sylId!,
     endSylId: b.dataset.sylId!,
     rect: snapped.getBoundingClientRect(),
+    passageId,
   };
 }
 

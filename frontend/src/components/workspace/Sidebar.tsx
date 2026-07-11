@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { listDerivationOps, deleteDerivationOp, applyCorrections, acceptSuggestion, type DerivationOp } from '../../api/client';
+import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTagStore, type Tag, selectRegularTags, selectSessionTags } from '../../store/useTagStore';
 import { useNoteStore, type Note } from '../../store/useNoteStore';
 import { useSuggestionStore, type Suggestion } from '../../store/useSuggestionStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useTextStore } from '../../store/useTextStore';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { ChevronRight, ChevronLeft, Tag as TagIcon, Layers, Plus, X, Pencil, Mic, StickyNote, Check, MessageSquare, Trash2, Globe, Lock } from 'lucide-react';
+import { ChevronRight, ChevronLeft, ChevronUp, ChevronDown, Tag as TagIcon, Layers, Plus, X, Pencil, Mic, StickyNote, Check, MessageSquare, Trash2, Globe, Lock, Link2, CornerUpLeft, Scissors } from 'lucide-react';
+import { usePassageStore } from '../../store/usePassageStore';
 import { scrollTaggerToOffset, scrollTaggerToSyllable } from './scrollTaggerToOffset';
 
 const REGULAR_COLORS = [
@@ -347,12 +350,23 @@ const NoteRow: React.FC<NoteRowProps> = ({ note, snippet }) => {
       <div className="flex items-start gap-1.5">
         <button
           type="button"
-          onClick={() => scrollTaggerToOffset(note.start_offset)}
+          onClick={() => {
+            // A per-occurrence note lives inside a passage run — jump to the passage's
+            // placement (its anchor), not to the source occurrence of the syllables.
+            if (note.passage_id != null) {
+              const pg = usePassageStore.getState().passages.find(x => x.id === note.passage_id);
+              if (pg?.anchor_syl_id && scrollTaggerToSyllable(pg.anchor_syl_id)) return;
+            }
+            scrollTaggerToOffset(note.start_offset);
+          }}
           className="flex-1 min-w-0 text-left"
           title={note.body || snippet}
         >
           <div className="text-[10px] text-bronze font-mono truncate">
             {note.category_name ? note.category_name : 'Uncategorized'} · {note.start_offset}–{note.end_offset}
+            {note.passage_id != null && (
+              <span className="ml-1 text-[9px] px-1 py-px rounded bg-lapis/10 text-lapis normal-case">in passage</span>
+            )}
           </div>
           <div className="text-xs text-ink truncate tibetan-text-sm">
             {snippet}
@@ -513,8 +527,37 @@ export const Sidebar: React.FC = () => {
   const [creatingSession, setCreatingSession] = useState(false);
   const [creatingNoteCategory, setCreatingNoteCategory] = useState(false);
   const [activeSection, setActiveSection] = useState<
-    'tags' | 'session-tags' | 'annotations' | 'suggestions' | 'notes'
+    'tags' | 'session-tags' | 'annotations' | 'passages' | 'suggestions' | 'notes'
   >('tags');
+
+  // Passages (inline transclusions within this text): list, jump, reorder, link, delete.
+  const allPassages = usePassageStore(s => s.passages);
+  const removePassage = usePassageStore(s => s.removePassage);
+  const editPassage = usePassageStore(s => s.editPassage);
+  // Node↔passage linking: linking a passage to a sapche node is the explicit "this
+  // passage is its own section" act (it then renders as a standalone card).
+  const treeNodes = useTreeNodeStore(s => s.nodes);
+  const updateTreeNode = useTreeNodeStore(s => s.updateNode);
+  const [passageLinkPickerFor, setPassageLinkPickerFor] = useState<number | null>(null);
+  const passages = useMemo(
+    () => allPassages.filter(p => p.text_id === currentText?.id),
+    [allPassages, currentText?.id],
+  );
+  // Move a passage among the siblings sharing its anchor: renumber the sibling run in
+  // the new order (explicit 0..n-1 positions — robust even when positions collide).
+  const movePassage = async (p: (typeof passages)[number], dir: -1 | 1) => {
+    const siblings = passages
+      .filter(x => x.anchor_syl_id === p.anchor_syl_id)
+      .sort((a, b) => a.position - b.position || a.id - b.id);
+    const i = siblings.findIndex(x => x.id === p.id);
+    const j = i + dir;
+    if (j < 0 || j >= siblings.length) return;
+    const order = [...siblings];
+    [order[i], order[j]] = [order[j], order[i]];
+    for (let k = 0; k < order.length; k++) {
+      if (order[k].position !== k) await editPassage(order[k].id, { position: k });
+    }
+  };
 
   // Corrections apply on creation (no accept/reject) — the list is delete-only.
   // Incoming PENDING suggestions (routed here from derived texts) are the exception:
@@ -850,8 +893,10 @@ export const Sidebar: React.FC = () => {
               ) : (
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   <ul className="text-xs flex flex-col gap-1">
+                    {/* One row PER OCCURRENCE: a span on a twice-transcluded source
+                        serializes once per run, same id at different offsets. */}
                     {tagStore.spans.map(s => (
-                      <li key={s.id} className="py-0.5 flex items-center gap-1.5 truncate">
+                      <li key={`${s.id}-${s.start_offset}`} className="py-0.5 flex items-center gap-1.5 truncate">
                         <span className="px-1.5 py-0.5 rounded text-cream-hi text-[10px] shrink-0" style={{ backgroundColor: s.tag.color }}>
                           {s.tag.name}
                         </span>
@@ -864,6 +909,181 @@ export const Sidebar: React.FC = () => {
             </div>
           )}
         </section>
+
+        {/* Passages section — inline transclusions within this text: jump to where a
+            passage is placed (or to its source), delete the misplaced ones. */}
+        <section
+          className={`${activeSection === 'passages' ? 'flex-1 min-h-0' : 'shrink-0'} flex flex-col`}
+          style={{ borderBottom: '1px solid var(--cline)' }}
+        >
+          <button
+            type="button"
+            onClick={() => setActiveSection('passages')}
+            className={`w-full px-3 py-2 text-left text-xs font-semibold uppercase tracking-[0.13em] flex items-center gap-1.5 transition-colors ${
+              activeSection === 'passages'
+                ? 'text-lapis bg-lapis/10'
+                : 'text-bronze hover:bg-cream'
+            }`}
+          >
+            <Link2 size={12} /> Passages ({passages.length})
+          </button>
+          {activeSection === 'passages' && currentText && (
+            <div className="flex-1 min-h-0 p-3 flex flex-col">
+              {passages.length === 0 ? (
+                <p className="text-xs text-ink-soft italic px-1">
+                  No passages yet — select text in the tagger and pick "Link as passage…".
+                </p>
+              ) : (
+                <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5">
+                  {passages.map(p => {
+                    const preview = p.members
+                      .flatMap(m => m.syllables.map(s => s.text))
+                      .join('')
+                      .replace(/\n/g, ' ');
+                    return (
+                      <li key={p.id} className="rounded group" style={{ border: '1px solid var(--cline)' }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!p.anchor_syl_id || !scrollTaggerToSyllable(p.anchor_syl_id)) {
+                              scrollTaggerToOffset(currentText.raw_text.length);  // end-anchored
+                            }
+                          }}
+                          className="block w-full text-left p-1.5 hover:bg-cream rounded-t"
+                          title="Scroll to where this passage is placed"
+                        >
+                          <div className="flex items-center gap-1 mb-0.5">
+                            <span className="text-[9px] text-lapis uppercase">
+                              {p.anchor_syl_id ? 'placed' : 'at end'}
+                            </span>
+                            {p.own_segment && (
+                              <span className="text-[9px] text-bronze uppercase">new segment</span>
+                            )}
+                          </div>
+                          <p className="tibetan-text-sm text-xs text-ink break-words line-clamp-2">
+                            {preview || '(empty)'}
+                          </p>
+                        </button>
+                        <div className="flex gap-0.5 px-1.5 pb-1 justify-end items-center opacity-0 group-hover:opacity-100">
+                          {(() => {
+                            const linked = treeNodes.find(n => n.passage_id === p.id);
+                            return linked ? (
+                              <button
+                                onClick={() => updateTreeNode(linked.id, { passage_id: null }).catch((e: any) => alert(e?.message || e))}
+                                title={`Unlink from "${linked.title || `#${linked.id}`}" (back to inline rendering)`}
+                                className="text-[10px] px-1 py-0.5 rounded text-lapis hover:text-vermilion-deep truncate max-w-[7rem]"
+                              >
+                                ⛓ {linked.title || `#${linked.id}`}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setPassageLinkPickerFor(p.id)}
+                                title="Link to a sapche node — the passage becomes its own section (standalone card)"
+                                className="text-bronze hover:text-lapis p-0.5 rounded"
+                              >
+                                <Link2 size={12} />
+                              </button>
+                            );
+                          })()}
+                          <button
+                            onClick={() => editPassage(p.id, { own_segment: !p.own_segment })}
+                            title={p.own_segment
+                              ? 'Merge into the preceding segment'
+                              : 'Start a new segment before this passage'}
+                            className={`p-0.5 rounded hover:text-lapis ${p.own_segment ? 'text-lapis' : 'text-bronze'}`}
+                          >
+                            <Scissors size={12} />
+                          </button>
+                          <button
+                            onClick={() => movePassage(p, -1)}
+                            title="Move earlier among passages at the same spot"
+                            className="text-bronze hover:text-lapis p-0.5 rounded"
+                          >
+                            <ChevronUp size={12} />
+                          </button>
+                          <button
+                            onClick={() => movePassage(p, 1)}
+                            title="Move later among passages at the same spot"
+                            className="text-bronze hover:text-lapis p-0.5 rounded"
+                          >
+                            <ChevronDown size={12} />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const src = p.members[0]?.src_start_syl_id;
+                              if (src) scrollTaggerToSyllable(src);
+                            }}
+                            title="Scroll to the source section this passage links"
+                            className="text-bronze hover:text-lapis p-0.5 rounded"
+                          >
+                            <CornerUpLeft size={12} />
+                          </button>
+                          <button
+                            onClick={() => removePassage(p.id)}
+                            title="Delete this passage"
+                            className="text-bronze hover:text-vermilion-deep p-0.5 rounded"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Node picker for linking a passage to a sapche node (own-section act). */}
+        {passageLinkPickerFor != null && createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setPassageLinkPickerFor(null)} />
+            <div
+              className="fixed z-50 bg-cream-hi shadow-xl rounded-xl p-3 w-80 max-h-96 overflow-hidden flex flex-col"
+              style={{ top: '20%', left: '50%', transform: 'translateX(-50%)', border: '1px solid var(--cline)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-2 shrink-0">
+                <h4 className="font-display text-base text-lapis">Link passage to tree node</h4>
+                <button onClick={() => setPassageLinkPickerFor(null)} className="p-1 text-bronze hover:text-vermilion-deep">
+                  <X size={14} />
+                </button>
+              </div>
+              {(() => {
+                const candidates = treeNodes
+                  .filter(n => n.segment_start === null && n.passage_id == null)
+                  .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+                return candidates.length === 0 ? (
+                  <p className="text-xs text-ink-soft italic">
+                    No free tree nodes available. Create one in the tree pane first.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-0.5 overflow-y-auto">
+                    {candidates.map(n => (
+                      <li key={n.id}>
+                        <button
+                          onClick={() => {
+                            updateTreeNode(n.id, { passage_id: passageLinkPickerFor })
+                              .catch((e: any) => alert(e?.message || e));
+                            setPassageLinkPickerFor(null);
+                          }}
+                          className="w-full text-left text-xs px-2 py-1.5 rounded hover:bg-cream truncate"
+                          title={n.title || `(untitled #${n.id})`}
+                        >
+                          <span className="tibetan-text-sm text-ink" style={{ fontSize: '13px' }}>
+                            {n.title || `(untitled #${n.id})`}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
+            </div>
+          </>,
+          document.body,
+        )}
 
         {/* Suggestions section */}
         <section

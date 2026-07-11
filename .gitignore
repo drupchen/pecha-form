@@ -186,3 +186,5 @@ frontend/dist/
 # frontend source dir `frontend/src/lib/` — keep that under version control.
 !frontend/src/lib/
 !frontend/src/lib/**
+# Vite dev-server cache.
+frontend/.vite/

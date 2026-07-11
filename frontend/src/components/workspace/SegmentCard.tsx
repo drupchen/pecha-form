@@ -8,15 +8,25 @@ import { useTagStore, type Span, type Tag } from '../../store/useTagStore';
 import { HoverTagPopover } from './HoverTagPopover';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { usePassageStore } from '../../store/usePassageStore';
+import { useMarkerStore } from '../../store/useMarkerStore';
+import { partitionAnchorPassages } from './passageGroups';
 import type { Passage } from '../../api/client';
 import { useLinkStore, scrollToLinkPartner } from '../../store/useLinkStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
+import { useEditorTokenStore } from '../../store/useEditorTokenStore';
+import { useNoteStore } from '../../store/useNoteStore';
 import { SegmentTagPopover } from './SegmentTagPopover';
 import { TaggerSearchContext } from './TaggerSearchContext';
 
 interface Props {
   segment: Segment;
+  /** The NEXT segment's first render-token id: a passage anchored there with
+   *  `attach_prev` renders at the END of this card ("stays on the same segment"). */
+  nextSegmentAnchorSylId?: string | null;
+  /** Segment 0 has no previous card — attach_prev passages anchored at its first
+   *  token fall back to rendering inline at its start. */
+  isFirstSegment?: boolean;
 }
 
 // Neutral accent for the cross-pane link affordance (no tag color anymore).
@@ -44,12 +54,17 @@ const PROVENANCE_TITLE: Record<string, string> = {
  * any number of overlapping inline annotation spans rendered as colored
  * backgrounds inside the body text.
  */
-export const SegmentCard: React.FC<Props> = ({ segment }) => {
+export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, isFirstSegment }) => {
   const { currentText } = useTextStore();
   const loadText = useTextStore(s => s.loadText);
   const texts = useTextStore(s => s.texts);
   const deleteSuggestion = useSuggestionStore(s => s.deleteSuggestion);
   const { tags, updateSpan, deleteSpan, deleteTag } = useTagStore();
+  // Full-text data for PASSAGE-run rendering: a passage's source syllables may live in
+  // another segment, so per-segment slices don't cover them.
+  const allSpansFull = useTagStore(s => s.spans);
+  const allNotesFull = useNoteStore(s => s.notes);
+  const editorTokensAll = useEditorTokenStore(s => s.tokens);
   const { nodes, createNode, updateNode } = useTreeNodeStore();
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
@@ -58,7 +73,9 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
   const setFocused = useLinkStore(s => s.setFocused);
   const hoveredKey = useLinkStore(s => s.hoveredKey);
   const allPassages = usePassageStore(s => s.passages);
-  const addPassage = usePassageStore(s => s.addPassage);
+  const editPassage = usePassageStore(s => s.editPassage);
+  const splitPassageAt = usePassageStore(s => s.splitPassageAt);
+  const createMarker = useMarkerStore(s => s.createMarker);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const sessionMode = useUIStore(s => s.sessionMode);
@@ -75,6 +92,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
   const textRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<{
     start: number; end: number; startSylId: string; endSylId: string; rect: DOMRect;
+    passageId?: number;
   } | null>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -139,16 +157,56 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
     return segment.annotations.filter(s => s.tag.tag_kind === 'regular');
   }, [sessionMode, sessionRangeSpans, segment.annotations]);
 
-  // Passages anchored inside this segment. Each renders inline (in a distinct
-  // colour) BEFORE its anchor syllable; anchor === null renders at the end of the
-  // text (last segment). Passage content is links to syllables elsewhere in the
-  // same text, so it is display-only and excluded from tagger selection.
+  // "Annotation space": tags paint by offset interval, but a transclusion is spliced
+  // BETWEEN host syllables, so a host/ancestor span surrounding the insertion point
+  // would numerically cover the foreign tokens. A span may only paint a token whose
+  // space matches its anchor's space — transcluded content carries ONLY the tags
+  // declared on its origin (or created on its own syllables), never the insertion
+  // locale's. Primaries are unaffected (every token is 'host').
+  const sylSpace = useMemo(() => {
+    const m = new Map<string, number | 'host'>();
+    for (const t of editorTokensAll) {
+      m.set(t.id, t.source === 'transclusion' && t.src_text_id != null ? t.src_text_id : 'host');
+    }
+    return m;
+  }, [editorTokensAll]);
+  const spanSpace = (s: { start_syl_id: string | null }): number | 'host' =>
+    (s.start_syl_id && sylSpace.get(s.start_syl_id)) || 'host';
+
+  // Passages anchored MID-SEGMENT render inline (in a distinct colour) BEFORE their
+  // anchor syllable; anchor === null renders at the end of the text (last segment).
+  // Boundary-anchored passages (anchored at this segment's FIRST render token) are
+  // rendered by TaggerPane as their own standalone cards — skipped here. Same-anchor
+  // passages order by (position, id).
+  // Passages explicitly linked to a sapche node ("own section") render as standalone
+  // cards in TaggerPane — everything else renders INLINE in its segment.
+  const nodeLinkedPassageIds = useMemo(
+    () => new Set(nodes.filter(n => n.passage_id != null).map(n => n.passage_id as number)),
+    [nodes],
+  );
+
   const passagesByAnchor = useMemo(() => {
     const tokenIds = new Set(segment.tokens.map(t => t.id));
+    const firstRenderId = segment.tokens.find(t => !t.inserted && t.text !== '')?.id;
     const map = new Map<string, Passage[]>();
     const atEnd: Passage[] = [];
-    for (const p of allPassages) {
-      if (p.text_id !== currentText.id) continue;
+    // Only the pre-starter prefix of each anchor's passages renders inline; from the
+    // first own_segment/node-linked passage on, they group into standalone cards
+    // (TaggerPane) — a split is one boundary, everything after it flows together.
+    const mine = allPassages.filter(p => p.text_id === currentText.id);
+    const inlinePassages = [...new Set(mine.map(p => p.anchor_syl_id))].flatMap(anchor =>
+      partitionAnchorPassages(
+        mine.filter(p => p.anchor_syl_id === anchor), nodeLinkedPassageIds).inline);
+    for (const p of inlinePassages) {
+      // A boundary passage claimed by THIS card: anchored at the next segment's first
+      // token with attach_prev → renders at the END of this card (same segment).
+      if (p.anchor_syl_id && nextSegmentAnchorSylId && p.anchor_syl_id === nextSegmentAnchorSylId && p.attach_prev) {
+        atEnd.push(p);
+        continue;
+      }
+      // attach_prev passages anchored at THIS card's first token belong to the PREVIOUS
+      // card's end — skip here (segment 0 has no previous: keep them inline at start).
+      if (p.anchor_syl_id && p.anchor_syl_id === firstRenderId && p.attach_prev && !isFirstSegment) continue;
       if (p.anchor_syl_id && tokenIds.has(p.anchor_syl_id)) {
         const arr = map.get(p.anchor_syl_id) ?? [];
         arr.push(p);
@@ -157,8 +215,75 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
         atEnd.push(p);
       }
     }
+    const order = (a: Passage, b: Passage) => a.position - b.position || a.id - b.id;
+    map.forEach(arr => arr.sort(order));
+    atEnd.sort(order);
     return { map, atEnd };
-  }, [allPassages, segment.tokens, segment.end, currentText.id, currentText.raw_text.length]);
+  }, [allPassages, segment.tokens, segment.end, currentText.id, currentText.raw_text.length, nextSegmentAnchorSylId, isFirstSegment, nodeLinkedPassageIds]);
+
+  // Split dispatch for selections INSIDE an inline passage run — passages split exactly
+  // like ordinary text. Interior point → divide the passage (backend /split); at the
+  // run's end → the boundary lands before whatever follows: a sibling passage gets
+  // promoted (own_segment), or host text follows and the marker/attach_prev machinery
+  // takes over.
+  const passageSplit = useMemo(() => {
+    if (!selection || selection.passageId == null || !currentText) return undefined;
+    const p = allPassages.find(x => x.id === selection.passageId);
+    if (!p) return undefined;
+    const runSyls = p.members.flatMap(m => m.syllables.map(s => s.syl_id));
+    const idx = runSyls.indexOf(selection.endSylId);
+    if (idx < 0) return undefined;
+    const interior = idx < runSyls.length - 1;
+    const siblings = allPassages
+      .filter(x => x.text_id === currentText.id && x.anchor_syl_id === p.anchor_syl_id)
+      .sort((a, b) => a.position - b.position || a.id - b.id);
+    const follower = siblings[siblings.findIndex(x => x.id === p.id) + 1];
+    const followerIsStarter =
+      follower != null && (follower.own_segment || nodeLinkedPassageIds.has(follower.id));
+    // Trailing = nothing of THIS segment's host text follows the passage (claimed
+    // boundary / end-of-text). Otherwise the anchor host token follows it mid-card.
+    const trailing = p.anchor_syl_id == null || p.anchor_syl_id === nextSegmentAnchorSylId;
+    const firstRenderId = segment.tokens.find(t => !t.inserted && t.text !== '')?.id;
+    const headOfSegment = p.anchor_syl_id != null && p.anchor_syl_id === firstRenderId;
+    const anchorTok = p.anchor_syl_id != null
+      ? segment.tokens.find(t => t.id === p.anchor_syl_id)
+      : undefined;
+
+    const canSplit = interior
+      ? true
+      : follower
+        ? !followerIsStarter  // boundary already there if the follower is a starter
+        : !trailing && anchorTok != null;  // host follows → marker/attach side
+
+    const onSplit = async () => {
+      if (interior) {
+        if (trailing) {
+          await splitPassageAt(p.id, {
+            after_syl_id: selection.endSylId, second_own_segment: true,
+          });
+        } else {
+          // Mid-segment: first half ends the earlier segment, second heads the later
+          // one; the boundary itself is a marker at the anchor token (already a
+          // segment boundary when the passage heads its card).
+          await splitPassageAt(p.id, {
+            after_syl_id: selection.endSylId,
+            first_attach_prev: true, second_attach_prev: false,
+          });
+          if (!headOfSegment && anchorTok) {
+            await createMarker(currentText.id, anchorTok.start_offset);
+          }
+        }
+      } else if (follower && !followerIsStarter) {
+        await editPassage(follower.id, { own_segment: true });
+      } else if (anchorTok) {
+        await editPassage(p.id, { attach_prev: true });
+        if (!headOfSegment) await createMarker(currentText.id, anchorTok.start_offset);
+      }
+    };
+
+    return { canSplit, onSplit };
+  }, [selection, allPassages, currentText, segment.tokens, nextSegmentAnchorSylId,
+      nodeLinkedPassageIds, splitPassageAt, editPassage, createMarker]);
 
   // Render the body as a flat sequence of corrected syllable tokens (Phase 3 E2).
   // Each token is a span carrying `data-syl-id` + raw offsets (`data-ro`/`data-reo`)
@@ -194,18 +319,60 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
       return out;
     }
 
+    // Passage runs render their SOURCE syllables as real tokens (data-syl-id = the
+    // shared source uuid, data-ro/reo = the source occurrence's offsets), so the
+    // source's tags display inside the run automatically, the run is selectable /
+    // taggable (tags are SHARED with the source by design), and per-occurrence notes
+    // (note.passage_id) underline only here. data-passage-id on every token lets the
+    // popover attach notes to this occurrence and lets armed placement insert a new
+    // passage right after this one.
+    const srcOffsets = new Map(editorTokensAll.map(t => [t.id, [t.start_offset, t.end_offset] as const]));
+    const passageSpans = allSpansFull.filter(a => a.tag.tag_kind === 'regular');
     const renderPassage = (p: Passage) => {
-      const text = p.members.flatMap(m => m.syllables.map(s => s.text)).join('');
+      const syls = p.members.flatMap(m => m.syllables);
       out.push(
         <span
           key={`passage-${p.id}`}
           data-passage-id={p.id}
           className="passage-run"
           style={p.color ? ({ ['--passage-fg' as any]: p.color }) : undefined}
-          contentEditable={false}
-          title="Linked passage — syllables drawn from elsewhere in this text"
+          title="Linked passage — the same text as its source (tags are shared; notes are per-occurrence)"
         >
-          {text}
+          {syls.map((s, si) => {
+            const off = srcOffsets.get(s.syl_id);
+            const ro = off ? off[0] : -1;
+            const reo = off ? off[1] : -1;
+            const sSpace = sylSpace.get(s.syl_id) ?? 'host';
+            const anns = ro >= 0
+              ? passageSpans.filter(a => a.start_offset <= ro && a.end_offset >= reo
+                  && spanSpace(a) === sSpace)
+              : [];
+            const note = ro >= 0
+              ? allNotesFull.find(n => n.passage_id === p.id && n.start_offset <= ro && n.end_offset >= reo)
+              : undefined;
+            const style: React.CSSProperties = { ...tagBgStyle(anns) };
+            if (anns.some(a => ['small', 'sapche'].includes(a.tag.name.trim().toLowerCase()))) {
+              style.fontSize = '0.75em';
+            }
+            if (note) style.borderBottom = '1.5px dashed #A28348';
+            const renderText =
+              verseVertical && s.nature === 'SPACE' && !s.text.includes('\n')
+                && anns.some(a => a.tag.name.trim().toLowerCase() === 'verse')
+                ? '\n'
+                : s.text;
+            return (
+              <span
+                key={`pt-${p.id}-${si}`}
+                data-syl-id={s.syl_id}
+                data-passage-id={p.id}
+                {...(ro >= 0 ? { 'data-ro': ro, 'data-reo': reo } : {})}
+                style={style}
+                title={note ? note.body : undefined}
+              >
+                {renderText}
+              </span>
+            );
+          })}
         </span>,
       );
     };
@@ -296,8 +463,12 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
         continue;
       }
       // A token (a syllable) is fully covered or not — annotation boundaries are on
-      // syllable edges. Inserted tokens are zero-width (start == end).
-      const anns = visibleAnnotations.filter(x => x.start_offset <= t.start_offset && x.end_offset >= t.end_offset);
+      // syllable edges. Inserted tokens are zero-width (start == end). The span must
+      // also share the token's annotation space (see `sylSpace`).
+      const tSpace = t.source === 'transclusion' && t.src_text_id != null ? t.src_text_id : 'host';
+      const anns = visibleAnnotations.filter(x =>
+        x.start_offset <= t.start_offset && x.end_offset >= t.end_offset
+        && (sessionMode || spanSpace(x as any) === tSpace));
       const note = segment.notes.find(x => x.start_offset <= t.start_offset && x.end_offset >= t.end_offset);
       const searchHit = searchMatchesInSegment.find(m => m.start <= t.start_offset && m.end >= t.end_offset);
       const isCurrentSearchHit = !!searchHit && currentSearchMatch
@@ -335,17 +506,25 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
               ? `${PROVENANCE_TITLE[prov]} (was: "${t.original.replace(/\n/g, ' ')}")`
               : PROVENANCE_TITLE[prov])
           : undefined;
-      const onAnnClick = anns.length > 0 && !consultMode
+      // Inherited spans (a transclusion source's tags) are read-only here: hover shows
+      // them, but the edit popover only offers the host's own spans.
+      const editableAnns = anns.filter(a => !a.inherited);
+      const onAnnClick = editableAnns.length > 0 && !consultMode
         ? (e: React.MouseEvent<HTMLSpanElement>) => {
+            // While "place a passage" is armed, the click's job is PLACEMENT: let it
+            // bubble to the pane's delegated hairline handler instead of opening the
+            // tag editor (which used to swallow every click on tagged syllables — the
+            // reason placement could never be completed on a tagged text).
+            if (pendingPassageSource) return;
             e.stopPropagation();
             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
             setEditError(null);
-            if (anns.length === 1) {
+            if (editableAnns.length === 1) {
               setAnnPicker(null);
-              setEditTarget({ span: anns[0], anchor: rect });
+              setEditTarget({ span: editableAnns[0], anchor: rect });
             } else {
               setEditTarget(null);
-              setAnnPicker({ anns, anchor: rect });
+              setAnnPicker({ anns: editableAnns, anchor: rect });
             }
           }
         : undefined;
@@ -358,7 +537,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
       const onAnnMouseLeave = anns.length > 0
         ? () => setHoverPopover(null)
         : undefined;
-      if (anns.length > 0 && !consultMode) classes.push('cursor-pointer');
+      if (editableAnns.length > 0 && !consultMode) classes.push('cursor-pointer');
       // Verse vertical mode: a SPACE token inside a "verse"-tagged span renders as a
       // line break (the body is whitespace-pre-wrap), laying the verse out vertically.
       const renderText =
@@ -387,12 +566,15 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
     passagesByAnchor.atEnd.forEach(renderPassage);
     renderHairlinesAt(segment.end);
     return out;
-  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical]);
+  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
 
   const handleMouseUp = () => {
     // In session mode, the pane-level handler in TaggerPane takes over so it
     // can capture cross-card selections. Skip the per-card handler entirely.
     if (sessionMode) return;
+    // While "place a passage" is armed, clicks are placement gestures — don't let a
+    // slightly-draggy click reopen the selection popover mid-placement.
+    if (pendingPassageSource) return;
     setTimeout(() => {
       if (!textRef.current) return;
       // Token-based selection: absolute raw offsets already snapped to whole
@@ -402,13 +584,13 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
         setSelection(null);
         return;
       }
-      const { start, end, startSylId, endSylId, rect } = result;
+      const { start, end, startSylId, endSylId, rect, passageId } = result;
       // Priority 1: a tree node is being renamed RIGHT NOW — append the
       // selection to its rename input.
       if (editingAppend) {
         const text = currentText.raw_text.substring(start, end);
         if (text) editingAppend(text);
-        setSelection({ start, end, startSylId, endSylId, rect });
+        setSelection({ start, end, startSylId, endSylId, rect, passageId });
         return;
       }
       // Priority 2: auto-fill an "active" tree node's title with the selected
@@ -432,7 +614,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
           }
         }
       }
-      setSelection({ start, end, startSylId, endSylId, rect });
+      setSelection({ start, end, startSylId, endSylId, rect, passageId });
     }, 0);
   };
 
@@ -441,30 +623,8 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
     window.getSelection()?.removeAllRanges();
   };
 
-  // When "place a passage" is armed, a click on a syllable that is downstream of the
-  // source selection links the passage there. The anchor is addressed by syllable uuid;
-  // `data-ro` (start offset) is only a frontend aid to enforce "downstream".
-  const handlePlacePassageClick = (e: React.MouseEvent) => {
-    if (!pendingPassageSource) return;
-    const el = (e.target as HTMLElement).closest('[data-syl-id]') as HTMLElement | null;
-    if (!el) return;
-    const anchorSylId = el.dataset.sylId!;
-    const anchorStart = Number(el.dataset.ro ?? NaN);
-    // Only real host syllables carry data-ro; ignore clicks on inline passage runs etc.
-    if (Number.isNaN(anchorStart)) return;
-    if (anchorStart < pendingPassageSource.endOffset) {
-      // Upstream of the source — passages are always placed downstream. Ignore the click.
-      return;
-    }
-    addPassage(currentText.id, {
-      anchor_syl_id: anchorSylId,
-      members: [{
-        src_start_syl_id: pendingPassageSource.startSylId,
-        src_end_syl_id: pendingPassageSource.endSylId,
-      }],
-    }).catch(() => { /* surfaced by the store */ });
-    setPendingPassageSource(null);
-  };
+  // (Passage placement moved to TaggerPane: a snapping hairline + one delegated click
+  // handler cover host tokens, passage runs, and standalone PassageCards uniformly.)
 
   // Default title when promoting a segment that's been unnamed — use the first
   // ~30 chars of segment text, trimmed, so the new node has a readable label.
@@ -501,11 +661,11 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
   };
 
   // Candidate tree nodes for linking: free-form ones not already pointing at
-  // a segment. Sort by title for predictable picker UX.
+  // a segment or a passage. Sort by title for predictable picker UX.
   const linkCandidates = useMemo(
     () =>
       nodes
-        .filter(n => n.segment_start === null)
+        .filter(n => n.segment_start === null && n.passage_id == null)
         .sort((a, b) => (a.title || '').localeCompare(b.title || '')),
     [nodes],
   );
@@ -638,7 +798,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
       </div>
 
       {/* Body */}
-      <div className="p-3" onMouseUp={handleMouseUp} onClick={handlePlacePassageClick}>
+      <div className="p-3" onMouseUp={handleMouseUp}>
         {/* The textRef container wraps ONLY the text content (no UI) so selection offsets match. */}
         <div
           ref={textRef}
@@ -661,6 +821,8 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
         <SegmentTagPopover
           segment={segment}
           selection={selection}
+          trailingPassages={passagesByAnchor.atEnd}
+          passageSplit={passageSplit}
           onClose={clearSelection}
         />
       )}
@@ -754,7 +916,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
                     </div>
                     <ul className="flex flex-col gap-0.5 max-h-48 overflow-y-auto">
                       {annPicker.anns.map(a => (
-                        <li key={a.id}>
+                        <li key={`${a.id}-${a.start_offset}`}>
                           <button
                             onClick={() => {
                               setEditError(null);

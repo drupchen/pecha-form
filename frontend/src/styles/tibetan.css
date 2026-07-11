@@ -40,8 +40,10 @@
  */
 .passage-run {
   color: var(--passage-fg, #1E7A6B); /* jade/teal — distinct from ink + tag backgrounds */
-  user-select: none;
-  cursor: default;
+  /* Selectable since the per-syllable token rework: selecting inside a run enables
+     tagging (shared with the source) and per-occurrence notes. */
+  user-select: text;
+  cursor: text;
 }
 
 /* Cross-pane link click feedback — applied transiently when scrolling a partner element into view */

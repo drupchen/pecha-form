@@ -279,6 +279,7 @@ def update_tree_node(node_id: int, payload: TreeNodeUpdate):
     # syllables table (existence check, no units_json).
     from_syl = "segment_start_syl_id" in provided and payload.segment_start_syl_id is not None
     new_seg_syl_id = existing["segment_start_syl_id"]
+    new_passage_id = existing["passage_id"]
     if from_syl:
         try:
             offset_for_syl_start(conn, existing["text_id"], payload.segment_start_syl_id)
@@ -286,6 +287,7 @@ def update_tree_node(node_id: int, payload: TreeNodeUpdate):
             conn.close()
             raise HTTPException(400, str(e))
         new_seg_syl_id = payload.segment_start_syl_id
+        new_passage_id = None  # a node links a segment OR a passage, not both
     elif "segment_start" in provided:
         new_segment_start = payload.segment_start  # may be None to unlink
         if new_segment_start is not None:
@@ -298,17 +300,37 @@ def update_tree_node(node_id: int, payload: TreeNodeUpdate):
             if new_seg_syl_id is None:
                 conn.close()
                 raise HTTPException(400, "segment_start must fall on a syllable boundary")
+            new_passage_id = None
         else:
-            new_seg_syl_id = None  # explicit unlink
+            new_seg_syl_id = None  # explicit unlink (also releases a passage link)
+            new_passage_id = None
 
-    # CHECK constraint: at least one of title / segment_start_syl_id must be non-null.
+    # passage link: the sapche section IS that passage occurrence. Mutually exclusive
+    # with the segment link — setting one clears the other.
+    if "passage_id" in provided:
+        if payload.passage_id is not None:
+            ok = conn.execute(
+                "SELECT 1 FROM passages WHERE id = ? AND text_id = ?",
+                (payload.passage_id, existing["text_id"]),
+            ).fetchone()
+            if not ok:
+                conn.close()
+                raise HTTPException(404, "Passage not found in this text")
+            new_passage_id = payload.passage_id
+            new_seg_syl_id = None
+        else:
+            new_passage_id = None
+
+    # CHECK constraint: at least one of title / segment_start_syl_id must be non-null
+    # (a passage-linked node therefore needs a title — it has no host segment).
     if new_title is None and new_seg_syl_id is None:
         conn.close()
         raise HTTPException(400, "Cannot clear title on a free-form node")
     cursor.execute(
         "UPDATE tree_nodes SET title = ?, transparent = ?, "
-        "segment_start_syl_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (new_title, new_transparent, new_seg_syl_id, node_id),
+        "segment_start_syl_id = ?, passage_id = ?, updated_at = CURRENT_TIMESTAMP "
+        "WHERE id = ?",
+        (new_title, new_transparent, new_seg_syl_id, new_passage_id, node_id),
     )
     conn.commit()
     cursor.execute("SELECT * FROM tree_nodes WHERE id = ?", (node_id,))

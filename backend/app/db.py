@@ -367,6 +367,13 @@ _COLUMN_MIGRATIONS = {
         ("open_syl_id", "TEXT"),
         ("close_syl_id", "TEXT"),
     ],
+    # attach_prev: attachment side for a passage anchored at a segment boundary.
+    # 1 = render at the END of the previous segment's card ("stays on the same
+    # segment"); 0 = head the anchor's segment.
+    # own_segment: the marker-free "manual split" — render as a standalone card
+    # (its own segment) instead of inline. Node-linked passages are standalone too.
+    "passages": [("attach_prev", "INTEGER NOT NULL DEFAULT 0"),
+                 ("own_segment", "INTEGER NOT NULL DEFAULT 0")],
     "text_portions": [
         ("color", "TEXT"),
         # Base "listen to this passage" audio timing, set by main-text SRT
@@ -398,9 +405,14 @@ _COLUMN_MIGRATIONS = {
                     ("extracted_text_id", "INTEGER"),
                     ("status", "TEXT NOT NULL DEFAULT 'applied'"),
                     ("origin_text_id", "INTEGER")],
-    "notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
+    # passage_id: a note ON a passage occurrence (renders only inside that passage run,
+    # never at the source occurrence of the shared syllables). NULL = a normal note on
+    # the host text. Plain INTEGER (ALTER can't add an FK); dangling id = never renders.
+    "notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT"), ("passage_id", "INTEGER")],
     "markers": [("syl_id", "TEXT")],
-    "tree_nodes": [("segment_start_syl_id", "TEXT")],
+    # passage_id: the sapche section IS that passage occurrence (a zero-host-width
+    # "segment" between two boundaries). Mutually exclusive with segment_start_syl_id.
+    "tree_nodes": [("segment_start_syl_id", "TEXT"), ("passage_id", "INTEGER")],
     "transcript_spans": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_suggestions": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],

@@ -30,6 +30,10 @@ interface UIState {
    *  reject upstream anchors. Cleared on placement or Esc. */
   pendingPassageSource: { startSylId: string; endSylId: string; endOffset: number } | null;
   setPendingPassageSource: (v: { startSylId: string; endSylId: string; endOffset: number } | null) => void;
+  /** Feedback line shown in the "place a passage" banner (e.g. "pick a syllable AFTER
+   *  the selection", or a backend rejection). Cleared when (dis)arming placement. */
+  passageNotice: string | null;
+  setPassageNotice: (v: string | null) => void;
   /** Tagger-pane search query. Empty string disables search. */
   searchQuery: string;
   setSearchQuery: (q: string) => void;
@@ -89,7 +93,10 @@ export const useUIStore = create<UIState>((set) => ({
   editMode: 'edit',
   setEditMode: (m) => set({ editMode: m }),
   pendingPassageSource: null,
-  setPendingPassageSource: (v) => set({ pendingPassageSource: v }),
+  // (Dis)arming placement always resets the notice so stale feedback never lingers.
+  setPendingPassageSource: (v) => set({ pendingPassageSource: v, passageNotice: null }),
+  passageNotice: null,
+  setPassageNotice: (v) => set({ passageNotice: v }),
   searchQuery: '',
   setSearchQuery: (q) => set({ searchQuery: q, searchMatchIndex: 0 }),
   searchMatchIndex: 0,

@@ -7,10 +7,12 @@ import { useUIStore } from '../../store/useUIStore';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
 import { useNoteStore } from '../../store/useNoteStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
+import { usePassageStore } from '../../store/usePassageStore';
 import { useEditorTokenStore } from '../../store/useEditorTokenStore';
-import { editRange, insertBreak, suggestUpstream } from '../../api/client';
+import type { Passage } from '../../api/client';
+import { editRange, insertBreak, suggestUpstream, transclude } from '../../api/client';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, CornerDownLeft } from 'lucide-react';
+import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, CornerDownLeft, BookPlus, FileText } from 'lucide-react';
 
 const COLORS = [
   '#ef4444', '#f97316', '#f59e0b', '#84cc16',
@@ -20,19 +22,32 @@ const COLORS = [
 
 interface Props {
   segment: Segment;
-  selection: { start: number; end: number; startSylId: string; endSylId: string; rect: DOMRect };
+  selection: {
+    start: number; end: number; startSylId: string; endSylId: string; rect: DOMRect;
+    /** Set when the selection lies inside a passage run — notes attach to that
+     *  occurrence only; tags stay shared with the source. */
+    passageId?: number;
+  };
+  /** Inline passages rendered at the END of this card. When the selection reaches
+   *  segment.end, "Split here" starts a new segment at the boundary: the FIRST
+   *  trailing passage becomes a starter and the rest flow into its segment. */
+  trailingPassages?: Passage[];
+  /** Split dispatch for selections INSIDE a passage run, supplied by the host card
+   *  (which knows the anchor context) — passages split exactly like ordinary text. */
+  passageSplit?: { canSplit: boolean; onSplit: () => Promise<void> };
   onClose: () => void;
 }
 
-type Mode = 'tag' | 'suggest' | 'note';
+type Mode = 'tag' | 'suggest' | 'note' | 'insert-text';
 
-export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose }) => {
-  const { currentText, extractSelection, loadText } = useTextStore();
+export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailingPassages = [], passageSplit, onClose }) => {
+  const { currentText, extractSelection, loadText, texts } = useTextStore();
   const tagStore = useTagStore();
   const { createTag, createSpan } = tagStore;
   const { createSuggestion } = useSuggestionStore();
   const { categories: noteCategories, createCategory, createNote } = useNoteStore();
   const createMarker = useMarkerStore(s => s.createMarker);
+  const editPassage = usePassageStore(s => s.editPassage);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
@@ -148,6 +163,22 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
     }
   };
 
+  // Transclude a whole other text AFTER the selection: a range LINK (no copy), so
+  // corrections baked into the source ripple in. Undone from the Edits panel.
+  const handleTransclude = async (srcTextId: number) => {
+    setError(null);
+    try {
+      const { anchorId, anchorOpId } = anchorAfterSelection();
+      await transclude(currentText.id, {
+        anchor_syl_id: anchorId, src_text_id: srcTextId, anchor_op_id: anchorOpId,
+      });
+      await loadText(currentText.id);
+      onClose();
+    } catch (e: any) {
+      setError(e.message || 'Could not insert the text');
+    }
+  };
+
   // The explicit, sporadic upstream path: route this correction to the text where the
   // selected syllables first appear (their owner), as a pending suggestion reviewed
   // there. Confirmation popup guards against accidental upstream submissions.
@@ -213,6 +244,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
         selection.end,
         noteBody,
         selectedSessionIds,
+        selection.passageId ?? null,  // per-occurrence: only inside this passage run
       );
       onClose();
     } catch (err: any) {
@@ -228,6 +260,28 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
 
   const handleSplit = async () => {
     setError(null);
+    if (selection.passageId != null) {
+      // Selection inside a passage run: the host card supplied the dispatch (it knows
+      // the anchor context) — passages split exactly like ordinary text.
+      if (!passageSplit?.canSplit) return;
+      try {
+        await passageSplit.onSplit();
+      } catch (e: any) {
+        setError(e.message || 'Could not split here');
+        return;
+      }
+      onClose();
+      return;
+    }
+    if (selection.end >= segment.end && trailingPassages.length > 0) {
+      // Boundary case: the selection reaches the end of the host text and inline
+      // passages trail it. A split is ONE boundary: the first trailing passage starts
+      // the new segment and the rest flow into it (a marker here would be meaningless
+      // — the boundary already exists; passages have zero host width).
+      await editPassage(trailingPassages[0].id, { own_segment: true });
+      onClose();
+      return;
+    }
     // Marker goes at selection.end — already snapped to a unit boundary by
     // SegmentCard. New "before" segment will be [segment.start, selection.end].
     const marker = await createMarker(currentText.id, selection.end);
@@ -264,15 +318,24 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
     onClose();
   };
 
+  // The composed token AFTER the selection — the anchor for insert-type ops. The
+  // OCCURRENCE matters: the same source transcluded twice repeats the same uuids, so
+  // match by offset first (falling back to id-only) and carry the emitting op's id.
+  const anchorAfterSelection = () => {
+    const tokens = useEditorTokenStore.getState().tokens;
+    let i = tokens.findIndex(t => t.id === selection.endSylId && t.end_offset === selection.end);
+    if (i < 0) i = tokens.findIndex(t => t.id === selection.endSylId);
+    const anchor = i >= 0 && i + 1 < tokens.length ? tokens[i + 1] : null;
+    return { anchorId: anchor?.id ?? null, anchorOpId: anchor?.op_id };
+  };
+
   // Manual line break AFTER the selection: a hosted "\n" op inserted before the next
   // composed token (or at the end of the text). Secondary-only formatting.
   const handleInsertBreak = async () => {
     setError(null);
     try {
-      const tokens = useEditorTokenStore.getState().tokens;
-      const i = tokens.findIndex(t => t.id === selection.endSylId);
-      const before = i >= 0 && i + 1 < tokens.length ? tokens[i + 1].id : null;
-      await insertBreak(currentText.id, before);
+      const { anchorId, anchorOpId } = anchorAfterSelection();
+      await insertBreak(currentText.id, anchorId, anchorOpId);
       await loadText(currentText.id);
       onClose();
     } catch (e: any) {
@@ -306,10 +369,16 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
   };
 
   // Splitting is allowed any time the user picks an internal offset (segments
-  // no longer have a tagged/untagged distinction).
-  const canSplit =
-    selection.end > segment.start &&
-    selection.end < segment.end;
+  // no longer have a tagged/untagged distinction). Selections inside a PASSAGE run
+  // can't split: their offsets point at the SOURCE occurrence, so a marker would land
+  // at the source location, not here.
+  const canSplit = selection.passageId != null
+    ? (passageSplit?.canSplit ?? false)
+    : selection.end > segment.start &&
+      (selection.end < segment.end ||
+        // Boundary case: selection ends AT segment.end with inline passages trailing —
+        // Split starts a new segment with them (see handleSplit).
+        (selection.end === segment.end && trailingPassages.length > 0));
 
   // Position the popover near the selection rect, clipped to viewport.
   const PW = 320;
@@ -396,31 +465,44 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
               </button>
             )}
             {!sessionMode && !consultMode && currentText.text_type === 'secondary' && (
-              <button
-                onClick={handleInsertBreak}
-                className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-indigo-100 hover:text-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-300"
-                title="Insert a line break after the selection (undo from the Edits panel)"
-              >
-                <CornerDownLeft size={12} /> Line break
-              </button>
-            )}
-            {!sessionMode && !consultMode && currentText.text_type === 'primary' && (
               <>
                 <button
-                  onClick={handleExtract}
-                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-teal-100 hover:text-teal-700 dark:hover:bg-teal-900/40 dark:hover:text-teal-300"
-                  title="Extract this selection into a new primary text (and reversibly remove it here)"
+                  onClick={handleInsertBreak}
+                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-indigo-100 hover:text-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-300"
+                  title="Insert a line break after the selection (undo from the Edits panel)"
                 >
-                  <FileOutput size={12} /> Extract as text
+                  <CornerDownLeft size={12} /> Line break
                 </button>
                 <button
-                  onClick={handleLinkPassage}
-                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-blue-100 hover:text-blue-700 dark:hover:bg-blue-900/40 dark:hover:text-blue-300"
-                  title="Link this selection as a passage — then click a syllable downstream to place it"
+                  onClick={() => { setError(null); setMode('insert-text'); }}
+                  className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${
+                    mode === 'insert-text'
+                      ? 'bg-lapis/10 text-lapis'
+                      : 'text-slate-500 hover:bg-blue-100 hover:text-blue-700 dark:hover:bg-blue-900/40 dark:hover:text-blue-300'
+                  }`}
+                  title="Insert another text after the selection as a live link — corrections made there ripple in (undo from the Edits panel)"
                 >
-                  <Link2 size={12} /> Link as passage…
+                  <BookPlus size={12} /> Insert text…
                 </button>
               </>
+            )}
+            {!sessionMode && !consultMode && currentText.text_type === 'primary' && (
+              <button
+                onClick={handleExtract}
+                className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-teal-100 hover:text-teal-700 dark:hover:bg-teal-900/40 dark:hover:text-teal-300"
+                title="Extract this selection into a new primary text (and reversibly remove it here)"
+              >
+                <FileOutput size={12} /> Extract as text
+              </button>
+            )}
+            {!sessionMode && !consultMode && (
+              <button
+                onClick={handleLinkPassage}
+                className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-blue-100 hover:text-blue-700 dark:hover:bg-blue-900/40 dark:hover:text-blue-300"
+                title="Link this selection as a passage — then click the downstream syllable AFTER which it should appear"
+              >
+                <Link2 size={12} /> Link as passage…
+              </button>
             )}
           </div>
           <button onClick={onClose} className="p-1 shrink-0 text-slate-400 hover:text-slate-700">
@@ -678,6 +760,45 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
               </button>
             </div>
           </form>
+        )}
+
+        {/* INSERT TEXT MODE (secondary only): pick another text to transclude AFTER the
+            selection — a live range LINK, so corrections in the source ripple in. */}
+        {mode === 'insert-text' && (
+          <div className="px-3 pb-3 flex flex-col gap-2">
+            <div className="text-[11px] text-ink-soft">
+              Insert a whole text after the selection (a live link — corrections made in
+              it ripple here; undo from the Edits panel):
+            </div>
+            {texts.filter(t => t.id !== currentText.id).length === 0 ? (
+              <p className="text-xs text-ink-soft italic">No other texts available.</p>
+            ) : (
+              <ul className="flex flex-col gap-0.5 max-h-56 overflow-y-auto rounded"
+                  style={{ border: '1px solid var(--cline)' }}>
+                {texts.filter(t => t.id !== currentText.id).map(t => (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      onClick={() => handleTransclude(t.id)}
+                      className="w-full text-left text-xs px-2 py-1.5 hover:bg-cream flex items-center gap-2 min-w-0"
+                      title={t.title}
+                    >
+                      <FileText size={12} className="text-bronze shrink-0" />
+                      <span className="tibetan-text-sm text-ink truncate min-w-0" style={{ fontSize: '13px' }}>
+                        {t.title}
+                      </span>
+                      <span className={
+                        'text-[9px] uppercase tracking-wide px-1 py-px rounded font-mono shrink-0 ml-auto ' +
+                        (t.text_type === 'secondary' ? 'bg-lapis/10 text-lapis' : 'bg-bronze/10 text-bronze')
+                      }>
+                        {t.text_type}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {/* Consult-mode escape hatch: copy the selected text and close. The

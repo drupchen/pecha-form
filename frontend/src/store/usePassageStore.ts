@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  getPassages, createPassage, updatePassage, deletePassage,
+  getPassages, createPassage, updatePassage, deletePassage, splitPassage,
   type Passage, type PassageMemberInput,
 } from '../api/client';
 
@@ -9,13 +9,22 @@ interface PassageState {
   fetchPassages: (textId: number) => Promise<void>;
   addPassage: (
     textId: number,
-    body: { anchor_syl_id: string | null; members: PassageMemberInput[]; color?: string | null },
-  ) => Promise<Passage | null>;
+    body: { anchor_syl_id: string | null; members: PassageMemberInput[]; color?: string | null; position?: number; attach_prev?: boolean },
+  ) => Promise<Passage>;
   editPassage: (
     passageId: number,
-    patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; members: PassageMemberInput[] }>,
+    patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; members: PassageMemberInput[] }>,
   ) => Promise<void>;
   removePassage: (passageId: number) => Promise<void>;
+  splitPassageAt: (
+    passageId: number,
+    body: {
+      after_syl_id: string;
+      second_own_segment?: boolean;
+      first_attach_prev?: boolean;
+      second_attach_prev?: boolean;
+    },
+  ) => Promise<void>;
 }
 
 export const usePassageStore = create<PassageState>((set, get) => ({
@@ -32,14 +41,11 @@ export const usePassageStore = create<PassageState>((set, get) => ({
   },
 
   addPassage: async (textId, body) => {
-    try {
-      const created = await createPassage(textId, body);
-      set(state => ({ passages: [...state.passages, created] }));
-      return created;
-    } catch (e: any) {
-      console.error('createPassage failed:', e.message);
-      return null;
-    }
+    // Rethrows on failure so the caller can surface the reason (e.g. the placement
+    // banner) instead of the click silently doing nothing.
+    const created = await createPassage(textId, body);
+    set(state => ({ passages: [...state.passages, created] }));
+    return created;
   },
 
   editPassage: async (passageId, patch) => {
@@ -49,6 +55,14 @@ export const usePassageStore = create<PassageState>((set, get) => ({
     } catch (e: any) {
       console.error('updatePassage failed:', e.message);
     }
+  },
+
+  splitPassageAt: async (passageId, body) => {
+    // Rethrows so the popover can surface the reason. The endpoint renumbers sibling
+    // positions server-side, so refresh the whole list rather than patching in place.
+    const textId = get().passages.find(p => p.id === passageId)?.text_id;
+    await splitPassage(passageId, body);
+    if (textId != null) await get().fetchPassages(textId);
   },
 
   removePassage: async (passageId) => {

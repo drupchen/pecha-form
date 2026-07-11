@@ -96,7 +96,7 @@ def delete_note_category(category_id: int):
 
 NOTE_SELECT = (
     "SELECT n.id, n.text_id, n.category_id, c.name AS category_name, "
-    "n.start_syl_id, n.end_syl_id, n.body, n.created_at, n.updated_at "
+    "n.start_syl_id, n.end_syl_id, n.passage_id, n.body, n.created_at, n.updated_at "
     "FROM notes n LEFT JOIN note_categories c ON n.category_id = c.id"
 )
 
@@ -213,10 +213,20 @@ def create_note(text_id: int, payload: NoteCreate):
     if start_syl_id is None or end_syl_id is None:
         conn.close()
         raise HTTPException(400, "Note offsets must align with syllable boundaries")
+    # A note with passage_id targets THAT passage occurrence only (the anchors are the
+    # shared source syllables; the passage id scopes where it renders).
+    if payload.passage_id is not None:
+        cursor.execute(
+            "SELECT 1 FROM passages WHERE id = ? AND text_id = ?",
+            (payload.passage_id, text_id),
+        )
+        if not cursor.fetchone():
+            conn.close()
+            raise HTTPException(404, "Passage not found in this text")
     cursor.execute(
-        "INSERT INTO notes (text_id, category_id, body, start_syl_id, end_syl_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (text_id, payload.category_id, payload.body, start_syl_id, end_syl_id),
+        "INSERT INTO notes (text_id, category_id, body, start_syl_id, end_syl_id, passage_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (text_id, payload.category_id, payload.body, start_syl_id, end_syl_id, payload.passage_id),
     )
     new_id = cursor.lastrowid
     _replace_note_sessions(cursor, new_id, payload.session_tag_ids)

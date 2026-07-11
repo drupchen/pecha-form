@@ -8,7 +8,7 @@ from ..syllable_anchors import anchor_for_range, offsets_for_syls, _syl_offset_m
 router = APIRouter(prefix="/api", tags=["spans"])
 
 
-def _serialize_span(d: dict, id2start: dict, id2end: dict):
+def _serialize_span(d: dict, id2start: dict, id2end: dict, inherited: bool = False):
     # Offsets are DERIVED from the syllable anchors (the stored offset columns were
     # dropped in Part 6, Phase 3) — a frontend render aid, not a stored anchor.
     # A span whose anchors no longer resolve (its content was baked away by
@@ -26,6 +26,7 @@ def _serialize_span(d: dict, id2start: dict, id2end: dict):
         "end_offset": end,
         "start_syl_id": d.get("start_syl_id"),
         "end_syl_id": d.get("end_syl_id"),
+        "inherited": inherited,
         "tag": {
             "id": d["tag_id"],
             "text_id": d["text_id"],
@@ -36,10 +37,67 @@ def _serialize_span(d: dict, id2start: dict, id2end: dict):
     }
 
 
+def _span_source_texts(cursor, text_id: int, _seen=None) -> list[int]:
+    """Every text whose spans can resolve on this text's composed stream: the parent
+    chain plus transclusion sources, recursively (a grandparent's transcluded source
+    flows through too). Cycle-guarded; self excluded; stable order."""
+    _seen = set() if _seen is None else _seen
+    if text_id in _seen:
+        return []
+    _seen.add(text_id)
+    out: list[int] = []
+    row = cursor.execute(
+        "SELECT parent_text_id FROM texts WHERE id = ?", (text_id,)).fetchone()
+    if row and row["parent_text_id"] and row["parent_text_id"] not in _seen:
+        out.append(row["parent_text_id"])
+        out.extend(_span_source_texts(cursor, row["parent_text_id"], _seen))
+    for r in cursor.execute(
+            "SELECT DISTINCT src_text_id FROM derivation_ops "
+            "WHERE text_id = ? AND op_kind = 'transclude' AND src_text_id IS NOT NULL "
+            "ORDER BY src_text_id", (text_id,)).fetchall():
+        src = r["src_text_id"]
+        if src not in _seen:
+            out.append(src)
+            out.extend(_span_source_texts(cursor, src, _seen))
+    return out
+
+
 @router.get("/texts/{text_id}/spans", response_model=List[SpanOut])
 def list_spans(text_id: int):
     conn = get_db()
     cursor = conn.cursor()
+
+    # Offset "spaces": a primary has one (its own syllables). A secondary has the HOST
+    # space (parent-link + hosted tokens) plus ONE SPACE PER TRANSCLUDE OP — the same
+    # source transcluded twice repeats the same uuids at two stream positions, so a
+    # span on that source must serialize once PER OCCURRENCE (a single last-wins map
+    # would paint only the last run). A span row is emitted for every space in which
+    # both its anchors resolve.
+    row = cursor.execute(
+        "SELECT text_type FROM texts WHERE id = ?", (text_id,)
+    ).fetchone()
+    is_secondary = bool(row and row["text_type"] == "secondary")
+    if is_secondary:
+        from ..derivation import compose_secondary
+        host_maps = ({}, {})
+        op_maps: dict = {}
+        for t in compose_secondary(conn, text_id):
+            maps = op_maps.setdefault(t["op_id"], ({}, {})) \
+                if t["source"] == "transclusion" else host_maps
+            maps[0][t["id"]] = t["start_offset"]
+            maps[1][t["id"]] = t["end_offset"]
+        spaces = [host_maps] + [op_maps[k] for k in sorted(op_maps)]
+    else:
+        spaces = [_syl_offset_maps(conn, text_id)]
+
+    def emit(d: dict, inherited: bool) -> list:
+        out = []
+        for id2start, id2end in spaces:
+            s = _serialize_span(d, id2start, id2end, inherited=inherited)
+            if s is not None:
+                out.append(s)
+        return out
+
     cursor.execute(
         """
         SELECT s.*, t.name as tag_name, t.color as tag_color, t.tag_kind as tag_kind
@@ -49,9 +107,32 @@ def list_spans(text_id: int):
         """,
         (text_id,),
     )
-    id2start, id2end = _syl_offset_maps(conn, text_id)
-    serialized = (_serialize_span(dict(r), id2start, id2end) for r in cursor.fetchall())
-    results = [s for s in serialized if s is not None]  # skip dangling anchors
+    results = [s for r in cursor.fetchall() for s in emit(dict(r), False)]
+
+    # Derived/transcluded content INHERITS its origins' tags LIVE: union in the spans
+    # of every text in this text's compose graph — the parent chain (parent-link tokens
+    # keep parent uuids) and all transclusion sources, recursively — keeping those
+    # whose anchors resolve in THIS text's composed anchor space(s). Serialized with
+    # host offsets per occurrence and marked read-only `inherited`; a tag edit at the
+    # source is mirrored here on the next read, no copies.
+    if is_secondary:
+        src_ids = _span_source_texts(cursor, text_id)
+        seen = {(s["tag_id"], s["start_syl_id"], s["end_syl_id"]) for s in results}
+        for src in src_ids:
+            cursor.execute(
+                """
+                SELECT s.*, t.name as tag_name, t.color as tag_color, t.tag_kind as tag_kind
+                FROM spans s JOIN tags t ON s.tag_id = t.id
+                WHERE s.text_id = ?
+                """,
+                (src,),
+            )
+            for r in cursor.fetchall():
+                d = dict(r)
+                if (d["tag_id"], d["start_syl_id"], d["end_syl_id"]) in seen:
+                    continue  # host already carries an identical span
+                results.extend(emit(d, True))
+
     conn.close()
     # Order by derived start offset (was ORDER BY s.start_offset).
     results.sort(key=lambda s: s["start_offset"])

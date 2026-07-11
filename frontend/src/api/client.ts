@@ -49,6 +49,9 @@ export interface EditorToken {
   source?: 'parent-link' | 'transclusion' | 'override' | 'added';
   parent_syl_id?: string;  // override provenance: the parent syllable replaced
   src_text_id?: number;    // transclusion provenance: the source text
+  /** The derivation op that emitted this token — disambiguates OCCURRENCES when the
+   *  same source is transcluded several times (same uuids repeat in the stream). */
+  op_id?: number;
 }
 
 export async function getEditorTokens(id: number): Promise<EditorToken[]> {
@@ -244,6 +247,11 @@ export interface Passage {
   anchor_syl_id: string | null;
   position: number;
   color: string | null;
+  /** Attachment side at a segment boundary: true = render at the END of the previous
+   *  segment ("stays on the same segment"); false = head the anchor's segment. */
+  attach_prev: boolean;
+  /** The marker-free "manual split": render as a standalone card (its own segment). */
+  own_segment: boolean;
   members: PassageMember[];
 }
 
@@ -255,7 +263,7 @@ export async function getPassages(textId: number): Promise<Passage[]> {
 
 export async function createPassage(
   textId: number,
-  body: { anchor_syl_id: string | null; members: PassageMemberInput[]; color?: string | null },
+  body: { anchor_syl_id: string | null; members: PassageMemberInput[]; color?: string | null; position?: number; attach_prev?: boolean },
 ): Promise<Passage> {
   const res = await fetch(`${API_BASE}/texts/${textId}/passages`, {
     method: 'POST',
@@ -268,7 +276,7 @@ export async function createPassage(
 
 export async function updatePassage(
   passageId: number,
-  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; members: PassageMemberInput[] }>,
+  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; members: PassageMemberInput[] }>,
 ): Promise<Passage> {
   const res = await fetch(`${API_BASE}/passages/${passageId}`, {
     method: 'PATCH',
@@ -281,6 +289,26 @@ export async function updatePassage(
 
 export async function deletePassage(passageId: number) {
   const res = await fetch(`${API_BASE}/passages/${passageId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+/** Divide a passage in two after a syllable strictly inside its run — "split inside a
+ *  passage". Returns both halves; per-occurrence notes in the second half move with it. */
+export async function splitPassage(
+  passageId: number,
+  body: {
+    after_syl_id: string;
+    second_own_segment?: boolean;
+    first_attach_prev?: boolean;
+    second_attach_prev?: boolean;
+  },
+): Promise<{ first: Passage; second: Passage }> {
+  const res = await fetch(`${API_BASE}/passages/${passageId}/split`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -318,9 +346,10 @@ export async function editRange(
 }
 
 // Splice a range from another text into a secondary text (links, not copies).
+// Omit the src range to transclude the source's WHOLE text.
 export async function transclude(
   textId: number,
-  body: { anchor_syl_id: string | null; src_text_id: number; src_start_syl_id: string; src_end_syl_id: string },
+  body: { anchor_syl_id: string | null; src_text_id: number; src_start_syl_id?: string; src_end_syl_id?: string; anchor_op_id?: number },
 ): Promise<ComposedResult> {
   const res = await fetch(`${API_BASE}/texts/${textId}/transclude`, {
     method: 'POST',
@@ -355,11 +384,13 @@ export async function listDerivationOps(textId: number): Promise<DerivationOp[]>
 
 // Insert a manual line break (a hosted "\n" token) before a composed token of a
 // secondary text (before_syl_id null = at the end). Undone by deleting its op.
-export async function insertBreak(textId: number, beforeSylId: string | null): Promise<ComposedResult> {
+export async function insertBreak(
+  textId: number, beforeSylId: string | null, anchorOpId?: number,
+): Promise<ComposedResult> {
   const res = await fetch(`${API_BASE}/texts/${textId}/insert-break`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ before_syl_id: beforeSylId }),
+    body: JSON.stringify({ before_syl_id: beforeSylId, anchor_op_id: anchorOpId ?? null }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();

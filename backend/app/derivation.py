@@ -107,11 +107,14 @@ def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
             out.append({
                 "id": s["id"], "text": s["text"], "nature": s["nature"],
                 "source": source, "parent_syl_id": parent_syl_id, "original": original,
+                "op_id": op["id"],
             })
 
     def emit_transclude(op) -> None:
         # Source ranges resolve through the source's COMPOSED sequence (base_tokens),
         # so transcluding from a secondary works and upstream corrections ripple in.
+        # `op_id` disambiguates OCCURRENCES: the same source transcluded twice shows
+        # the same syllable uuids twice — only the emitting op tells them apart.
         src_syls = base_tokens(conn, op["src_text_id"], _visited)
         by = {s["id"]: s for s in src_syls}
         for sid in syllable_ids_between(src_syls, op["src_start_syl_id"], op["src_end_syl_id"]):
@@ -119,6 +122,7 @@ def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
             out.append({
                 "id": s["id"], "text": s["text"], "nature": s["nature"],
                 "source": "transclusion", "src_text_id": op["src_text_id"],
+                "op_id": op["id"],
             })
 
     def emit_spliced(op) -> None:
@@ -209,8 +213,109 @@ def _resolve_to_base_anchor(conn, text_id: int, syl_id: str, base_pos: dict):
         (text_id, syl_id),
     ).fetchone()
     if row is None:
+        # A transcluded token is a LINK to another text — the edit belongs there.
+        op, _ = _owning_transclude_op(conn, text_id, syl_id)
+        if op is not None:
+            raise HTTPException(
+                400, "This content is transcluded — edit it in its source text "
+                     "(or via Suggest upstream)")
         raise HTTPException(400, "Edited range endpoints must be tokens of this text, in order")
     return row["anchor_syl_id"]  # may be None (end-anchored insert)
+
+
+def _owning_transclude_op(conn, text_id: int, syl_id: str):
+    """The text's transclude op whose resolved source range contains ``syl_id``, or
+    None. If the same source is transcluded twice the id is ambiguous (both runs show
+    the same physical syllables) — the lowest-position op wins, a documented
+    limitation."""
+    ops = conn.execute(
+        "SELECT * FROM derivation_ops WHERE text_id = ? AND op_kind = 'transclude' "
+        "ORDER BY position, id", (text_id,),
+    ).fetchall()
+    src_cache: dict = {}
+    for op in ops:
+        src = op["src_text_id"]
+        if src not in src_cache:
+            src_cache[src] = base_tokens(conn, src)
+        ids = syllable_ids_between(src_cache[src], op["src_start_syl_id"], op["src_end_syl_id"])
+        if syl_id in ids:
+            return op, ids
+    return None, []
+
+
+def _resolve_insertion_anchor(conn, text_id: int, syl_id: str, base_pos: dict,
+                              anchor_op_id=None):
+    """Resolve where an INSERT-type op (transclude / line break) placed "before this
+    composed token" goes: ``(anchor_syl_id, before_op_id)``.
+
+    Base token → itself (append last among the anchor's ops = renders immediately
+    before the base token). Hosted token → its op's base anchor. TRANSCLUDED token of
+    op O → O's base anchor, ordered BEFORE O when the token starts O's run (the
+    "insert between two runs" gesture), otherwise right AFTER O (before the next op
+    at the same anchor, if any). ``anchor_op_id`` names the OCCURRENCE when the same
+    source is transcluded several times (same uuids in the stream — only the emitting
+    op disambiguates). Unlike ``_resolve_to_base_anchor`` this never turns an
+    insertion into an edit of base content."""
+    if syl_id in base_pos:
+        return syl_id, None
+    row = conn.execute(
+        "SELECT o.anchor_syl_id FROM derivation_op_syllables s "
+        "JOIN derivation_ops o ON o.id = s.op_id "
+        "WHERE o.text_id = ? AND s.syl_id = ?",
+        (text_id, syl_id),
+    ).fetchone()
+    if row is not None:
+        return row["anchor_syl_id"], None
+    op = ids = None
+    if anchor_op_id is not None:
+        cand = conn.execute(
+            "SELECT * FROM derivation_ops WHERE id = ? AND text_id = ? "
+            "AND op_kind = 'transclude'", (anchor_op_id, text_id)).fetchone()
+        if cand is not None:
+            cand_ids = syllable_ids_between(
+                base_tokens(conn, cand["src_text_id"]),
+                cand["src_start_syl_id"], cand["src_end_syl_id"])
+            if syl_id in cand_ids:
+                op, ids = cand, cand_ids
+    if op is None:
+        op, ids = _owning_transclude_op(conn, text_id, syl_id)
+    if op is None:
+        raise HTTPException(400, "Insertion anchor must be a token of this text")
+    if ids and syl_id == ids[0]:
+        return op["anchor_syl_id"], op["id"]  # before run O
+    # After run O: before the next op at the same anchor, if any.
+    if op["anchor_syl_id"] is None:
+        nxt = conn.execute(
+            "SELECT id FROM derivation_ops WHERE text_id = ? AND anchor_syl_id IS NULL "
+            "AND (position > ? OR (position = ? AND id > ?)) ORDER BY position, id LIMIT 1",
+            (text_id, op["position"], op["position"], op["id"])).fetchone()
+    else:
+        nxt = conn.execute(
+            "SELECT id FROM derivation_ops WHERE text_id = ? AND anchor_syl_id = ? "
+            "AND (position > ? OR (position = ? AND id > ?)) ORDER BY position, id LIMIT 1",
+            (text_id, op["anchor_syl_id"], op["position"], op["position"], op["id"])).fetchone()
+    return op["anchor_syl_id"], (nxt["id"] if nxt else None)
+
+
+def _position_before(conn, text_id: int, before_op_id) -> int:
+    """The position for a new op ordered just BEFORE ``before_op_id``. Renumbers the
+    text's ops deterministically along their current (position, id) order, leaving a
+    gap at the insertion point (positions may hold duplicates — a naive ">= shift"
+    would also displace same-position ops that sort earlier by id).
+    None = append at the end (``_next_position``)."""
+    if before_op_id is None:
+        return _next_position(conn, text_id)
+    ops = conn.execute(
+        "SELECT id FROM derivation_ops WHERE text_id = ? ORDER BY position, id",
+        (text_id,)).fetchall()
+    ids = [r["id"] for r in ops]
+    if before_op_id not in ids:
+        return _next_position(conn, text_id)
+    at = ids.index(before_op_id)
+    for i, oid in enumerate(ids):
+        conn.execute("UPDATE derivation_ops SET position = ? WHERE id = ?",
+                     (i if i < at else i + 1, oid))
+    return at
 
 
 def edit_range(conn, text_id: int, start_syl_id: str, end_syl_id: str, new_text: str) -> None:
@@ -313,7 +418,7 @@ def edit_range(conn, text_id: int, start_syl_id: str, end_syl_id: str, new_text:
     flush_inserts(after_anchor)
 
 
-def insert_break(conn, text_id: int, before_syl_id) -> None:
+def insert_break(conn, text_id: int, before_syl_id, anchor_op_id=None) -> None:
     """Insert a manual line break: an ``insert`` op hosting a real ``"\\n"`` syllable
     (nature SPACE) before ``before_syl_id`` (None = at the end of the text).
 
@@ -322,15 +427,17 @@ def insert_break(conn, text_id: int, before_syl_id) -> None:
     down derivation chains, and is undone by deleting the op."""
     sec = _require_secondary(conn, text_id)
     anchor = None
+    before_op_id = None
     if before_syl_id is not None:
         base = base_tokens(conn, sec["parent_text_id"])
         base_pos = {s["id"]: i for i, s in enumerate(base)}
-        anchor = _resolve_to_base_anchor(conn, text_id, before_syl_id, base_pos)
+        anchor, before_op_id = _resolve_insertion_anchor(
+            conn, text_id, before_syl_id, base_pos, anchor_op_id)
     instance_id = _secondary_instance_id(text_id)
     next_idx = [conn.execute(
         "SELECT COALESCE(MAX(idx), 0) AS m FROM syllables WHERE text_id = ?", (text_id,)
     ).fetchone()["m"]]
-    pos = _next_position(conn, text_id)
+    pos = _position_before(conn, text_id, before_op_id)
     cur = conn.execute(
         "INSERT INTO derivation_ops (text_id, op_kind, anchor_syl_id, position) "
         "VALUES (?, 'insert', ?, ?)",
@@ -344,17 +451,33 @@ def insert_break(conn, text_id: int, before_syl_id) -> None:
 
 
 def transclude(conn, text_id: int, anchor_syl_id, src_text_id: int,
-               src_start_syl_id: str, src_end_syl_id: str) -> None:
+               src_start_syl_id=None, src_end_syl_id=None, anchor_op_id=None) -> None:
     """Splice a range LINK from another text into a secondary text (no copy). The
     source range resolves through the source's composed sequence, so a secondary can
-    transclude from primaries or other secondaries and upstream corrections ripple."""
-    _require_secondary(conn, text_id)
+    transclude from primaries or other secondaries and upstream corrections ripple.
+
+    Range fields omitted = transclude the source's WHOLE sequence. The anchor may be
+    any composed token of this text: a hosted token (from a previous edit) resolves to
+    its base anchor, like ``insert_break``. ``anchor_syl_id`` None = append at end."""
+    sec = _require_secondary(conn, text_id)
+    if src_text_id == text_id:
+        raise HTTPException(400, "Cannot transclude a text into itself")
     if not conn.execute("SELECT 1 FROM texts WHERE id = ?", (src_text_id,)).fetchone():
         raise HTTPException(404, "Source text not found")
     src_syls = base_tokens(conn, src_text_id)
+    if src_start_syl_id is None and src_end_syl_id is None:
+        if not src_syls:
+            raise HTTPException(400, "Source text is empty")
+        src_start_syl_id, src_end_syl_id = src_syls[0]["id"], src_syls[-1]["id"]
     if not syllable_ids_between(src_syls, src_start_syl_id, src_end_syl_id):
         raise HTTPException(400, "Transclusion range endpoints must be source syllables, in order")
-    pos = _next_position(conn, text_id)
+    before_op_id = None
+    if anchor_syl_id is not None:
+        base = base_tokens(conn, sec["parent_text_id"])
+        base_pos = {s["id"]: i for i, s in enumerate(base)}
+        anchor_syl_id, before_op_id = _resolve_insertion_anchor(
+            conn, text_id, anchor_syl_id, base_pos, anchor_op_id)
+    pos = _position_before(conn, text_id, before_op_id)
     conn.execute(
         "INSERT INTO derivation_ops (text_id, op_kind, anchor_syl_id, position, "
         "src_text_id, src_start_syl_id, src_end_syl_id) "

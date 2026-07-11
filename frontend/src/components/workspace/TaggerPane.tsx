@@ -9,8 +9,12 @@ import { useEditorTokenStore } from '../../store/useEditorTokenStore';
 import { useUIStore, MIN_FONT, MAX_FONT } from '../../store/useUIStore';
 import { computeSegments } from './segments';
 import { SegmentCard } from './SegmentCard';
+import { PassageCard } from './PassageCard';
+import { usePassageStore } from '../../store/usePassageStore';
+import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { SessionTagPopover } from './SessionTagPopover';
-import { getReadingPosition, putReadingPosition } from '../../api/client';
+import { getReadingPosition, putReadingPosition, type Passage } from '../../api/client';
+import { partitionAnchorPassages } from './passageGroups';
 
 /** Walk up from `node` to the nearest token span (`data-syl-id`). */
 function enclosingTokenEl(node: Node | null): HTMLElement | null {
@@ -69,6 +73,17 @@ export const TaggerPane: React.FC = () => {
   const { currentText } = useTextStore();
   const { spans } = useTagStore();
   const { markers, deleteMarker } = useMarkerStore();
+  const passages = usePassageStore(s => s.passages);
+  const addPassage = usePassageStore(s => s.addPassage);
+  const treeNodes = useTreeNodeStore(s => s.nodes);
+  // Passages explicitly linked to a sapche node render as standalone cards.
+  const nodeLinkedPassageIds = useMemo(
+    () => new Set(treeNodes.filter(n => n.passage_id != null).map(n => n.passage_id as number)),
+    [treeNodes],
+  );
+  const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
+  const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
+  const setPassageNotice = useUIStore(s => s.setPassageNotice);
   const { suggestions } = useSuggestionStore();
   const notes = useNoteStore(s => s.notes);
   const sessionMode = useUIStore(s => s.sessionMode);
@@ -88,7 +103,10 @@ export const TaggerPane: React.FC = () => {
 
   const segments = useMemo(() => {
     if (!currentText) return [];
-    return computeSegments(currentText.raw_text, spans, markers, suggestions, notes, editorTokens);
+    // Notes ON a passage occurrence render inside that passage run only — keep them out
+    // of the host-token flow (they'd otherwise also underline the source occurrence).
+    const hostNotes = notes.filter(n => n.passage_id == null);
+    return computeSegments(currentText.raw_text, spans, markers, suggestions, hostNotes, editorTokens);
   }, [currentText, spans, markers, suggestions, notes, editorTokens]);
 
   // Session-mode click state: the user clicks anywhere in the tagger and the
@@ -230,6 +248,110 @@ export const TaggerPane: React.FC = () => {
     window.getSelection()?.removeAllRanges();
   };
 
+  // ── Passage placement hairline ────────────────────────────────────────────────
+  // While placement is armed, the mouse becomes an INSERTION CARET: a thin bar that
+  // snaps to the nearest syllable boundary (before/after the hovered token, by which
+  // half of the token the pointer is in). Clicking commits at that exact boundary.
+  // One delegated handler covers host tokens, inline passage runs, AND standalone
+  // PassageCards (all their tokens carry data-syl-id).
+  const [hairline, setHairline] = useState<{
+    left: number; top: number; height: number;
+    sylId: string; side: 'before' | 'after'; passageId: number | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingPassageSource) setHairline(null);  // disarmed (placed / Esc) — clear
+  }, [pendingPassageSource]);
+
+  const handlePlacementMove = (e: React.MouseEvent) => {
+    if (!pendingPassageSource) return;
+    const el = (e.target as HTMLElement).closest('[data-syl-id]') as HTMLElement | null;
+    if (!el || !el.dataset.sylId) { setHairline(null); return; }
+    const r = el.getBoundingClientRect();
+    const container = scrollRef.current;
+    if (!container) return;
+    const cr = container.getBoundingClientRect();
+    const side: 'before' | 'after' = e.clientX < r.left + r.width / 2 ? 'before' : 'after';
+    setHairline({
+      left: (side === 'before' ? r.left : r.right) - cr.left + container.scrollLeft,
+      top: r.top - cr.top + container.scrollTop,
+      height: r.height,
+      sylId: el.dataset.sylId,
+      side,
+      passageId: el.dataset.passageId ? Number(el.dataset.passageId) : null,
+    });
+  };
+
+  // Renumber the same-anchor sibling run so `newId` sits immediately BEFORE `ref`.
+  const placeBeforeSibling = async (newId: number, ref: { anchor_syl_id: string | null; id: number }) => {
+    const siblings = usePassageStore.getState().passages
+      .filter(x => x.text_id === currentText!.id && x.anchor_syl_id === ref.anchor_syl_id)
+      .sort((a, b) => a.position - b.position || a.id - b.id);
+    const order = siblings.filter(x => x.id !== newId);
+    const at = order.findIndex(x => x.id === ref.id);
+    order.splice(at < 0 ? order.length : at, 0, siblings.find(x => x.id === newId)!);
+    const editPassage = usePassageStore.getState().editPassage;
+    for (let k = 0; k < order.length; k++) {
+      if (order[k].position !== k) await editPassage(order[k].id, { position: k });
+    }
+  };
+
+  const handlePlacementClick = async () => {
+    if (!pendingPassageSource || !hairline || !currentText) return;
+    const members = [{
+      src_start_syl_id: pendingPassageSource.startSylId,
+      src_end_syl_id: pendingPassageSource.endSylId,
+    }];
+    try {
+      // Boundary within/around an existing PASSAGE: order relative to it (same anchor).
+      if (hairline.passageId != null) {
+        const ref = passages.find(x => x.id === hairline.passageId);
+        if (!ref) return;
+        const created = await addPassage(currentText.id, {
+          anchor_syl_id: ref.anchor_syl_id,
+          position: hairline.side === 'after' ? ref.position + 1 : ref.position,
+          attach_prev: ref.attach_prev,
+          members,
+        });
+        if (hairline.side === 'before') await placeBeforeSibling(created.id, ref);
+        setPendingPassageSource(null);
+        setHairline(null);
+        return;
+      }
+      // Host-token boundary. Downstream rule: the boundary must sit at/after the end
+      // of the source selection.
+      const tokens = useEditorTokenStore.getState().tokens;
+      const i = tokens.findIndex(t => t.id === hairline.sylId);
+      if (i < 0) return;
+      const boundaryOffset = hairline.side === 'before' ? tokens[i].start_offset : tokens[i].end_offset;
+      if (boundaryOffset < pendingPassageSource.endOffset) {
+        setPassageNotice('Place the hairline at or after the END of your selection — passages point back at earlier material.');
+        return;  // stay armed
+      }
+      let anchor: string | null;
+      let attachPrev = false;
+      if (hairline.side === 'before') {
+        anchor = hairline.sylId;  // before this token ("start of its segment" at a boundary)
+      } else {
+        const next = tokens.slice(i + 1).find(t => !t.inserted && t.text !== '');
+        anchor = next?.id ?? null;  // after this token; none left = end of text
+        // "Stays on the same segment": after the LAST render token of a card, attach the
+        // passage to THIS segment's end rather than heading the next one.
+        const segEl = document.querySelector(`[data-segment-start] [data-syl-id="${CSS.escape(hairline.sylId)}"]`)
+          ?.closest('[data-segment-start]');
+        if (segEl && anchor) {
+          const segTokens = segEl.querySelectorAll('[data-syl-id][data-ro]');
+          const last = segTokens[segTokens.length - 1] as HTMLElement | undefined;
+          if (last?.dataset.sylId === hairline.sylId) attachPrev = true;
+        }
+      }
+      await addPassage(currentText.id, { anchor_syl_id: anchor, attach_prev: attachPrev, members });
+      setPendingPassageSource(null);  // placed — disarm (clears the notice too)
+      setHairline(null);
+    } catch (err: any) {
+      setPassageNotice(err?.message || 'Could not place the passage');  // stay armed
+    }
+  };
+
   return (
     <div className="h-full w-full flex flex-col overflow-hidden bg-cream-hi">
       {!fullscreen && (
@@ -277,11 +399,29 @@ export const TaggerPane: React.FC = () => {
       )}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-3"
+        className="relative flex-1 overflow-y-auto p-3"
         data-tagger-root
         onMouseUp={handlePaneMouseUp}
         onScroll={handleScrollSave}
+        onMouseMove={pendingPassageSource ? handlePlacementMove : undefined}
+        onMouseLeave={pendingPassageSource ? () => setHairline(null) : undefined}
+        onClick={pendingPassageSource ? handlePlacementClick : undefined}
       >
+        {/* Placement hairline: the snapped insertion caret while placing a passage. */}
+        {pendingPassageSource && hairline && (
+          <div
+            className="absolute pointer-events-none z-30"
+            style={{
+              left: hairline.left - 1.5,
+              top: hairline.top,
+              width: 3,
+              height: hairline.height,
+              background: 'var(--gold, #ECB320)',
+              boxShadow: '0 0 4px rgba(236,179,32,0.9)',
+              borderRadius: 2,
+            }}
+          />
+        )}
         {segments.length === 0 ? (
           <p className="text-ink-soft italic text-sm">Loading text…</p>
         ) : (
@@ -289,6 +429,35 @@ export const TaggerPane: React.FC = () => {
             const markerHere = i > 0
               ? markers.find(m => m.position === seg.start)
               : undefined;
+            // A passage renders INLINE in its segment by default. own_segment (or a
+            // node link) means "a segment boundary starts right BEFORE this passage":
+            // that passage plus every following non-flagged passage at the same anchor
+            // form a GROUP rendered as one standalone card — exactly one boundary per
+            // split, like markers (a zero-width passage can't be isolated by markers).
+            const firstRenderId = seg.tokens.find(t => !t.inserted && t.text !== '')?.id;
+            const mine = (p: Passage) => p.text_id === currentText.id;
+            const boundaryGroups = firstRenderId
+              ? partitionAnchorPassages(
+                  passages.filter(p => mine(p) && p.anchor_syl_id === firstRenderId),
+                  nodeLinkedPassageIds).groups
+              : [];
+            // Groups anchored mid-segment or at the end of the text render AFTER this
+            // card so they never silently vanish from the pane.
+            const segTokenIds = new Set(seg.tokens.map(t => t.id));
+            const isLastSegment = i === segments.length - 1;
+            const trailingGroups = [
+              ...new Set(passages
+                .filter(p => mine(p) && (
+                  (p.anchor_syl_id == null && isLastSegment)
+                  || (p.anchor_syl_id != null && p.anchor_syl_id !== firstRenderId
+                      && segTokenIds.has(p.anchor_syl_id))))
+                .map(p => p.anchor_syl_id)),
+            ].flatMap(anchor => partitionAnchorPassages(
+              passages.filter(p => mine(p) && p.anchor_syl_id === anchor
+                && (anchor != null || isLastSegment)),
+              nodeLinkedPassageIds).groups);
+            const nextSegmentAnchorSylId =
+              segments[i + 1]?.tokens.find(t => !t.inserted && t.text !== '')?.id ?? null;
             return (
               <React.Fragment key={seg.key}>
                 {markerHere && (
@@ -307,7 +476,9 @@ export const TaggerPane: React.FC = () => {
                     <span className="h-px flex-1 bg-vermilion-lo opacity-60" />
                   </div>
                 )}
-                <SegmentCard segment={seg} />
+                {boundaryGroups.map(g => <PassageCard key={`pcard-${g[0].id}`} group={g} />)}
+                <SegmentCard segment={seg} nextSegmentAnchorSylId={nextSegmentAnchorSylId} isFirstSegment={i === 0} />
+                {trailingGroups.map(g => <PassageCard key={`pcard-${g[0].id}`} group={g} />)}
               </React.Fragment>
             );
           })

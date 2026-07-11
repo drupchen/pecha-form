@@ -21,6 +21,9 @@ export interface Note {
   /** Session tags this note is explicitly linked to. */
   session_tag_ids: number[];
   session_tag_names: string[];
+  /** Set = a note ON that passage occurrence (renders only inside the passage run,
+   *  never at the source occurrence of the shared syllables). */
+  passage_id: number | null;
 }
 
 interface NoteState {
@@ -40,6 +43,7 @@ interface NoteState {
     end: number,
     body: string,
     sessionTagIds?: number[],
+    passageId?: number | null,
   ) => Promise<Note>;
   updateNote: (
     noteId: number,
@@ -111,7 +115,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     }
   },
 
-  createNote: async (textId, categoryId, start_offset, end_offset, body, sessionTagIds = []) => {
+  createNote: async (textId, categoryId, start_offset, end_offset, body, sessionTagIds = [], passageId = null) => {
     try {
       const res = await fetch(`${API_BASE}/texts/${textId}/notes`, {
         method: 'POST',
@@ -122,6 +126,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
           end_offset,
           body,
           session_tag_ids: sessionTagIds,
+          passage_id: passageId,
         }),
       });
       if (!res.ok) throw new Error(await res.text());

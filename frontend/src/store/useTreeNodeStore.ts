@@ -9,6 +9,8 @@ export interface TreeNode {
   position: number;
   title: string | null;
   segment_start: number | null;
+  /** Set when this sapche section IS a passage occurrence (exclusive w/ segment_start). */
+  passage_id: number | null;
   transparent: boolean;
   created_at: string;
   updated_at: string;
@@ -58,6 +60,8 @@ interface TreeNodeState {
     segment_start?: number | null;
     /** Part 6: syllable that starts the linked segment (preferred over segment_start). */
     segment_start_syl_id?: string | null;
+    /** Link the node to a passage occurrence (clears the segment link); null unlinks. */
+    passage_id?: number | null;
   }) => Promise<TreeNode>;
   moveNode: (nodeId: number, new_parent_id: number | null, new_position: number) => Promise<void>;
   reorderSiblings: (textId: number, parent_id: number | null, ordered_ids: number[]) => Promise<void>;

@@ -35,6 +35,7 @@ export const WorkspaceView: React.FC = () => {
   const setFullscreen = useUIStore(s => s.setWorkspaceFullscreen);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
+  const passageNotice = useUIStore(s => s.passageNotice);
   const verseVertical = useUIStore(s => s.verseVerticalMode);
   const toggleVerseVertical = useUIStore(s => s.toggleVerseVerticalMode);
 
@@ -112,7 +113,12 @@ export const WorkspaceView: React.FC = () => {
       {pendingPassageSource && (
         <div className="shrink-0 px-4 py-1.5 flex items-center justify-center gap-3 text-xs bg-blue-600 text-white">
           <Link2 size={13} />
-          <span>Click a syllable <strong>downstream</strong> of your selection to place the passage.</span>
+          <span>Move the <strong>hairline</strong> to a syllable boundary (downstream) and <strong>click</strong> to place the passage there.</span>
+          {passageNotice && (
+            <span className="px-2 py-0.5 rounded bg-amber-300 text-amber-950 font-medium">
+              {passageNotice}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setPendingPassageSource(null)}

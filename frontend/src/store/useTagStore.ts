@@ -23,6 +23,9 @@ export interface Span {
   // Part 6: syllable anchors (source of truth); offsets above are a render aid.
   start_syl_id: string | null;
   end_syl_id: string | null;
+  /** A SOURCE text's span shown inside transcluded content — read-only here (its home
+   *  is the source text; changing it is the upstream path). */
+  inherited?: boolean;
   tag: Tag;
 }
 

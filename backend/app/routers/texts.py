@@ -43,7 +43,12 @@ def _apply_instance_metadata(
     Additive: only the text's own catalog columns and the syllables table
     are written; annotation tables are untouched. Returns the instance_id used.
     """
-    instance_id = (instance_id or "").strip() or default_instance_id(fallback_title)
+    # The fallback slug is suffixed with the text id: syllable uuids are minted from
+    # (instance_id, idx, text), so instance ids MUST be unique per text or two texts
+    # sharing (idx, syllable) mint the SAME uuid — Tibetan titles all slug to
+    # "instance", which broke global uuid uniqueness (the title-bleed bug).
+    instance_id = (instance_id or "").strip() \
+        or f"{default_instance_id(fallback_title)}_t{doc_id}"
     conn.execute(
         "UPDATE texts SET instance_id = ?, teaching_id = COALESCE(?, teaching_id), "
         "title_bo = COALESCE(?, title_bo), access_level = COALESCE(?, access_level) "
@@ -113,6 +118,123 @@ def _insert_delete_suggestion(conn, text_id: int, start_off: int, end_off: int,
     )
 
 
+def _snap_refs_after_bake(conn, text_id: int, old_ordered_ids: list[str]) -> None:
+    """Re-anchor every syllable-uuid reference that pointed at content this bake
+    deleted, snapping to the nearest surviving syllable so nothing silently vanishes.
+
+    Baking keeps uuids for surviving syllables, but a deleted syllable's uuid drops
+    from the layer — and a transclusion/span/note whose RANGE ENDPOINT died would
+    otherwise lose its whole run (`syllable_ids_between` can't resolve). Uuids are
+    globally unique, so deleted ids are matched across ALL texts' rows (descendants'
+    ops/annotations anchor this text's syllables directly).
+
+    Rules: range starts snap FORWARD and ends snap BACKWARD along the old order
+    (rows whose range has nothing surviving are left untouched — the dangling-skip
+    behavior remains the graceful floor); "before this syllable" anchors snap forward
+    or become NULL (= end of text); markers snap forward or are deleted (a boundary
+    after the last syllable is meaningless); reading positions snap forward, else
+    backward; tree segment links snap forward or stay dangling."""
+    new_ids = {s["id"] for s in load_syllables(conn, text_id)}
+    deleted = [sid for sid in old_ordered_ids if sid not in new_ids]
+    if not deleted:
+        return
+    # For each old position: the nearest surviving id at-or-after / at-or-before it.
+    n = len(old_ordered_ids)
+    nxt: list = [None] * n
+    prv: list = [None] * n
+    run = None
+    for i in range(n - 1, -1, -1):
+        if old_ordered_ids[i] in new_ids:
+            run = old_ordered_ids[i]
+        nxt[i] = run
+    run = None
+    for i in range(n):
+        if old_ordered_ids[i] in new_ids:
+            run = old_ordered_ids[i]
+        prv[i] = run
+    pos = {sid: i for i, sid in enumerate(old_ordered_ids)}
+    dead = set(deleted)
+
+    def snap_fwd(sid):  # None = nothing survives at-or-after sid
+        return nxt[pos[sid]]
+
+    def snap_back(sid):
+        return prv[pos[sid]]
+
+    def q(ids):
+        return ",".join("?" * len(ids))
+
+    # Ranges: (table, start_col, end_col, extra WHERE)
+    for table, s_col, e_col, extra in (
+        ("derivation_ops", "src_start_syl_id", "src_end_syl_id", "op_kind = 'transclude'"),
+        ("passage_members", "src_start_syl_id", "src_end_syl_id", "1=1"),
+        ("spans", "start_syl_id", "end_syl_id", "1=1"),
+        ("notes", "start_syl_id", "end_syl_id", "1=1"),
+        ("suggestions", "start_syl_id", "end_syl_id", "1=1"),
+    ):
+        rows = conn.execute(
+            f"SELECT rowid AS rid, {s_col} AS s, {e_col} AS e FROM {table} "
+            f"WHERE {extra} AND ({s_col} IN ({q(deleted)}) OR {e_col} IN ({q(deleted)}))",
+            (*deleted, *deleted),
+        ).fetchall()
+        for r in rows:
+            new_s = snap_fwd(r["s"]) if r["s"] in dead else r["s"]
+            new_e = snap_back(r["e"]) if r["e"] in dead else r["e"]
+            # Leave untouched when nothing survives inside the range (start/end
+            # crossed or vanished) — the row stays dangling and is skipped on read.
+            if new_s is None or new_e is None:
+                continue
+            if new_s in pos and new_e in pos and pos[new_s] > pos[new_e]:
+                continue
+            conn.execute(
+                f"UPDATE {table} SET {s_col} = ?, {e_col} = ? WHERE rowid = ?",
+                (new_s, new_e, r["rid"]),
+            )
+
+    # "Before this syllable" anchors: forward, else NULL (= end of text).
+    for table, col in (("derivation_ops", "anchor_syl_id"), ("passages", "anchor_syl_id")):
+        rows = conn.execute(
+            f"SELECT rowid AS rid, {col} AS a FROM {table} WHERE {col} IN ({q(deleted)})",
+            deleted,
+        ).fetchall()
+        for r in rows:
+            conn.execute(f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                         (snap_fwd(r["a"]), r["rid"]))
+
+    # Markers: a segment boundary BEFORE syl_id — forward; delete when nothing
+    # follows or the snapped boundary already exists (UNIQUE(text_id, syl_id)).
+    for r in conn.execute(
+            f"SELECT rowid AS rid, text_id AS tid, syl_id AS a FROM markers "
+            f"WHERE syl_id IN ({q(deleted)})", deleted).fetchall():
+        tgt = snap_fwd(r["a"])
+        clash = tgt is not None and conn.execute(
+            "SELECT 1 FROM markers WHERE text_id = ? AND syl_id = ?",
+            (r["tid"], tgt)).fetchone()
+        if tgt is None or clash:
+            conn.execute("DELETE FROM markers WHERE rowid = ?", (r["rid"],))
+        else:
+            conn.execute("UPDATE markers SET syl_id = ? WHERE rowid = ?", (tgt, r["rid"]))
+
+    # Reading positions: forward, else backward.
+    for r in conn.execute(
+            f"SELECT rowid AS rid, syl_id AS a FROM reading_positions "
+            f"WHERE syl_id IN ({q(deleted)})", deleted).fetchall():
+        tgt = snap_fwd(r["a"]) or snap_back(r["a"])
+        if tgt is not None:
+            conn.execute("UPDATE reading_positions SET syl_id = ? WHERE rowid = ?",
+                         (tgt, r["rid"]))
+
+    # Tree segment links: forward; if nothing follows, leave dangling (existing
+    # tree behavior for unresolvable links).
+    for r in conn.execute(
+            f"SELECT rowid AS rid, segment_start_syl_id AS a FROM tree_nodes "
+            f"WHERE segment_start_syl_id IN ({q(deleted)})", deleted).fetchall():
+        tgt = snap_fwd(r["a"])
+        if tgt is not None:
+            conn.execute("UPDATE tree_nodes SET segment_start_syl_id = ? WHERE rowid = ?",
+                         (tgt, r["rid"]))
+
+
 def _apply_corrections_core(conn, text_id: int) -> bool:
     """Bake the text's staged suggestions into its base layer — the ripple mechanism.
 
@@ -122,7 +244,9 @@ def _apply_corrections_core(conn, text_id: int) -> bool:
     every downstream reference — derivation ops, spans, markers, tree links, notes,
     reading positions, and descendants' parent-links — anchors by syllable uuid, a
     correction baked here ripples through all texts based on this one, any depth.
-    Anchors on content the bake deleted dangle and are skipped on read.
+    References to content the bake deleted are snapped to the nearest surviving
+    syllable (``_snap_refs_after_bake``); only ranges with nothing surviving inside
+    are left dangling and skipped on read.
 
     The consumed suggestions are deleted (they are now part of the base). Only APPLIED
     suggestions bake — 'pending' rows (incoming from derived texts, awaiting review)
@@ -138,16 +262,19 @@ def _apply_corrections_core(conn, text_id: int) -> bool:
     if got is None:
         return False
     instance_id, corrected_text, _segments = got
+    old_ordered_ids = [s["id"] for s in load_syllables(conn, text_id)]
     # Same normalization as upload/clone so the base layer stays canonical.
     raw_text, _units = prepare_and_tokenize(corrected_text)
     row = conn.execute("SELECT title, filename FROM texts WHERE id = ?", (text_id,)).fetchone()
-    instance = (instance_id or "").strip() or default_instance_id(row["title"] or row["filename"] or "")
+    instance = (instance_id or "").strip() \
+        or f"{default_instance_id(row['title'] or row['filename'] or '')}_t{text_id}"
     conn.execute(
         "UPDATE texts SET raw_text = ?, instance_id = ? WHERE id = ?",
         (raw_text, instance, text_id),
     )
     persist_syllables(conn, text_id, instance, raw_text)
     conn.execute("DELETE FROM suggestions WHERE text_id = ? AND status = 'applied'", (text_id,))
+    _snap_refs_after_bake(conn, text_id, old_ordered_ids)
     return True
 
 
@@ -171,16 +298,18 @@ def _apply_one_suggestion_core(conn, suggestion_id: int) -> bool:
         "SELECT title, filename, instance_id FROM texts WHERE id = ?", (text_id,)
     ).fetchone()
     raw_syllables = load_syllables(conn, text_id)
+    old_ordered_ids = [s["id"] for s in raw_syllables]
     segments = splice_suggestions(raw_syllables, [dict(row)])
     raw_text, _units = prepare_and_tokenize(segments_text(segments))
-    instance = (txt["instance_id"] or "").strip() or default_instance_id(
-        txt["title"] or txt["filename"] or "")
+    instance = (txt["instance_id"] or "").strip() \
+        or f"{default_instance_id(txt['title'] or txt['filename'] or '')}_t{text_id}"
     conn.execute(
         "UPDATE texts SET raw_text = ?, instance_id = ? WHERE id = ?",
         (raw_text, instance, text_id),
     )
     persist_syllables(conn, text_id, instance, raw_text)
     conn.execute("DELETE FROM suggestions WHERE id = ?", (suggestion_id,))
+    _snap_refs_after_bake(conn, text_id, old_ordered_ids)
     return True
 
 
@@ -431,18 +560,21 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
     )
     new_id = cursor.lastrowid
 
-    # Inherit the parent's annotations + TOC, anchored to the same token uuids the
-    # child composes from (identity remap over the parent's exposed sequence).
+    # Inherit the parent's markers/notes/passages + TOC, anchored to the same token
+    # uuids the child composes from (identity remap over the parent's exposed
+    # sequence). SPANS are NOT copied: the child inherits ancestor tags LIVE on read
+    # (spans._span_source_texts), so later tag changes on the parent mirror here.
     from ..derivation import base_tokens
     src_tokens = base_tokens(conn, id)
     remap = {t["id"]: t["id"] for t in src_tokens}
-    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True)
+    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True, copy_spans=False)
 
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
     units = _units_for(conn, new_id)
+    # Inherited from the parent chain on read — report what the child will display.
     span_count = cursor.execute(
-        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (new_id,)).fetchone()[0]
+        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (id,)).fetchone()[0]
     tag_count = cursor.execute(
         "SELECT COUNT(*) FROM tags WHERE text_id = ?", (new_id,)).fetchone()[0]
     conn.close()
@@ -450,7 +582,7 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
 
 
 def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: list,
-                      *, copy_tree: bool = False) -> None:
+                      *, copy_tree: bool = False, copy_spans: bool = True) -> None:
     """Copy the source's syllable-anchored annotations onto ``new_id``, re-anchoring every
     id through ``remap`` (source_syl_id -> new_syl_id). Anchors absent from ``remap`` (an
     out-of-range syllable for /extract, or one baked away by /clone) are dropped, and a
@@ -461,7 +593,11 @@ def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: lis
     -contained **passages**, and — when ``copy_tree`` — the whole **tree (TOC)** preserving
     hierarchy. Idempotent via unique constraints + ``INSERT OR IGNORE``. Shared by /extract
     (relative-offset remap) and /clone (suggestion-bake remap). ``src_syls`` is the source's
-    ordered syllable list (used to resolve each span's run)."""
+    ordered syllable list (used to resolve each span's run).
+
+    ``copy_spans=False`` for /derive: a secondary INHERITS ancestor spans live on read
+    (``spans._span_source_texts``) — copying them would freeze the tagging at derive
+    time instead of mirroring later changes."""
     if not remap:
         return
     pos_of = {s["id"]: i for i, s in enumerate(src_syls)}
@@ -502,9 +638,9 @@ def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: lis
 
     # --- Spans: map each source span's syllable run through remap; write the surviving
     # sub-run (this naturally clamps a span that straddles dropped/baked-away syllables).
-    for sp in conn.execute(
+    for sp in (conn.execute(
         "SELECT tag_id, start_syl_id, end_syl_id FROM spans WHERE text_id = ?", (src_id,),
-    ).fetchall():
+    ).fetchall() if copy_spans else []):
         i, j = pos_of.get(sp["start_syl_id"]), pos_of.get(sp["end_syl_id"])
         if i is None or j is None or i > j:
             continue
@@ -888,7 +1024,9 @@ def retokenize_text(id: int):
     # by syllable UUID and the move-stable reconciler carries TEXT syllable ids across the
     # merge, so every derived offset (markers, tree-node segment starts, portions) follows
     # its anchor automatically — no offset re-snapping pass is needed anymore.
-    persist_syllables(conn, id, row["instance_id"] or default_instance_id(row["title"]), raw_text)
+    persist_syllables(conn, id,
+                      row["instance_id"] or f"{default_instance_id(row['title'])}_t{id}",
+                      raw_text)
     conn.commit()
 
     units = _units_for(conn, id)

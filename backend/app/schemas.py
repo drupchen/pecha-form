@@ -96,13 +96,34 @@ class PassageCreate(BaseModel):
     anchor_syl_id: Optional[str] = None
     position: int = 0
     color: Optional[str] = None
+    # Attachment side at a segment boundary: True = render at the END of the previous
+    # segment ("stays on the same segment"); False = head the anchor's segment.
+    attach_prev: bool = False
     members: List[PassageMemberIn] = []
 
 class PassageUpdate(BaseModel):
     anchor_syl_id: Optional[str] = None
     position: Optional[int] = None
     color: Optional[str] = None
+    # The marker-free split boundary: True = a segment boundary starts right BEFORE this
+    # passage (it begins a new standalone segment; following non-flagged passages at the
+    # same anchor flow into that same segment).
+    own_segment: Optional[bool] = None
     members: Optional[List[PassageMemberIn]] = None  # None = leave members alone
+
+class PassageSplitIn(BaseModel):
+    """Divide a passage in two after `after_syl_id` (must be strictly interior to the
+    passage's flattened run) — the "split inside a passage" gesture. The second half
+    becomes a new passage right after the original; per-occurrence notes whose anchors
+    fall in the second half move with it."""
+    after_syl_id: str
+    # True when the split starts a new segment (trailing-at-segment-end / standalone-card
+    # cases) — set on the second half.
+    second_own_segment: bool = False
+    # Attachment sides after the split (mid-segment case: first True, second False, plus
+    # a marker at the anchor offset). None = keep the original's value.
+    first_attach_prev: Optional[bool] = None
+    second_attach_prev: Optional[bool] = None
 
 class PassageOut(BaseModel):
     id: int
@@ -110,7 +131,13 @@ class PassageOut(BaseModel):
     anchor_syl_id: Optional[str] = None
     position: int
     color: Optional[str] = None
+    attach_prev: bool = False
+    own_segment: bool = False
     members: List[PassageMemberOut] = []
+
+class PassageSplitOut(BaseModel):
+    first: PassageOut
+    second: PassageOut
 
 # ─── Secondary-text derivation (links + overrides, syllable-native) ────────────
 
@@ -126,6 +153,9 @@ class ComposedToken(BaseModel):
     parent_syl_id: Optional[str] = None   # provenance for overrides
     src_text_id: Optional[int] = None     # provenance for transclusions
     original: Optional[str] = None        # parent text an override replaced
+    # The derivation op that emitted this token (transclusion/hosted). Disambiguates
+    # OCCURRENCES: the same source transcluded twice repeats the same uuids.
+    op_id: Optional[int] = None
 
 class ComposedOut(BaseModel):
     tokens: List[ComposedToken] = []
@@ -137,14 +167,20 @@ class EditRangeIn(BaseModel):
     new_text: str                   # the free-text replacement for that run
 
 class TranscludeIn(BaseModel):
-    anchor_syl_id: Optional[str] = None   # parent syllable to splice BEFORE; None = append
+    anchor_syl_id: Optional[str] = None   # composed token to splice BEFORE; None = append
     src_text_id: int
-    src_start_syl_id: str
-    src_end_syl_id: str
+    # Inclusive source range. BOTH omitted = transclude the source's WHOLE sequence
+    # (the backend resolves first/last tokens itself).
+    src_start_syl_id: Optional[str] = None
+    src_end_syl_id: Optional[str] = None
+    # The op that emitted the anchor token (ComposedToken.op_id) — names the
+    # OCCURRENCE when the same source is transcluded several times.
+    anchor_op_id: Optional[int] = None
 
 class InsertBreakIn(BaseModel):
     # Manual line break: hosted "\n" inserted BEFORE this composed token; None = at end.
     before_syl_id: Optional[str] = None
+    anchor_op_id: Optional[int] = None    # occurrence hint, see TranscludeIn
 
 # ─── Tags ─────────────────────────────────────────────────────────────────────
 
@@ -214,6 +250,9 @@ class SpanOut(SpanBase):
     # syllable id rather than by the drift-prone char offsets.
     start_syl_id: Optional[str] = None
     end_syl_id: Optional[str] = None
+    # True for a SOURCE text's span shown inside transcluded content (read-only here —
+    # its home is the source text; changing it means changing the source's tags).
+    inherited: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Markers ──────────────────────────────────────────────────────────────────
@@ -254,6 +293,9 @@ class TreeNodeUpdate(BaseModel):
     # Part 6: syllable-native boundary (preferred). When present, derives
     # `segment_start`; explicit null still unlinks via `segment_start`.
     segment_start_syl_id: Optional[str] = None
+    # Link the node to a PASSAGE occurrence instead of a segment (mutually exclusive:
+    # setting one clears the other). Explicit null unlinks; absent leaves alone.
+    passage_id: Optional[int] = None
 
 class TreeNodeMove(BaseModel):
     new_parent_id: Optional[int] = None
@@ -268,6 +310,9 @@ class TreeNodeOut(TreeNodeBase):
     text_id: int
     parent_id: Optional[int] = None
     position: int
+    # Set when this sapche section IS a passage occurrence (mutually exclusive with
+    # segment_start).
+    passage_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -434,6 +479,9 @@ class NoteCreate(BaseModel):
     end_offset: int
     body: str = ''
     session_tag_ids: List[int] = []
+    # A note ON a passage occurrence: renders only inside that passage run, never at
+    # the source occurrence of the shared syllables. NULL = normal host-text note.
+    passage_id: Optional[int] = None
 
 class NoteUpdate(BaseModel):
     category_id: Optional[int] = None
@@ -453,6 +501,7 @@ class NoteOut(BaseModel):
     updated_at: datetime
     session_tag_ids: List[int] = []
     session_tag_names: List[str] = []
+    passage_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Reading position (last-viewed segment per user & text) ─────────────────────
