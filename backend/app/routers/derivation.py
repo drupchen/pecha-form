@@ -3,8 +3,9 @@ from fastapi import APIRouter, HTTPException
 from ..db import get_db
 from ..derivation import (
     compose_secondary, composed_raw_text, edit_range, transclude, delete_op,
+    base_tokens, insert_break,
 )
-from ..schemas import ComposedOut, EditRangeIn, TranscludeIn
+from ..schemas import ComposedOut, EditRangeIn, TranscludeIn, InsertBreakIn
 
 router = APIRouter(prefix="/api", tags=["derivation"])
 
@@ -53,6 +54,66 @@ def post_transclude(text_id: int, payload: TranscludeIn):
                    payload.src_start_syl_id, payload.src_end_syl_id)
         conn.commit()
         return _composed_payload(conn, text_id)
+    finally:
+        conn.close()
+
+
+@router.post("/texts/{text_id}/insert-break", response_model=ComposedOut)
+def post_insert_break(text_id: int, payload: InsertBreakIn):
+    """Insert a manual line break (a hosted "\\n" token) before a composed token."""
+    conn = get_db()
+    try:
+        insert_break(conn, text_id, payload.before_syl_id)
+        conn.commit()
+        return _composed_payload(conn, text_id)
+    finally:
+        conn.close()
+
+
+@router.get("/texts/{text_id}/derivation-ops")
+def list_derivation_ops(text_id: int):
+    """The secondary's edit ops, each with a human-readable summary and a jump anchor —
+    the sidebar's analogue of the primaries' suggestions list (delete an op to undo it)."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT text_type, parent_text_id FROM texts WHERE id = ?", (text_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "Text not found")
+        if row["text_type"] != "secondary":
+            return []
+        base = {t["id"]: t for t in base_tokens(conn, row["parent_text_id"])}
+        out = []
+        for op in conn.execute(
+            "SELECT * FROM derivation_ops WHERE text_id = ? ORDER BY position, id",
+            (text_id,),
+        ).fetchall():
+            d = dict(op)
+            hosted = "".join(r["text"] for r in conn.execute(
+                "SELECT s.text FROM derivation_op_syllables l "
+                "JOIN syllables s ON s.id = l.syl_id AND s.text_id = ? "
+                "WHERE l.op_id = ? ORDER BY l.position",
+                (text_id, op["id"]),
+            ))
+            anchor_tok = base.get(op["anchor_syl_id"]) if op["anchor_syl_id"] else None
+            anchor_text = (anchor_tok["text"] if anchor_tok else "").replace("\n", "⏎")
+            shown = hosted.replace("\n", "⏎")
+            kind = op["op_kind"]
+            if kind == "override":
+                summary = f"“{anchor_text}” → “{shown}”"
+            elif kind == "delete":
+                summary = f"deleted “{anchor_text}”"
+            elif kind == "insert":
+                summary = f"inserted “{shown}”" + ("" if anchor_tok else " (at end)")
+            else:  # transclude
+                src = conn.execute(
+                    "SELECT title FROM texts WHERE id = ?", (op["src_text_id"],)
+                ).fetchone()
+                summary = f"transcluded from “{src['title'] if src else '?'}”"
+            d["summary"] = summary
+            out.append(d)
+        return out
     finally:
         conn.close()
 

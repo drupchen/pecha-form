@@ -11,6 +11,7 @@ import { usePassageStore } from '../../store/usePassageStore';
 import type { Passage } from '../../api/client';
 import { useLinkStore, scrollToLinkPartner } from '../../store/useLinkStore';
 import { useUIStore } from '../../store/useUIStore';
+import { useSuggestionStore } from '../../store/useSuggestionStore';
 import { SegmentTagPopover } from './SegmentTagPopover';
 import { TaggerSearchContext } from './TaggerSearchContext';
 
@@ -45,6 +46,9 @@ const PROVENANCE_TITLE: Record<string, string> = {
  */
 export const SegmentCard: React.FC<Props> = ({ segment }) => {
   const { currentText } = useTextStore();
+  const loadText = useTextStore(s => s.loadText);
+  const texts = useTextStore(s => s.texts);
+  const deleteSuggestion = useSuggestionStore(s => s.deleteSuggestion);
   const { tags, updateSpan, deleteSpan, deleteTag } = useTagStore();
   const { nodes, createNode, updateNode } = useTreeNodeStore();
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
@@ -59,6 +63,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
+  const verseVertical = useUIStore(s => s.verseVerticalMode);
   const taggerFontSize = useUIStore(s => s.taggerFontSize);
   const searchMatchIndex = useUIStore(s => s.searchMatchIndex);
   const allSearchMatches = useContext(TaggerSearchContext);
@@ -220,11 +225,76 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
       }
     };
 
-    for (const t of tokens) {
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const t = tokens[ti];
       renderHairlinesAt(t.start_offset);
       // Inline passages anchored before this syllable.
       const anchoredPassages = passagesByAnchor.map.get(t.id);
       if (anchoredPassages) anchoredPassages.forEach(renderPassage);
+
+      // A removed (deleted/extracted) range arrives as token(s) with empty text but a
+      // non-null `original`. On their own they render as invisible zero-width spans, so
+      // the deletion vanishes. Collapse a run of them into ONE visible marker: hover
+      // shows the removed text; in edit mode a plain deletion restores on click, an
+      // extraction opens the text the range was moved into.
+      if (t.text === '' && t.original != null && !t.inserted) {
+        let tj = ti;
+        let removed = '';
+        while (tj < tokens.length
+               && tokens[tj].text === '' && tokens[tj].original != null && !tokens[tj].inserted) {
+          removed += tokens[tj].original ?? '';
+          tj++;
+        }
+        const runStart = t.start_offset;
+        const runEnd = tokens[tj - 1].end_offset;
+        // The delete-suggestion covering this run (for restore / extraction link).
+        const sug = segment.suggestions.find(
+          s => s.suggested_text === '' && s.start_offset <= runStart && s.end_offset >= runEnd,
+        );
+        const extractedId = sug?.extracted_text_id ?? null;
+        const isExtract = extractedId != null;
+        const extractedTitle = isExtract ? (texts.find(d => d.id === extractedId)?.title ?? null) : null;
+        const removedFlat = removed.replace(/\n/g, ' ');
+        const preview = removedFlat.slice(0, 12);
+        const canAct = !consultMode && (isExtract ? true : !!sug);
+        const accent = isExtract ? '#0f766e' : '#b91c1c';
+        const tint = isExtract ? 'rgba(15,118,110,0.12)' : 'rgba(185,28,28,0.12)';
+        const title = isExtract
+          ? `Extracted${extractedTitle ? ` to “${extractedTitle}”` : ''}: “${removedFlat}”`
+            + (canAct ? ' — click to open' : '')
+          : `Removed: “${removedFlat}”` + (canAct ? ' — click to restore' : '');
+        out.push(
+          <span
+            key={`del-${t.idx}`}
+            data-del-marker=""
+            data-ro={runStart}
+            data-reo={runEnd}
+            contentEditable={false}
+            className={canAct ? 'cursor-pointer' : undefined}
+            title={title}
+            style={{
+              display: 'inline-flex', alignItems: 'baseline', gap: '3px',
+              margin: '0 2px', padding: '0 4px', borderRadius: '4px',
+              fontSize: '0.7em', verticalAlign: 'middle', userSelect: 'none',
+              background: tint, color: accent, border: `1px solid ${accent}55`,
+            }}
+            onClick={canAct ? (e) => {
+              e.stopPropagation();
+              if (isExtract && extractedId != null) loadText(extractedId);
+              else if (sug) deleteSuggestion(sug.id);
+            } : undefined}
+          >
+            <span aria-hidden>{isExtract ? '⤴' : '⌫'}</span>
+            {preview && (
+              <span style={{ textDecoration: 'line-through', opacity: 0.85 }}>
+                {preview}{removedFlat.length > preview.length ? '…' : ''}
+              </span>
+            )}
+          </span>,
+        );
+        ti = tj - 1;
+        continue;
+      }
       // A token (a syllable) is fully covered or not — annotation boundaries are on
       // syllable edges. Inserted tokens are zero-width (start == end).
       const anns = visibleAnnotations.filter(x => x.start_offset <= t.start_offset && x.end_offset >= t.end_offset);
@@ -289,6 +359,13 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
         ? () => setHoverPopover(null)
         : undefined;
       if (anns.length > 0 && !consultMode) classes.push('cursor-pointer');
+      // Verse vertical mode: a SPACE token inside a "verse"-tagged span renders as a
+      // line break (the body is whitespace-pre-wrap), laying the verse out vertically.
+      const renderText =
+        verseVertical && t.nature === 'SPACE' && !t.text.includes('\n')
+          && anns.some(a => a.tag.name.trim().toLowerCase() === 'verse')
+          ? '\n'
+          : t.text;
       out.push(
         <span
           key={`t-${t.idx}`}
@@ -303,14 +380,14 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
           onMouseEnter={onAnnMouseEnter}
           onMouseLeave={onAnnMouseLeave}
         >
-          {t.text}
+          {renderText}
         </span>,
       );
     }
     passagesByAnchor.atEnd.forEach(renderPassage);
     renderHairlinesAt(segment.end);
     return out;
-  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor]);
+  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical]);
 
   const handleMouseUp = () => {
     // In session mode, the pane-level handler in TaggerPane takes over so it
@@ -402,6 +479,8 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
       await createNode(currentText.id, {
         parent_id: null,
         segment_start: segment.start,
+        // Part 6: anchor the link on the segment's first syllable.
+        segment_start_syl_id: segment.tokens[0]?.id ?? null,
       });
     } catch (e: any) {
       alert(e.message);
@@ -411,7 +490,10 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
   const handleLinkToNode = async (nodeId: number) => {
     setLinkError(null);
     try {
-      await updateNode(nodeId, { segment_start: segment.start });
+      await updateNode(nodeId, {
+        segment_start: segment.start,
+        segment_start_syl_id: segment.tokens[0]?.id ?? null,
+      });
       setLinkPickerOpen(false);
     } catch (e: any) {
       setLinkError(e.message || 'Could not link');
@@ -565,6 +647,7 @@ export const SegmentCard: React.FC<Props> = ({ segment }) => {
           data-text-container
           data-segment-start={segment.start}
           data-segment-end={segment.end}
+          data-segment-syl={segment.tokens[0]?.id ?? ''}
         >
           {fragments}
         </div>

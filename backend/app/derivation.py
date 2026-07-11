@@ -45,18 +45,47 @@ def _hosted_syllables(conn, op_id: int, by_id: dict) -> list[dict]:
     return [by_id[r["syl_id"]] for r in rows if r["syl_id"] in by_id]
 
 
-def compose_secondary(conn, text_id: int) -> list[dict]:
+def base_tokens(conn, text_id: int, _visited=None) -> list[dict]:
+    """The ordered token sequence a text exposes to composition and anchoring.
+
+    A primary exposes its own syllable rows; a secondary exposes its *composed*
+    sequence (recursion — its parent may itself be a secondary, any depth). This is
+    the single definition of "the text's tokens" that derivation, transclusion, and
+    the annotation anchor maps all share, so a correction baked into a root primary
+    ripples through every descendant automatically."""
+    row = conn.execute(
+        "SELECT text_type, parent_text_id FROM texts WHERE id = ?", (text_id,)
+    ).fetchone()
+    if row is None:
+        return []
+    if row["text_type"] == "secondary" and row["parent_text_id"]:
+        return compose_secondary(conn, text_id, _visited)
+    return load_syllables(conn, text_id)
+
+
+def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
     """Compute the derived syllable sequence for a secondary text.
+
+    The base is the PARENT'S composed sequence (``base_tokens`` — recursive, so
+    chains of secondaries work), over which this text's ops are applied. An op whose
+    anchor no longer resolves in the base (e.g. the parent baked a deletion of that
+    syllable) is silently moot — skipped, never an error, so one dangling anchor can
+    never blank a document.
 
     Returns ordered token dicts ``{idx, id, text, nature, inserted, start_offset,
     end_offset, source, parent_syl_id?, src_text_id?, original?}``. Offsets are
     cumulative over the composed text (frontend aid only)."""
+    _visited = set() if _visited is None else _visited
+    if text_id in _visited:  # defensive cycle guard (parent chains are acyclic by construction)
+        return []
+    _visited = _visited | {text_id}
+
     row = conn.execute("SELECT parent_text_id FROM texts WHERE id = ?", (text_id,)).fetchone()
     parent_id = row["parent_text_id"] if row else None
     if not parent_id:
         return []
 
-    parent_syls = load_syllables(conn, parent_id)
+    parent_syls = base_tokens(conn, parent_id, _visited)
     hosted_by_id = {s["id"]: s for s in load_syllables(conn, text_id)}
 
     ops = conn.execute(
@@ -81,7 +110,9 @@ def compose_secondary(conn, text_id: int) -> list[dict]:
             })
 
     def emit_transclude(op) -> None:
-        src_syls = load_syllables(conn, op["src_text_id"])
+        # Source ranges resolve through the source's COMPOSED sequence (base_tokens),
+        # so transcluding from a secondary works and upstream corrections ripple in.
+        src_syls = base_tokens(conn, op["src_text_id"], _visited)
         by = {s["id"]: s for s in src_syls}
         for sid in syllable_ids_between(src_syls, op["src_start_syl_id"], op["src_end_syl_id"]):
             s = by[sid]
@@ -164,28 +195,58 @@ def _host_syllable(conn, text_id: int, instance_id: str, next_idx: list, text: s
     return sid
 
 
-def edit_range(conn, text_id: int, start_syl_id: str, end_syl_id: str, new_text: str) -> None:
-    """Reconcile a free-text edit of a parent run into derivation ops.
+def _resolve_to_base_anchor(conn, text_id: int, syl_id: str, base_pos: dict):
+    """Map a composed-token endpoint onto the BASE it anchors in. A base token maps to
+    itself; a hosted token (override/insert from a previous edit) maps to its op's
+    anchor base token (NULL-anchored end-inserts map to None → clamped by the caller).
+    Returns the base syl id, or a marker of failure (raises)."""
+    if syl_id in base_pos:
+        return syl_id
+    row = conn.execute(
+        "SELECT o.anchor_syl_id FROM derivation_op_syllables s "
+        "JOIN derivation_ops o ON o.id = s.op_id "
+        "WHERE o.text_id = ? AND s.syl_id = ?",
+        (text_id, syl_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(400, "Edited range endpoints must be tokens of this text, in order")
+    return row["anchor_syl_id"]  # may be None (end-anchored insert)
 
-    ``start_syl_id``/``end_syl_id`` bound an inclusive run of PARENT syllables. The new
-    text is tokenised and aligned (move-aware) against that run; the alignment ops map
-    onto derivation ops: ``replace``→override (hosted, provenance kept), ``insert``→
-    insert (hosted), ``delete``→delete, ``equal``/``move``→link (nothing stored)."""
+
+def edit_range(conn, text_id: int, start_syl_id: str, end_syl_id: str, new_text: str) -> None:
+    """Reconcile a free-text edit of a run into derivation ops.
+
+    ``start_syl_id``/``end_syl_id`` bound an inclusive run of the secondary's composed
+    sequence. Endpoints on the BASE (the parent's composed sequence — recursive, so
+    chains work) are used directly; endpoints on hosted tokens from a previous edit
+    resolve to their op's base anchor (re-editing edited content replaces its ops).
+    The new text is tokenised and aligned (move-aware) against the base run; alignment
+    ops map onto derivation ops: ``replace``→override (hosted, provenance kept),
+    ``insert``→insert (hosted), ``delete``→delete, ``equal``/``move``→link (nothing
+    stored)."""
     sec = _require_secondary(conn, text_id)
     parent_id = sec["parent_text_id"]
-    parent_syls = load_syllables(conn, parent_id)
+    parent_syls = base_tokens(conn, parent_id)
     by_id = {s["id"]: s for s in parent_syls}
+    base_pos = {s["id"]: i for i, s in enumerate(parent_syls)}
 
-    run_ids = syllable_ids_between(parent_syls, start_syl_id, end_syl_id)
+    start_base = _resolve_to_base_anchor(conn, text_id, start_syl_id, base_pos)
+    end_base = _resolve_to_base_anchor(conn, text_id, end_syl_id, base_pos)
+    # A NULL resolution (end-anchored insert) clamps to the last base token.
+    if start_base is None:
+        start_base = parent_syls[-1]["id"] if parent_syls else None
+    if end_base is None:
+        end_base = parent_syls[-1]["id"] if parent_syls else None
+
+    run_ids = syllable_ids_between(parent_syls, start_base, end_base) if start_base and end_base else []
     if not run_ids:
-        raise HTTPException(400, "Edited range endpoints must be parent syllables, in order")
+        raise HTTPException(400, "Edited range endpoints must be tokens of this text, in order")
     run = [by_id[sid] for sid in run_ids]
     run_id_set = set(run_ids)
 
-    # The parent syllable after the run — anchor for inserts at the run's tail.
-    last_idx = run[-1]["idx"]
-    after = next((s for s in parent_syls if s["idx"] == last_idx + 1), None)
-    after_anchor = after["id"] if after else None
+    # The base token after the run — anchor for inserts at the run's tail.
+    i_after = base_pos[run_ids[-1]] + 1
+    after_anchor = parent_syls[i_after]["id"] if i_after < len(parent_syls) else None
 
     # Re-editing a run replaces its ops. Drop ops anchored inside the run (override/
     # delete and inserts/transcludes placed before a run syllable) and free their
@@ -252,13 +313,45 @@ def edit_range(conn, text_id: int, start_syl_id: str, end_syl_id: str, new_text:
     flush_inserts(after_anchor)
 
 
+def insert_break(conn, text_id: int, before_syl_id) -> None:
+    """Insert a manual line break: an ``insert`` op hosting a real ``"\\n"`` syllable
+    (nature SPACE) before ``before_syl_id`` (None = at the end of the text).
+
+    Being a real hosted token it composes into the text like any other syllable —
+    it renders as a line break (the tagger body is ``whitespace-pre-wrap``), inherits
+    down derivation chains, and is undone by deleting the op."""
+    sec = _require_secondary(conn, text_id)
+    anchor = None
+    if before_syl_id is not None:
+        base = base_tokens(conn, sec["parent_text_id"])
+        base_pos = {s["id"]: i for i, s in enumerate(base)}
+        anchor = _resolve_to_base_anchor(conn, text_id, before_syl_id, base_pos)
+    instance_id = _secondary_instance_id(text_id)
+    next_idx = [conn.execute(
+        "SELECT COALESCE(MAX(idx), 0) AS m FROM syllables WHERE text_id = ?", (text_id,)
+    ).fetchone()["m"]]
+    pos = _next_position(conn, text_id)
+    cur = conn.execute(
+        "INSERT INTO derivation_ops (text_id, op_kind, anchor_syl_id, position) "
+        "VALUES (?, 'insert', ?, ?)",
+        (text_id, anchor, pos),
+    )
+    sid = _host_syllable(conn, text_id, instance_id, next_idx, "\n", "SPACE")
+    conn.execute(
+        "INSERT INTO derivation_op_syllables (op_id, position, syl_id) VALUES (?, 0, ?)",
+        (cur.lastrowid, sid),
+    )
+
+
 def transclude(conn, text_id: int, anchor_syl_id, src_text_id: int,
                src_start_syl_id: str, src_end_syl_id: str) -> None:
-    """Splice a range LINK from another text into a secondary text (no copy)."""
+    """Splice a range LINK from another text into a secondary text (no copy). The
+    source range resolves through the source's composed sequence, so a secondary can
+    transclude from primaries or other secondaries and upstream corrections ripple."""
     _require_secondary(conn, text_id)
     if not conn.execute("SELECT 1 FROM texts WHERE id = ?", (src_text_id,)).fetchone():
         raise HTTPException(404, "Source text not found")
-    src_syls = load_syllables(conn, src_text_id)
+    src_syls = base_tokens(conn, src_text_id)
     if not syllable_ids_between(src_syls, src_start_syl_id, src_end_syl_id):
         raise HTTPException(400, "Transclusion range endpoints must be source syllables, in order")
     pos = _next_position(conn, text_id)

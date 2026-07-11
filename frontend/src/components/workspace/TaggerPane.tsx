@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { X } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
@@ -10,6 +10,7 @@ import { useUIStore, MIN_FONT, MAX_FONT } from '../../store/useUIStore';
 import { computeSegments } from './segments';
 import { SegmentCard } from './SegmentCard';
 import { SessionTagPopover } from './SessionTagPopover';
+import { getReadingPosition, putReadingPosition } from '../../api/client';
 
 /** Walk up from `node` to the nearest token span (`data-syl-id`). */
 function enclosingTokenEl(node: Node | null): HTMLElement | null {
@@ -103,9 +104,116 @@ export const TaggerPane: React.FC = () => {
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // --- Last-viewed segment: restore on open, then save the top-most visible segment
+  // (syllable-native, per-user on the backend). The corrected tokens/markers/notes load
+  // asynchronously and each arrival re-renders the body, which can reset scrollTop — so a
+  // one-shot scroll fires too early and gets clobbered. We keep `restoreSylRef` set to the
+  // saved segment and re-pin it to the top in a layout effect that runs after *every* render
+  // (a clobber is itself a render), synchronously before paint, until the user takes over
+  // (wheel / pointer / a navigation key). `savingEnabledRef` gates saving so the transient
+  // top-of-document position during load never overwrites the stored one.
+  const restoreSylRef = useRef<string | null>(null);
+  const savingEnabledRef = useRef(false);
+  const lastTopSyl = useRef<string | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const [, forceTick] = useState(0);
+
+  // The start syllable of the first segment still visible at/below the viewport's top.
+  const topSegmentSyl = (): string | null => {
+    const container = scrollRef.current;
+    if (!container) return null;
+    const top = container.getBoundingClientRect().top;
+    for (const el of container.querySelectorAll<HTMLElement>('[data-segment-syl]')) {
+      if (el.getBoundingClientRect().bottom > top + 1) return el.dataset.segmentSyl || null;
+    }
+    return null;
+  };
+
+  const flushSave = (id: number) => {
+    if (!savingEnabledRef.current || !lastTopSyl.current) return;
+    putReadingPosition(id, lastTopSyl.current).catch(() => {});
+  };
+
+  const handleScrollSave = () => {
+    if (!currentText || !savingEnabledRef.current) return;
+    const syl = topSegmentSyl();
+    if (syl) lastTopSyl.current = syl;
+    const id = currentText.id;
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => flushSave(id), 400);
+  };
+
+  // On opening a text, fetch its saved position and arm the restore (or enable saving if none).
+  useEffect(() => {
+    const id = currentText?.id;
+    if (id == null) return;
+    savingEnabledRef.current = false;
+    restoreSylRef.current = null;
+    lastTopSyl.current = null;
+    let cancelled = false;
+    getReadingPosition(id)
+      .then(pos => {
+        if (cancelled || useTextStore.getState().currentText?.id !== id) return;
+        if (pos?.syl_id) {
+          restoreSylRef.current = pos.syl_id;
+          forceTick(t => t + 1);  // ensure at least one render → the layout effect pins it
+        } else {
+          savingEnabledRef.current = true;  // nothing to restore → save from the start
+        }
+      })
+      .catch(() => { if (!cancelled) savingEnabledRef.current = true; });
+    return () => { cancelled = true; };
+  }, [currentText]);
+
+  // Re-pin the saved segment to the top after every render, before paint, while restore is
+  // armed. Because async body re-renders (token/marker/note loads) each trigger this, any
+  // scroll reset they cause is corrected immediately and invisibly.
+  useLayoutEffect(() => {
+    const syl = restoreSylRef.current;
+    const c = scrollRef.current;
+    if (!syl || !c) return;
+    const el = c.querySelector<HTMLElement>(`[data-segment-syl="${CSS.escape(syl)}"]`)
+      ?? document.querySelector<HTMLElement>(`[data-syl-id="${CSS.escape(syl)}"]`)
+           ?.closest<HTMLElement>('[data-segment-start]') ?? null;
+    if (!el) return;
+    const delta = el.getBoundingClientRect().top - c.getBoundingClientRect().top;
+    if (Math.abs(delta) > 1) c.scrollTop += delta;
+    lastTopSyl.current = syl;
+  });
+
+  // The user taking over (real wheel / pointer / navigation key — not our programmatic
+  // scrollTop writes) disarms restore and switches to saving. Also flush on leave/switch.
+  useEffect(() => {
+    const id = currentText?.id;
+    if (id == null) return;
+    const container = scrollRef.current;
+    const takeOver = () => { restoreSylRef.current = null; savingEnabledRef.current = true; };
+    const takeOverKey = (e: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) takeOver();
+    };
+    const opts: AddEventListenerOptions = { passive: true };
+    container?.addEventListener('wheel', takeOver, opts);
+    container?.addEventListener('pointerdown', takeOver, opts);
+    container?.addEventListener('touchstart', takeOver, opts);
+    window.addEventListener('keydown', takeOverKey);
+    return () => {
+      container?.removeEventListener('wheel', takeOver, opts);
+      container?.removeEventListener('pointerdown', takeOver, opts);
+      container?.removeEventListener('touchstart', takeOver, opts);
+      window.removeEventListener('keydown', takeOverKey);
+      flushSave(id);
+    };
+  }, [currentText]);
+
   if (!currentText) return null;
 
   const handlePaneMouseUp = () => {
+    // Any interaction in the pane records the current top segment (so clicking a
+    // segment — not only scrolling — leaves a resumable position).
+    if (savingEnabledRef.current) {
+      const syl = topSegmentSyl();
+      if (syl) lastTopSyl.current = syl;
+    }
     if (!sessionMode) return;
     // Consult mode disables session-tag creation.
     if (consultMode) return;
@@ -172,6 +280,7 @@ export const TaggerPane: React.FC = () => {
         className="flex-1 overflow-y-auto p-3"
         data-tagger-root
         onMouseUp={handlePaneMouseUp}
+        onScroll={handleScrollSave}
       >
         {segments.length === 0 ? (
           <p className="text-ink-soft italic text-sm">Loading text…</p>

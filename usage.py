@@ -2,7 +2,7 @@ from pechaform import parse_bo_docs_updated, parse_trans_docs_padmakara, parse_t
 
 
 if __name__ == '__main__':
-    mode = 1
+    mode = 2
 
     if mode == 1:
         print('parsing Tibetan texts')

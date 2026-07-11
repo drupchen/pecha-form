@@ -13,19 +13,6 @@ export async function uploadText(file: File, title?: string) {
   return res.json();
 }
 
-export async function importCherrytree(file: File, title?: string) {
-  const formData = new FormData();
-  formData.append('file', file);
-  if (title) formData.append('title', title);
-
-  const res = await fetch(`${API_BASE}/texts/import-cherrytree`, {
-    method: 'POST',
-    body: formData,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 export async function listTexts() {
   const res = await fetch(`${API_BASE}/texts`);
   if (!res.ok) throw new Error(await res.text());
@@ -76,6 +63,73 @@ export async function deleteText(id: number) {
   return res.json();
 }
 
+// Edit a text's list metadata: title (inline rename) and/or group (collection label;
+// empty string clears the group to ungrouped). Only provided fields change.
+export async function updateTextMeta(
+  id: number, patch: { title?: string; text_group?: string | null }
+) {
+  const res = await fetch(`${API_BASE}/texts/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// --- Group registry (Part 12): persistent group paths so empty groups survive. ---
+
+export async function listTextGroups(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/text-groups`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Register a (possibly empty) group path. Returns the full updated path list.
+export async function createTextGroup(path: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/text-groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Reorganize a group: nest `src` under `dest` ("" = top level). Rewrites all texts + paths.
+export async function moveTextGroup(src: string, dest: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/text-groups/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src_path: src, dest_path: dest }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Reorder a group (Part 13): place `src` under `parent` ("" = root), immediately before the
+// sibling `beforePath` ("" = append). Reorders root columns and promotes a sub-group to root.
+export async function reorderTextGroup(src: string, parent: string, beforePath: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/text-groups/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src_path: src, parent_path: parent, before_path: beforePath }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Delete an empty group (refused with 409 if any text still lives at/under it).
+export async function deleteTextGroup(path: string): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/text-groups`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // Create a secondary text derived from primary text `id`. The secondary has no
 // syllables of its own; its content is composed from the parent + derivation ops.
 export async function deriveText(id: number, title?: string) {
@@ -98,6 +152,66 @@ export async function extractText(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Per-user last-viewed position in a text: the syllable that begins the last-viewed
+// segment, so reopening a text scrolls back there. User-scoped on the backend.
+export interface ReadingPosition {
+  text_id: number;
+  syl_id: string | null;
+  updated_at: string;
+}
+
+export async function getReadingPosition(id: number): Promise<ReadingPosition | null> {
+  const res = await fetch(`${API_BASE}/texts/${id}/reading-position`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function putReadingPosition(id: number, sylId: string | null): Promise<ReadingPosition> {
+  const res = await fetch(`${API_BASE}/texts/${id}/reading-position`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ syl_id: sylId }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Route a correction proposed on a derived text to the text where the selected
+// syllables first appear (their owner), as a PENDING suggestion reviewed there.
+export async function suggestUpstream(
+  textId: number,
+  body: { start_syl_id: string; end_syl_id: string | null; suggested_text: string },
+): Promise<{ suggestion_id: number; routed_to_text_id: number; routed_to_title: string }> {
+  const res = await fetch(`${API_BASE}/texts/${textId}/suggest-upstream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Accept an incoming pending suggestion. mode 'stage' = it joins the owner's staged
+// corrections; 'ripple' = bake just this one into the base now (derived texts update
+// immediately). On a secondary owner it is applied as an edit op either way.
+export async function acceptSuggestion(id: number, mode: 'stage' | 'ripple') {
+  const res = await fetch(`${API_BASE}/suggestions/${id}/accept`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Bake all staged suggestions into the primary's base layer (stable syllable uuids
+// survive), so the corrections ripple to every text derived from it, any depth.
+export async function applyCorrections(id: number) {
+  const res = await fetch(`${API_BASE}/texts/${id}/apply-corrections`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -219,6 +333,34 @@ export async function transclude(
 
 export async function deleteDerivationOp(opId: number) {
   const res = await fetch(`${API_BASE}/derivation-ops/${opId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// A secondary's edit ops (the sidebar's analogue of a primary's suggestions list —
+// delete an op to undo it). Each carries a human-readable `summary` + jump anchor.
+export interface DerivationOp {
+  id: number;
+  text_id: number;
+  op_kind: 'override' | 'insert' | 'delete' | 'transclude';
+  anchor_syl_id: string | null;
+  summary: string;
+}
+
+export async function listDerivationOps(textId: number): Promise<DerivationOp[]> {
+  const res = await fetch(`${API_BASE}/texts/${textId}/derivation-ops`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+// Insert a manual line break (a hosted "\n" token) before a composed token of a
+// secondary text (before_syl_id null = at the end). Undone by deleting its op.
+export async function insertBreak(textId: number, beforeSylId: string | null): Promise<ComposedResult> {
+  const res = await fetch(`${API_BASE}/texts/${textId}/insert-break`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ before_syl_id: beforeSylId }),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -578,12 +720,6 @@ export async function buildManifest(textId: number, instanceId?: string) {
   return res.json();
 }
 
-export async function publishArchive(textId: number) {
-  const res = await fetch(`${API_BASE}/texts/${textId}/export/publish`, { method: 'POST' });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
 // --------------------------------------------------------------------------
 // Catalog + pipeline status
 // --------------------------------------------------------------------------
@@ -637,13 +773,3 @@ export async function syncSessions(instanceId: string) {
   return res.json();
 }
 
-export type ExportFormat = 'source' | 'json' | 'markdown' | 'cherrytree' | 'obsidian' | 'transcript-docx';
-export type ApplyEdits = 'none' | 'all';
-
-export function exportDownloadUrl(
-  textId: number,
-  format: ExportFormat,
-  applyEdits: ApplyEdits = 'none',
-): string {
-  return `${API_BASE}/texts/${textId}/export/${format}?apply_edits=${applyEdits}`;
-}

@@ -10,9 +10,38 @@ class TextBase(BaseModel):
 class TextCreate(TextBase):
     pass
 
+class TextMetaUpdate(BaseModel):
+    """Editable text metadata (inline rename / regroup in the texts list). Only the
+    provided fields change; an empty `text_group` clears the group (NULL == ungrouped)."""
+    title: Optional[str] = None
+    text_group: Optional[str] = None
+
+class TextGroupCreate(BaseModel):
+    """Register a (possibly empty) group path so it persists with no texts in it (Part 12)."""
+    path: str
+
+class TextGroupMove(BaseModel):
+    """Reorganize a group: nest `src_path` under `dest_path` ("" == top level)."""
+    src_path: str
+    dest_path: str = ""
+
+class TextGroupDelete(BaseModel):
+    """Delete an empty group (and any empty registry descendants)."""
+    path: str
+
+class TextGroupReorder(BaseModel):
+    """Place `src_path` under `parent_path` ("" == root), immediately before the sibling
+    `before_path` (or at the end if empty). Reorders root columns and promotes a sub-group
+    to an independent root group (Part 13)."""
+    src_path: str
+    parent_path: str = ""
+    before_path: str = ""
+
 class TextOut(TextBase):
     id: int
     filename: str
+    # Optional user-assigned collection label; NULL == ungrouped (Part 10).
+    text_group: Optional[str] = None
     text_type: str = 'primary'
     parent_text_id: Optional[int] = None
     # Set on a text created by "duplicate (bake edits)" → the id of the original it was
@@ -113,6 +142,10 @@ class TranscludeIn(BaseModel):
     src_start_syl_id: str
     src_end_syl_id: str
 
+class InsertBreakIn(BaseModel):
+    # Manual line break: hosted "\n" inserted BEFORE this composed token; None = at end.
+    before_syl_id: Optional[str] = None
+
 # ─── Tags ─────────────────────────────────────────────────────────────────────
 
 class TagBase(BaseModel):
@@ -123,19 +156,33 @@ class TagBase(BaseModel):
     close_position: Optional[int] = None
 
 class TagCreate(TagBase):
-    pass
+    # Part 6: syllable-native session boundaries (preferred). When present the
+    # server derives open/close offsets from the syllables table.
+    open_syl_id: Optional[str] = None
+    close_syl_id: Optional[str] = None
 
 class TagUpdate(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
+    # Part 8: share toggle. is_shared=True → the tag becomes global (text_id NULL);
+    # is_shared=False → private, owned by `text_id` (the currently-open text, required
+    # when un-sharing). Both ignored when is_shared is not supplied.
+    is_shared: Optional[bool] = None
+    text_id: Optional[int] = None
     # `__unset__` is the sentinel for "leave alone"; explicit None on the wire
     # for these two fields clears the marker.
     open_position: Optional[int] = None
     close_position: Optional[int] = None
+    # Part 6: syllable-native boundaries (preferred). When present the server
+    # derives open/close offsets from the syllables table.
+    open_syl_id: Optional[str] = None
+    close_syl_id: Optional[str] = None
 
 class TagOut(TagBase):
     id: int
-    text_id: int
+    # Part 8: NULL text_id == a shared tag (shown in every text's palette).
+    text_id: Optional[int] = None
+    is_shared: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Spans ────────────────────────────────────────────────────────────────────
@@ -145,8 +192,16 @@ class SpanBase(BaseModel):
     start_offset: int
     end_offset: int
 
-class SpanCreate(SpanBase):
-    pass
+class SpanCreate(BaseModel):
+    tag_id: int
+    # Part 6: syllable-native anchors (preferred). When present the server derives
+    # the char offsets from the syllables table, so the selection the frontend
+    # rendered is authoritative — no second tokenisation to disagree with.
+    start_syl_id: Optional[str] = None
+    end_syl_id: Optional[str] = None
+    # Legacy offset path — still accepted, ignored when syl ids are present.
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
 
 class SpanUpdate(BaseModel):
     tag_id: Optional[int] = None
@@ -155,6 +210,10 @@ class SpanOut(SpanBase):
     id: int
     text_id: int
     tag: Optional[TagOut] = None
+    # Part 6: return the syllable anchors so the client can replay (e.g. undo) by
+    # syllable id rather than by the drift-prone char offsets.
+    start_syl_id: Optional[str] = None
+    end_syl_id: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Markers ──────────────────────────────────────────────────────────────────
@@ -163,10 +222,16 @@ class MarkerOut(BaseModel):
     id: int
     text_id: int
     position: int
+    # Part 6: the syllable that starts at the boundary, so the client can replay
+    # (undo) a separator by syllable id rather than by offset.
+    syl_id: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 class MarkerCreate(BaseModel):
-    position: int
+    # Part 6: syllable-native boundary (preferred) — the syllable that starts at
+    # the marker. `position` is the legacy offset path, ignored when syl_id is set.
+    syl_id: Optional[str] = None
+    position: Optional[int] = None
 
 # ─── Tree nodes ───────────────────────────────────────────────────────────────
 
@@ -178,11 +243,17 @@ class TreeNodeBase(BaseModel):
 class TreeNodeCreate(TreeNodeBase):
     parent_id: Optional[int] = None
     position: Optional[int] = None  # None = append to end
+    # Part 6: syllable-native boundary (preferred) — the syllable the segment
+    # starts at. Derives `segment_start` server-side.
+    segment_start_syl_id: Optional[str] = None
 
 class TreeNodeUpdate(BaseModel):
     title: Optional[str] = None
     transparent: Optional[bool] = None
     segment_start: Optional[int] = None  # explicit null unlinks; absent leaves alone
+    # Part 6: syllable-native boundary (preferred). When present, derives
+    # `segment_start`; explicit null still unlinks via `segment_start`.
+    segment_start_syl_id: Optional[str] = None
 
 class TreeNodeMove(BaseModel):
     new_parent_id: Optional[int] = None
@@ -208,14 +279,54 @@ class SuggestionBase(BaseModel):
     end_offset: int
     suggested_text: str
 
-class SuggestionCreate(SuggestionBase):
-    pass
+class SuggestionCreate(BaseModel):
+    suggested_text: str
+    # Part 6: syllable-native anchors (preferred). Range = (start_syl_id,
+    # end_syl_id). Zero-width insertion = start_syl_id set, end_syl_id null
+    # (insert *before* start_syl_id). Offsets are derived server-side.
+    start_syl_id: Optional[str] = None
+    end_syl_id: Optional[str] = None
+    # Legacy offset path — still accepted, ignored when start_syl_id is present.
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
 
 class SuggestionOut(SuggestionBase):
     id: int
     text_id: int
     created_at: datetime
+    # Part 6: syllable anchors so the client can replay (undo) by syllable id.
+    start_syl_id: Optional[str] = None
+    end_syl_id: Optional[str] = None
+    # Set when this delete-suggestion came from /extract; the text the range moved into
+    # (so the UI can label "extracted → <title>" and offer to open it).
+    extracted_text_id: Optional[int] = None
+    # Upstream review flow: 'applied' = live correction; 'pending' = incoming from a
+    # derived text (origin_*), awaiting review here — no effect until accepted.
+    status: str = 'applied'
+    origin_text_id: Optional[int] = None
+    origin_title: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class SuggestUpstreamIn(BaseModel):
+    """A correction proposed FROM a derived text, routed to the text where the selected
+    syllables first appear (their owner). Anchors are composed-token ids — which ARE the
+    owner's syllable uuids. end_syl_id None = zero-width insertion before start_syl_id;
+    empty suggested_text = proposed deletion."""
+    start_syl_id: str
+    end_syl_id: Optional[str] = None
+    suggested_text: str
+
+class SuggestUpstreamOut(BaseModel):
+    suggestion_id: int
+    routed_to_text_id: int
+    routed_to_title: str
+
+class SuggestionAcceptIn(BaseModel):
+    # 'stage' = join the owner's staged corrections (ripples at the next Apply-all);
+    # 'ripple' = bake just this suggestion into the base now (derived texts update
+    # immediately; other staged corrections stay staged).
+    mode: Literal['stage', 'ripple'] = 'stage'
 
 # ─── Transcript spans (per-syllable tags on the transcription) ─────────────────
 
@@ -342,4 +453,16 @@ class NoteOut(BaseModel):
     updated_at: datetime
     session_tag_ids: List[int] = []
     session_tag_names: List[str] = []
+    model_config = ConfigDict(from_attributes=True)
+
+# ─── Reading position (last-viewed segment per user & text) ─────────────────────
+
+class ReadingPositionIn(BaseModel):
+    # The syllable that begins the segment the user was last looking at.
+    syl_id: Optional[str] = None
+
+class ReadingPositionOut(BaseModel):
+    text_id: int
+    syl_id: Optional[str] = None
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)

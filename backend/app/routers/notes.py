@@ -9,9 +9,23 @@ from ..schemas import (
     NoteCategoryOut,
     NoteCategoryCreate,
 )
-from ..syllable_anchors import anchor_for_range
+from ..syllable_anchors import anchor_for_range, _syl_offset_maps
 
 router = APIRouter(prefix="/api", tags=["notes"])
+
+
+def _derive_note_offsets(row: dict, id2start: dict, id2end: dict):
+    # Part 6, Phase 3: note offsets are DERIVED from the syllable anchors (stored
+    # start_offset/end_offset columns dropped) — a frontend render aid. A note whose
+    # anchors no longer resolve (content baked away by apply-corrections) is dangling:
+    # return None so list callers skip it.
+    start = id2start.get(row.get("start_syl_id"))
+    end = id2end.get(row.get("end_syl_id"))
+    if start is None or end is None:
+        return None
+    row["start_offset"] = start
+    row["end_offset"] = end
+    return row
 
 
 # ─── Categories ───────────────────────────────────────────────────────────────
@@ -82,7 +96,7 @@ def delete_note_category(category_id: int):
 
 NOTE_SELECT = (
     "SELECT n.id, n.text_id, n.category_id, c.name AS category_name, "
-    "n.start_offset, n.end_offset, n.body, n.created_at, n.updated_at "
+    "n.start_syl_id, n.end_syl_id, n.body, n.created_at, n.updated_at "
     "FROM notes n LEFT JOIN note_categories c ON n.category_id = c.id"
 )
 
@@ -135,12 +149,10 @@ def _hydrate_note_row(cursor, row: dict) -> dict:
 def list_notes(text_id: int):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(
-        f"{NOTE_SELECT} WHERE n.text_id = ? "
-        "ORDER BY n.start_offset ASC, n.created_at ASC",
-        (text_id,),
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(f"{NOTE_SELECT} WHERE n.text_id = ?", (text_id,))
+    id2start, id2end = _syl_offset_maps(conn, text_id)
+    derived = (_derive_note_offsets(dict(r), id2start, id2end) for r in cursor.fetchall())
+    rows = [r for r in derived if r is not None]  # skip dangling anchors
     # Batch-fetch all session links for this text and join in Python to
     # avoid N+1 queries.
     cursor.execute(
@@ -162,6 +174,7 @@ def list_notes(text_id: int):
         row["session_tag_ids"] = ids
         row["session_tag_names"] = names
     conn.close()
+    rows.sort(key=lambda r: (r["start_offset"], r.get("created_at") or ""))
     return rows
 
 
@@ -192,27 +205,30 @@ def create_note(text_id: int, payload: NoteCreate):
         conn.close()
         raise
 
-    # Phase 3 E4: anchor on syllable UUIDs at create time (offsets stay primary).
-    start_syl_id, end_syl_id = anchor_for_range(conn, text_id, payload.start_offset, payload.end_offset)
+    # Part 6, Phase 3: the payload is offset-based; map it back to syllable anchors via
+    # the syllables table (off-grid offsets are rejected) and store only the anchors.
+    start_syl_id, end_syl_id = anchor_for_range(
+        conn, text_id, payload.start_offset, payload.end_offset
+    )
+    if start_syl_id is None or end_syl_id is None:
+        conn.close()
+        raise HTTPException(400, "Note offsets must align with syllable boundaries")
     cursor.execute(
-        "INSERT INTO notes (text_id, category_id, start_offset, end_offset, body, start_syl_id, end_syl_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            text_id,
-            payload.category_id,
-            payload.start_offset,
-            payload.end_offset,
-            payload.body,
-            start_syl_id,
-            end_syl_id,
-        ),
+        "INSERT INTO notes (text_id, category_id, body, start_syl_id, end_syl_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (text_id, payload.category_id, payload.body, start_syl_id, end_syl_id),
     )
     new_id = cursor.lastrowid
     _replace_note_sessions(cursor, new_id, payload.session_tag_ids)
     conn.commit()
     cursor.execute(f"{NOTE_SELECT} WHERE n.id = ?", (new_id,))
-    row = _hydrate_note_row(cursor, dict(cursor.fetchone()))
+    id2start, id2end = _syl_offset_maps(conn, text_id)
+    row = _derive_note_offsets(
+        _hydrate_note_row(cursor, dict(cursor.fetchone())), id2start, id2end
+    )
     conn.close()
+    if row is None:  # unreachable: anchors were just validated
+        raise HTTPException(409, "Note anchors do not resolve in this text")
     return row
 
 
@@ -263,8 +279,13 @@ def update_note(note_id: int, payload: NoteUpdate):
 
     conn.commit()
     cursor.execute(f"{NOTE_SELECT} WHERE n.id = ?", (note_id,))
-    row = _hydrate_note_row(cursor, dict(cursor.fetchone()))
+    id2start, id2end = _syl_offset_maps(conn, existing["text_id"])
+    row = _derive_note_offsets(
+        _hydrate_note_row(cursor, dict(cursor.fetchone())), id2start, id2end
+    )
     conn.close()
+    if row is None:  # note's content was baked away — it no longer renders
+        raise HTTPException(409, "Note anchors no longer resolve in this text")
     return row
 
 

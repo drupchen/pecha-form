@@ -1,143 +1,116 @@
-"""Apply edit suggestions to raw_text and produce an offset remap.
+"""Apply edit suggestions to a raw *syllable sequence* (syllable-native, offset-free).
 
-A suggestion is a dict with at minimum:
-    start_offset (int), end_offset (int), suggested_text (str), created_at (str/datetime)
+Part 6, Phase 3: a suggestion is anchored by syllable ids —
+``(start_syl_id, end_syl_id, suggested_text)`` — and applied by splicing the inclusive
+syllable run ``[start_syl_id .. end_syl_id]`` (resolved by position in the ordered
+syllable list) out of the sequence and inserting ``suggested_text`` in its place. There
+is no char-offset arithmetic and no offset map; the old ``offset_map``/``remap``/
+``inv_remap``/``corr_offset_to_raw`` machinery is gone.
 
-Semantics:
-    - start == end → pure insertion
-    - end > start, suggested_text == "" → pure deletion
-    - end > start, suggested_text != "" → replacement
+Semantics (mirror the retired offset core exactly):
+- ``end_syl_id`` None                          → pure insertion *before* ``start_syl_id``
+                                                 (zero-width).
+- ``end_syl_id`` set, ``suggested_text == ""`` → pure deletion of the run.
+- ``end_syl_id`` set, ``suggested_text != ""`` → replacement of the run.
 
-The applier requires that no two selected suggestions overlap — but a zero-width
-insertion may sit at a region's *boundary* (it is applied immediately before/after the
-region, not inside it). Only a genuine intersection (two positive-width edits, or an
-insertion strictly inside a region) is rejected.
+Two positive-width runs may not intersect; a zero-width insertion may sit at a run's
+*boundary* (immediately before the run's first syllable, or before the syllable just
+past its last) but never strictly inside it. On read the applier is defensive: a
+suggestion that intersects an already-placed run is *skipped* (dropped), so a single
+overlapping suggestion can never break the whole corrected layer — the writer is what
+keeps overlaps from being created in the first place.
+
+``splice_suggestions`` returns a list of *segments*, each either a verbatim raw syllable
+(``kind == "keep"``) or an edit (``kind == "edit"``: the inserted/replacing text plus the
+raw span it stands in for). ``segments_text`` joins them into the corrected string —
+byte-identical to the old char splice, since the raw syllables tile the raw text exactly
+(``manifest.generate_syllables`` guarantees ``"".join(s["text"]) == raw_text``).
 """
 
-from bisect import bisect_right
 
-
-def apply_suggestions(raw_text: str, suggestions: list[dict]) -> tuple[str, list[tuple[int, int]]]:
-    """Return (modified_text, offset_map).
-
-    offset_map is a list of (original_offset, modified_offset) pairs, sorted by
-    original_offset, defining piecewise-linear mapping from original to modified.
-    Between consecutive map points the mapping is identity-with-constant-delta.
-    Includes (0, 0) and (len(raw_text), len(modified_text)) bookends.
-    """
-    if not suggestions:
-        return raw_text, [(0, 0), (len(raw_text), len(raw_text))]
-
-    # At a shared start offset, order a zero-width insertion *before* a positive-width
-    # replacement/deletion: the insertion belongs just before the region it abuts, so an
-    # insertion at a replacement's start boundary is adjacent (a.end == b.start), not
-    # overlapping. An insertion strictly inside a region still sorts after the region's
-    # start and trips the `a.end > b.start` check below.
-    sugs = sorted(suggestions, key=lambda s: (
-        s["start_offset"],
-        0 if s["end_offset"] == s["start_offset"] else 1,
-        str(s.get("created_at", "")),
+def _resolve(raw_syllables, suggestions):
+    """Resolve each suggestion's syllable anchors to positions in ``raw_syllables`` and
+    sort into apply order. Returns ``[(start_pos, end_pos|None, sug), …]`` sorted by
+    ``(start_pos, zero-width-insertion-first, created_at)``. A suggestion whose anchor no
+    longer resolves (its syllable was rebuilt away) is skipped — it can't be placed."""
+    pos_of = {s["id"]: i for i, s in enumerate(raw_syllables)}
+    resolved = []
+    for sug in suggestions:
+        sp = pos_of.get(sug.get("start_syl_id"))
+        if sp is None:
+            continue
+        end_id = sug.get("end_syl_id")
+        if end_id is None:
+            ep = None
+        else:
+            ep = pos_of.get(end_id)
+            if ep is None:
+                continue
+        resolved.append((sp, ep, sug))
+    # A zero-width insertion sharing a run's start syllable is ordered *before* the run
+    # (it abuts the boundary, not an overlap); ties break by creation time.
+    resolved.sort(key=lambda r: (
+        r[0],
+        0 if r[1] is None else 1,
+        str(r[2].get("created_at") or ""),
     ))
-
-    for a, b in zip(sugs, sugs[1:]):
-        if a["end_offset"] > b["start_offset"]:
-            raise ValueError(
-                f"overlapping suggestions: [{a['start_offset']},{a['end_offset']}] and "
-                f"[{b['start_offset']},{b['end_offset']}]"
-            )
-
-    out_chunks: list[str] = []
-    offset_map: list[tuple[int, int]] = [(0, 0)]
-    src_cursor = 0
-    delta = 0
-
-    for s in sugs:
-        # Verbatim region before this suggestion
-        out_chunks.append(raw_text[src_cursor:s["start_offset"]])
-        # Map point at start of suggestion (before replacement)
-        offset_map.append((s["start_offset"], s["start_offset"] + delta))
-        # Apply suggestion
-        out_chunks.append(s["suggested_text"])
-        # Update delta: how many chars the modified text gained/lost
-        delta += len(s["suggested_text"]) - (s["end_offset"] - s["start_offset"])
-        # Map point at end of suggestion (after replacement)
-        offset_map.append((s["end_offset"], s["end_offset"] + delta))
-        src_cursor = s["end_offset"]
-
-    # Trailing verbatim region
-    out_chunks.append(raw_text[src_cursor:])
-    modified_text = "".join(out_chunks)
-    offset_map.append((len(raw_text), len(modified_text)))
-
-    return modified_text, offset_map
+    return resolved
 
 
-def inv_remap(mod_offset: int, offset_map: list[tuple[int, int]]) -> int | None:
-    """Map an offset in the modified (corrected) text back to raw_text.
+def splice_suggestions(raw_syllables, suggestions):
+    """Splice syllable-anchored ``suggestions`` into the ordered ``raw_syllables``.
 
-    The inverse of the verbatim regions in ``offset_map``. Returns ``None`` when
-    ``mod_offset`` falls strictly inside a replaced/inserted region — there is no
-    exact raw counterpart there (the chars came from a suggestion, not raw_text).
-    Region boundaries always resolve (they coincide with raw offsets), so a
-    corrected token lying wholly in untouched text maps cleanly on both ends.
+    ``raw_syllables``: dicts ``{id, text, nature, start_offset, end_offset, …}`` in idx
+    order (as from ``manifest.load_syllables``). ``suggestions``: dicts with
+    ``start_syl_id``, ``end_syl_id`` (or None), ``suggested_text``, ``created_at``.
 
-    ``apply_suggestions`` builds the map as strictly alternating segments starting
-    with a verbatim chunk: even-index segments are verbatim (length-preserving),
-    odd-index segments are the replaced/inserted spans.
+    Returns a list of segment dicts:
+    - ``{"kind": "keep", "syl": <raw syllable dict>}`` — an untouched syllable, or
+    - ``{"kind": "edit", "text": <str>, "raw_start": int, "raw_end": int}`` — the
+      inserted/replacing text standing in for raw span ``[raw_start, raw_end)``
+      (``raw_start == raw_end`` for a pure insertion).
+    Raises ``ValueError`` on a genuine run intersection.
     """
-    for i in range(len(offset_map) - 1):
-        o0, m0 = offset_map[i]
-        o1, m1 = offset_map[i + 1]
-        if m0 <= mod_offset <= m1:
-            if mod_offset == m0:
-                return o0
-            if mod_offset == m1:
-                return o1
-            if i % 2 == 0:
-                return o0 + (mod_offset - m0)  # verbatim region
-            return None  # strictly inside an inserted/replaced chunk
-    return None
+    resolved = _resolve(raw_syllables, suggestions)
+
+    # Overlap handling (by position): a positive-width run consumes syllables [sp..ep];
+    # anything that starts at or before ep intersects it and cannot be placed. The writer
+    # (`suggestions._check_overlap`) prevents creating such overlaps, but the extract
+    # delete-suggestion path and legacy data can still produce them — so we *skip* the
+    # unplaceable one (as we already skip a suggestion whose anchor no longer resolves)
+    # rather than raise, which would blank the entire corrected layer for the whole text.
+    placeable = []
+    consumed_to = -1
+    for sp, ep, sug in resolved:
+        if sp <= consumed_to:
+            continue  # intersects an already-consumed run — drop it
+        placeable.append((sp, ep, sug))
+        if ep is not None:
+            consumed_to = ep
+
+    segments = []
+    cursor = 0
+    for sp, ep, sug in placeable:
+        for i in range(cursor, sp):
+            segments.append({"kind": "keep", "syl": raw_syllables[i]})
+        raw_start = raw_syllables[sp]["start_offset"]
+        if ep is None:  # insertion before sp; sp itself is not consumed
+            segments.append({"kind": "edit", "text": sug["suggested_text"],
+                             "raw_start": raw_start, "raw_end": raw_start})
+            cursor = sp
+        else:
+            segments.append({"kind": "edit", "text": sug["suggested_text"],
+                             "raw_start": raw_start,
+                             "raw_end": raw_syllables[ep]["end_offset"]})
+            cursor = ep + 1
+    for i in range(cursor, len(raw_syllables)):
+        segments.append({"kind": "keep", "syl": raw_syllables[i]})
+    return segments
 
 
-def corr_offset_to_raw(offset_map: list[tuple[int, int]], mod_offset: int, *, is_end: bool) -> int:
-    """Map a corrected-text offset back to raw, *snapping* offsets that fall inside a
-    replaced/inserted region to that region's raw boundary (where ``inv_remap``
-    returns ``None``). Verbatim offsets map exactly; a region boundary is exact; for
-    a position strictly inside a replacement, ``is_end`` picks the raw end vs. raw
-    start so a whole corrected sub-token collapses onto the one raw region it came
-    from. Used to give corrected syllables/units raw offsets for the editor display
-    and the main-text matcher."""
-    for i in range(len(offset_map) - 1):
-        o0, m0 = offset_map[i]
-        o1, m1 = offset_map[i + 1]
-        if m0 <= mod_offset <= m1:
-            if mod_offset == m0:
-                return o0
-            if mod_offset == m1:
-                return o1
-            if i % 2 == 0:  # verbatim region (length-preserving)
-                return o0 + (mod_offset - m0)
-            return o1 if is_end else o0  # inside a replaced/inserted span → snap
-    return offset_map[-1][0] if offset_map else mod_offset
-
-
-def remap(orig_offset: int, offset_map: list[tuple[int, int]]) -> int:
-    """Map an offset in raw_text to its position in the modified text.
-
-    Offsets that fall inside a replaced range collapse to the start of the replacement.
-    Use this for span boundaries when computing exporter "text" slices.
-    """
-    keys = [m[0] for m in offset_map]
-    idx = bisect_right(keys, orig_offset) - 1
-    if idx < 0:
-        return 0
-    base_orig, base_mod = offset_map[idx]
-    if idx + 1 < len(offset_map):
-        next_orig, next_mod = offset_map[idx + 1]
-        if base_orig == next_orig:
-            # We landed inside a replacement region; collapse to start.
-            return base_mod
-        if orig_offset <= next_orig:
-            # Verbatim region (identity shifted by constant delta).
-            return base_mod + (orig_offset - base_orig)
-    return base_mod + (orig_offset - base_orig)
+def segments_text(segments):
+    """The corrected string: raw syllable texts with edit runs spliced in. Byte-identical
+    to the old ``apply_suggestions`` output because the raw syllables tile the raw text."""
+    parts = [seg["syl"]["text"] if seg["kind"] == "keep" else seg["text"]
+             for seg in segments]
+    return "".join(parts)

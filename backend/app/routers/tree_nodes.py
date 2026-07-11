@@ -6,16 +6,20 @@ from ..db import get_db
 from ..schemas import (
     TreeNodeOut, TreeNodeCreate, TreeNodeUpdate, TreeNodeMove, TreeNodeReorder
 )
-from ..syllable_anchors import anchor_for_point
+from ..syllable_anchors import anchor_for_point, offset_for_syl_start, _syl_offset_maps
 
 router = APIRouter(prefix="/api", tags=["tree_nodes"])
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _row_to_node(row: sqlite3.Row) -> dict:
+def _row_to_node(row: sqlite3.Row, id2start: dict) -> dict:
     d = dict(row)
     d["transparent"] = bool(d["transparent"])
+    # Part 6, Phase 3: segment_start is DERIVED from the syllable anchor (the stored
+    # segment_start offset column was dropped) — a frontend render aid.
+    syl = d.get("segment_start_syl_id")
+    d["segment_start"] = id2start.get(syl) if syl is not None else None
     return d
 
 
@@ -142,7 +146,8 @@ def list_tree_nodes(text_id: int):
         "ORDER BY parent_id IS NULL DESC, parent_id ASC, position ASC",
         (text_id,),
     )
-    rows = [_row_to_node(r) for r in cursor.fetchall()]
+    id2start, _ = _syl_offset_maps(conn, text_id)
+    rows = [_row_to_node(r, id2start) for r in cursor.fetchall()]
     conn.close()
     return rows
 
@@ -156,7 +161,8 @@ def get_nested_tree(text_id: int):
         "SELECT * FROM tree_nodes WHERE text_id = ? ORDER BY parent_id, position",
         (text_id,),
     )
-    rows = [_row_to_node(r) for r in cursor.fetchall()]
+    id2start, _ = _syl_offset_maps(conn, text_id)
+    rows = [_row_to_node(r, id2start) for r in cursor.fetchall()]
     conn.close()
 
     by_parent: dict[Optional[int], list[dict]] = {}
@@ -182,14 +188,34 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
         conn.close()
         raise HTTPException(404, "Text not found")
 
+    # Part 6: a segment link is anchored by syllable UUID. Prefer the syllable id the
+    # frontend linked (existence is the check); the legacy offset path maps the offset
+    # back to a syllable start via the syllables table.
+    from_syl = payload.segment_start_syl_id is not None
+    seg_syl_id = None
+    if from_syl:
+        try:
+            offset_for_syl_start(conn, text_id, payload.segment_start_syl_id)
+        except ValueError as e:
+            conn.close()
+            raise HTTPException(400, str(e))
+        seg_syl_id = payload.segment_start_syl_id
+
     try:
         _validate_parent(cursor, text_id, payload.parent_id)
-        _validate_segment_start(cursor, text_id, payload.segment_start)
+        if not from_syl:
+            _validate_segment_start(cursor, text_id, payload.segment_start)
     except HTTPException:
         conn.close()
         raise
 
-    if payload.title is None and payload.segment_start is None:
+    if not from_syl and payload.segment_start is not None:
+        seg_syl_id = anchor_for_point(conn, text_id, payload.segment_start)
+        if seg_syl_id is None:
+            conn.close()
+            raise HTTPException(400, "segment_start must fall on a syllable boundary")
+
+    if payload.title is None and seg_syl_id is None:
         conn.close()
         raise HTTPException(400, "title or segment_start must be provided")
 
@@ -205,15 +231,13 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
         _shift_siblings(cursor, payload.parent_id, text_id, position, +1)
 
     try:
-        # Phase 3 E4: anchor on the syllable that starts at segment_start.
-        seg_syl_id = (anchor_for_point(conn, text_id, payload.segment_start)
-                      if payload.segment_start is not None else None)
+        # Part 6, Phase 3: store only the syllable anchor (segment_start derived on read).
         cursor.execute(
-            "INSERT INTO tree_nodes (text_id, parent_id, position, title, segment_start, transparent, segment_start_syl_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO tree_nodes (text_id, parent_id, position, title, transparent, segment_start_syl_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 text_id, payload.parent_id, position, payload.title,
-                payload.segment_start, int(payload.transparent), seg_syl_id,
+                int(payload.transparent), seg_syl_id,
             ),
         )
         new_id = cursor.lastrowid
@@ -224,7 +248,8 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
         raise HTTPException(400, f"Integrity error: {e}")
 
     cursor.execute("SELECT * FROM tree_nodes WHERE id = ?", (new_id,))
-    row = _row_to_node(cursor.fetchone())
+    id2start, _ = _syl_offset_maps(conn, text_id)
+    row = _row_to_node(cursor.fetchone(), id2start)
     conn.close()
     return row
 
@@ -249,8 +274,19 @@ def update_tree_node(node_id: int, payload: TreeNodeUpdate):
 
     # segment_start: only touch when the caller actually sent it (so existing
     # links aren't accidentally cleared by partial PATCHes). Multiple nodes
-    # may now share the same segment_start — no uniqueness check.
-    if "segment_start" in provided:
+    # may now share the same segment_start — no uniqueness check. Part 6: a
+    # segment_start_syl_id takes precedence and derives the offset from the
+    # syllables table (existence check, no units_json).
+    from_syl = "segment_start_syl_id" in provided and payload.segment_start_syl_id is not None
+    new_seg_syl_id = existing["segment_start_syl_id"]
+    if from_syl:
+        try:
+            offset_for_syl_start(conn, existing["text_id"], payload.segment_start_syl_id)
+        except ValueError as e:
+            conn.close()
+            raise HTTPException(400, str(e))
+        new_seg_syl_id = payload.segment_start_syl_id
+    elif "segment_start" in provided:
         new_segment_start = payload.segment_start  # may be None to unlink
         if new_segment_start is not None:
             try:
@@ -258,25 +294,26 @@ def update_tree_node(node_id: int, payload: TreeNodeUpdate):
             except HTTPException:
                 conn.close()
                 raise
-    else:
-        new_segment_start = existing["segment_start"]
+            new_seg_syl_id = anchor_for_point(conn, existing["text_id"], new_segment_start)
+            if new_seg_syl_id is None:
+                conn.close()
+                raise HTTPException(400, "segment_start must fall on a syllable boundary")
+        else:
+            new_seg_syl_id = None  # explicit unlink
 
-    # CHECK constraint: at least one of title / segment_start must be non-null.
-    if new_title is None and new_segment_start is None:
+    # CHECK constraint: at least one of title / segment_start_syl_id must be non-null.
+    if new_title is None and new_seg_syl_id is None:
         conn.close()
         raise HTTPException(400, "Cannot clear title on a free-form node")
-
-    # Phase 3 E4: keep the syllable anchor in sync with segment_start.
-    new_seg_syl_id = (anchor_for_point(conn, existing["text_id"], new_segment_start)
-                      if new_segment_start is not None else None)
     cursor.execute(
-        "UPDATE tree_nodes SET title = ?, transparent = ?, segment_start = ?, "
+        "UPDATE tree_nodes SET title = ?, transparent = ?, "
         "segment_start_syl_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (new_title, new_transparent, new_segment_start, new_seg_syl_id, node_id),
+        (new_title, new_transparent, new_seg_syl_id, node_id),
     )
     conn.commit()
     cursor.execute("SELECT * FROM tree_nodes WHERE id = ?", (node_id,))
-    row = _row_to_node(cursor.fetchone())
+    id2start, _ = _syl_offset_maps(conn, existing["text_id"])
+    row = _row_to_node(cursor.fetchone(), id2start)
     conn.close()
     return row
 
@@ -342,7 +379,8 @@ def move_tree_node(node_id: int, payload: TreeNodeMove):
         raise HTTPException(400, f"Move failed: {e}")
 
     cursor.execute("SELECT * FROM tree_nodes WHERE id = ?", (node_id,))
-    row = _row_to_node(cursor.fetchone())
+    id2start, _ = _syl_offset_maps(conn, text_id)
+    row = _row_to_node(cursor.fetchone(), id2start)
     conn.close()
     return row
 

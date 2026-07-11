@@ -22,10 +22,11 @@ so main-text moves keep their identity. The mapping is fully deterministic, so
 re-exporting is idempotent.
 
 NOTE: a ``move`` makes the emitted list no longer sorted by ``orig_start``/``orig_end``
-(a relocated token carries its *original* skeleton offsets to its new position). The
-exporters that bisect those offsets onto the published tokens
-(``manifest_exporter.build_manifest`` tag overlay, ``annotations_exporter``) must use
-``original_offset_index`` below rather than assuming emit order is ascending.
+(a relocated token carries its *original* skeleton offsets to its new position). Any
+consumer that bisects those offsets onto the published tokens must use
+``original_offset_index`` below rather than assuming emit order is ascending. (Export
+consumers were removed for now — see git history; they return on the syllable-native
+model in a later pass.)
 """
 
 import uuid

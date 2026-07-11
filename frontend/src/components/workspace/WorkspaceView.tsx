@@ -12,7 +12,7 @@ import { TreePane } from './TreePane';
 import { TaggerPane } from './TaggerPane';
 import { Sidebar } from './Sidebar';
 import { LinkOverlay } from './LinkOverlay';
-import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2 } from 'lucide-react';
+import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2, WrapText } from 'lucide-react';
 import { TaggerSearchContext, findMatches } from './TaggerSearchContext';
 import { scrollTaggerToOffset } from './scrollTaggerToOffset';
 
@@ -35,6 +35,8 @@ export const WorkspaceView: React.FC = () => {
   const setFullscreen = useUIStore(s => s.setWorkspaceFullscreen);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
+  const verseVertical = useUIStore(s => s.verseVerticalMode);
+  const toggleVerseVertical = useUIStore(s => s.toggleVerseVerticalMode);
 
   // While "place a passage" is armed, Escape cancels it.
   useEffect(() => {
@@ -235,6 +237,21 @@ export const WorkspaceView: React.FC = () => {
               <BookOpen size={12} /> Consult
             </button>
           </div>
+          <button
+            type="button"
+            onClick={toggleVerseVertical}
+            className={`p-1.5 rounded-md transition-colors ${
+              verseVertical
+                ? 'bg-lapis text-cream-hi'
+                : 'text-bronze hover:text-lapis hover:bg-cream'
+            }`}
+            style={{ border: '1px solid var(--cline)' }}
+            title={verseVertical
+              ? 'Verse vertical mode ON — spaces in verse-tagged passages render as line breaks'
+              : 'Verse vertical mode — lay out verse-tagged passages vertically'}
+          >
+            <WrapText size={14} />
+          </button>
           <button
             type="button"
             onClick={toggleFullscreen}

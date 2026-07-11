@@ -166,6 +166,19 @@ cython_debug/
 backend/sapche.db
 backend/sapche.db.backup*
 backend/sapche.db.bak*
+backend/sapche.db.*bak*
+
+# Local tooling / IDE state.
+.idea/
+.tokensave/
+.~lock.*#
+
+# Working data for the doc pipelines (large, machine-local).
+input/
+output/
+docx_to_spreadsheet/input/
+docx_to_spreadsheet/output/
+separate_tib_phon_trans/
 # Node deps / build output for the Vite frontend.
 node_modules/
 frontend/dist/

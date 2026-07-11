@@ -1,12 +1,13 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { listDerivationOps, deleteDerivationOp, applyCorrections, acceptSuggestion, type DerivationOp } from '../../api/client';
 import { useTagStore, type Tag, selectRegularTags, selectSessionTags } from '../../store/useTagStore';
 import { useNoteStore, type Note } from '../../store/useNoteStore';
 import { useSuggestionStore, type Suggestion } from '../../store/useSuggestionStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useTextStore } from '../../store/useTextStore';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { ChevronRight, ChevronLeft, Tag as TagIcon, Layers, Plus, X, Pencil, Mic, StickyNote, Check, MessageSquare, Trash2 } from 'lucide-react';
-import { scrollTaggerToOffset } from './scrollTaggerToOffset';
+import { ChevronRight, ChevronLeft, Tag as TagIcon, Layers, Plus, X, Pencil, Mic, StickyNote, Check, MessageSquare, Trash2, Globe, Lock } from 'lucide-react';
+import { scrollTaggerToOffset, scrollTaggerToSyllable } from './scrollTaggerToOffset';
 
 const REGULAR_COLORS = [
   '#ef4444', '#f97316', '#f59e0b', '#84cc16',
@@ -15,7 +16,8 @@ const REGULAR_COLORS = [
 ];
 
 const TagRow: React.FC<{ tag: Tag; dimmed?: boolean }> = ({ tag, dimmed }) => {
-  const { updateTag, deleteTag, spans } = useTagStore();
+  const { updateTag, deleteTag, setTagShared, spans } = useTagStore();
+  const currentText = useTextStore(s => s.currentText);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(tag.name);
@@ -94,6 +96,24 @@ const TagRow: React.FC<{ tag: Tag; dimmed?: boolean }> = ({ tag, dimmed }) => {
           </button>
         )}
       </div>
+      {/* Part 8: shared/private toggle (regular tags only). Globe stays visible so the
+          shared state is glanceable; the private Lock reveals on hover. */}
+      {!isEditing && tag.tag_kind === 'regular' && !consultMode && currentText && (
+        <button
+          type="button"
+          onClick={() => setTagShared(tag.id, !tag.is_shared, currentText.id)}
+          className={`shrink-0 p-0.5 transition-colors ${
+            tag.is_shared
+              ? 'text-vermilion hover:text-vermilion-deep'
+              : 'text-bronze opacity-0 group-hover:opacity-100 hover:text-vermilion'
+          }`}
+          title={tag.is_shared
+            ? 'Shared across all texts — click to make private to this document'
+            : 'Private to this document — click to share across all texts'}
+        >
+          {tag.is_shared ? <Globe size={12} /> : <Lock size={12} />}
+        </button>
+      )}
       {!isEditing && !dimmed && !consultMode && (
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
           <button
@@ -105,7 +125,10 @@ const TagRow: React.FC<{ tag: Tag; dimmed?: boolean }> = ({ tag, dimmed }) => {
           </button>
           <button
             onClick={() => {
-              if (confirm(`Delete tag "${tag.name}"? Any annotations using it will also be removed.`)) {
+              const extra = tag.is_shared
+                ? ' This tag is shared — it will be removed from every text.'
+                : '';
+              if (confirm(`Delete tag "${tag.name}"? Any annotations using it will also be removed.${extra}`)) {
                 deleteTag(tag.id);
               }
             }}
@@ -213,22 +236,38 @@ interface SuggestionRowProps {
   onDelete: () => void;
 }
 const SuggestionRow: React.FC<SuggestionRowProps> = ({ s, rawText, onDelete }) => {
+  const texts = useTextStore(st => st.texts);
+  const loadText = useTextStore(st => st.loadText);
   const original = rawText.substring(s.start_offset, s.end_offset);
   const isInsertion = s.start_offset === s.end_offset;
+  const isExtraction = s.extracted_text_id != null;
   const isDeletion = !isInsertion && s.suggested_text.length === 0;
-  const kind = isInsertion ? 'insertion' : isDeletion ? 'deletion' : 'replacement';
+  const kind = isInsertion ? 'insertion' : isExtraction ? 'extraction' : isDeletion ? 'deletion' : 'replacement';
+  const target = isExtraction ? texts.find(d => d.id === s.extracted_text_id) : undefined;
+  // Prefer the syllable-native jump (matches how the suggestion is anchored); fall back
+  // to the offset scan (which also pulses the segment) if the id can't be resolved.
+  const jump = () => {
+    if (!s.start_syl_id || !scrollTaggerToSyllable(s.start_syl_id)) scrollTaggerToOffset(s.start_offset);
+  };
 
   return (
     <li className="rounded group" style={{ border: '1px solid var(--cline)' }}>
       <button
         type="button"
-        onClick={() => scrollTaggerToOffset(s.start_offset)}
+        onClick={jump}
         className="block w-full text-left p-1.5 hover:bg-cream rounded-t"
         title="Scroll to this position in the text"
       >
         <div className="flex items-center gap-1 mb-0.5 flex-wrap">
-          <span className="text-[9px] text-bronze uppercase">{kind}</span>
+          <span className={`text-[9px] uppercase ${isExtraction ? 'text-teal-700 dark:text-teal-300' : 'text-bronze'}`}>{kind}</span>
           <span className="text-[9px] text-bronze font-mono">{s.start_offset}–{s.end_offset}</span>
+          {isExtraction && (
+            <span
+              onClick={(e) => { e.stopPropagation(); if (s.extracted_text_id != null) loadText(s.extracted_text_id); }}
+              className="text-[9px] text-teal-700 dark:text-teal-300 hover:underline cursor-pointer truncate max-w-[10rem]"
+              title="Open the extracted text"
+            >→ {target ? target.title : 'extracted text'}</span>
+          )}
         </div>
         <p className="tibetan-text-sm text-xs text-ink break-words line-clamp-2">
           {original.length > 0 && (
@@ -478,7 +517,146 @@ export const Sidebar: React.FC = () => {
   >('tags');
 
   // Corrections apply on creation (no accept/reject) — the list is delete-only.
-  const { suggestions, deleteSuggestion } = useSuggestionStore();
+  // Incoming PENDING suggestions (routed here from derived texts) are the exception:
+  // they await review — accept (stage or ripple) or reject.
+  const { suggestions, deleteSuggestion, fetchSuggestions } = useSuggestionStore();
+  const appliedSuggestions = useMemo(() => suggestions.filter(s => s.status !== 'pending'), [suggestions]);
+  const pendingIncoming = useMemo(() => suggestions.filter(s => s.status === 'pending'), [suggestions]);
+  const loadText = useTextStore(s => s.loadText);
+
+  // A secondary's edits are derivation ops (not suggestions): the same panel lists
+  // them, delete-to-undo. Refetched whenever the open text changes identity (which a
+  // post-edit loadText refresh triggers).
+  const isSecondary = currentText?.text_type === 'secondary';
+  const [ops, setOps] = useState<DerivationOp[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    if (currentText?.text_type === 'secondary') {
+      listDerivationOps(currentText.id)
+        .then(o => { if (!cancelled) setOps(o); })
+        .catch(() => { if (!cancelled) setOps([]); });
+    } else {
+      setOps([]);
+    }
+    return () => { cancelled = true; };
+  }, [currentText]);
+  const handleDeleteOp = async (opId: number) => {
+    try {
+      await deleteDerivationOp(opId);
+      if (currentText) await loadText(currentText.id);  // recompose + refresh panels
+    } catch (e: any) {
+      alert('Failed to undo edit: ' + (e?.message || e));
+    }
+  };
+
+  // The ripple trigger: bake the primary's staged corrections into its base layer so
+  // they propagate to every text derived from it. Consumes the staged list (pending
+  // incoming suggestions are untouched — they bake only via their own accept).
+  const handleApplyCorrections = async () => {
+    if (!currentText) return;
+    if (!confirm(
+      `Apply all ${appliedSuggestions.length} correction(s) to the base text?\n\n` +
+      'They become part of the text itself (no longer individually undoable) and ' +
+      'ripple to every text derived from this one.',
+    )) return;
+    try {
+      await applyCorrections(currentText.id);
+      await loadText(currentText.id);
+    } catch (e: any) {
+      alert('Failed to apply corrections: ' + (e?.message || e));
+    }
+  };
+
+  // Review an incoming suggestion. 'stage' joins the staged corrections (ripples at the
+  // next Apply-all); 'ripple' bakes just this one into the base now. On a secondary
+  // owner the backend applies it as an edit op (live) regardless of mode.
+  const handleAcceptIncoming = async (id: number, mode: 'stage' | 'ripple') => {
+    if (!currentText) return;
+    if (mode === 'ripple' && !confirm(
+      'Accept and bake this correction into the base now?\n\n' +
+      'It immediately ripples to every text derived from this one; your other staged ' +
+      'corrections stay staged.',
+    )) return;
+    try {
+      await acceptSuggestion(id, mode);
+      if (mode === 'ripple' || isSecondary) await loadText(currentText.id);
+      else await fetchSuggestions(currentText.id);
+    } catch (e: any) {
+      alert('Failed to accept: ' + (e?.message || e));
+    }
+  };
+
+  // Incoming-review block, shown on any text that owns pending suggestions (a primary,
+  // or an intermediate secondary whose hosted syllables were suggested on downstream).
+  const renderIncoming = () => pendingIncoming.length > 0 && currentText && (
+    <div className="mb-2 shrink-0">
+      <div className="text-[10px] uppercase tracking-wider text-lapis mb-1 px-1">
+        Incoming — pending review ({pendingIncoming.length})
+      </div>
+      <ul className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+        {pendingIncoming.map(s => {
+          const original = currentText.raw_text.substring(s.start_offset, s.end_offset);
+          return (
+            <li key={s.id} className="rounded group"
+                style={{ border: '1px solid var(--cline)', background: 'rgba(37,99,235,0.06)' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!s.start_syl_id || !scrollTaggerToSyllable(s.start_syl_id)) {
+                    scrollTaggerToOffset(s.start_offset);
+                  }
+                }}
+                className="block w-full text-left p-1.5 hover:bg-cream rounded-t"
+                title="Scroll to this position in the text"
+              >
+                <div className="flex items-center gap-1 mb-0.5 flex-wrap">
+                  <span className="text-[9px] text-lapis uppercase truncate max-w-full">
+                    from {s.origin_title ?? 'a derived text'}
+                  </span>
+                </div>
+                <p className="tibetan-text-sm text-xs text-ink break-words line-clamp-2">
+                  {original.length > 0 && (
+                    <span className="line-through text-rose-600">{original}</span>
+                  )}
+                  {original.length > 0 && s.suggested_text.length > 0 && ' → '}
+                  {s.suggested_text.length > 0 && (
+                    <span className="text-emerald-700 font-medium">{s.suggested_text}</span>
+                  )}
+                </p>
+              </button>
+              <div className="flex gap-1 px-1.5 pb-1 justify-end items-center">
+                <button
+                  onClick={() => handleAcceptIncoming(s.id, 'stage')}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-jade/10 text-jade hover:bg-jade hover:text-cream-hi transition-colors"
+                  title={isSecondary
+                    ? 'Accept — applied as an edit here (ripples to texts derived from this one)'
+                    : 'Accept — joins your staged corrections; ripples at the next Apply-all'}
+                >
+                  ✓ Accept
+                </button>
+                {!isSecondary && (
+                  <button
+                    onClick={() => handleAcceptIncoming(s.id, 'ripple')}
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-lapis/10 text-lapis hover:bg-lapis hover:text-cream-hi transition-colors"
+                    title="Accept & bake into the base now — ripples immediately to all derived texts"
+                  >
+                    ✓ Accept & ripple
+                  </button>
+                )}
+                <button
+                  onClick={() => deleteSuggestion(s.id)}
+                  className="text-[10px] px-1.5 py-0.5 rounded text-bronze hover:text-vermilion-deep hover:bg-vermilion/10 transition-colors"
+                  title="Reject (deletes the suggestion)"
+                >
+                  ✗ Reject
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 
   const notes = useNoteStore(s => s.notes);
   const noteCategories = useNoteStore(s => s.categories);
@@ -701,25 +879,81 @@ export const Sidebar: React.FC = () => {
                 : 'text-bronze hover:bg-cream'
             }`}
           >
-            <MessageSquare size={12} /> Suggestions ({suggestions.length})
+            <MessageSquare size={12} /> {isSecondary ? `Edits (${ops.length})` : `Suggestions (${appliedSuggestions.length})`}
+            {pendingIncoming.length > 0 && (
+              <span
+                className="ml-1 text-[9px] px-1.5 py-px rounded-full bg-lapis text-cream-hi normal-case tracking-normal"
+                title="Incoming suggestions pending review"
+              >
+                {pendingIncoming.length} in
+              </span>
+            )}
           </button>
           {activeSection === 'suggestions' && currentText && (
             <div className="flex-1 min-h-0 p-3 flex flex-col">
-              {suggestions.length === 0 ? (
-                <p className="text-xs text-ink-soft italic px-1">
-                  No corrections yet — select text in the tagger and pick "Suggest edit".
-                </p>
+              {renderIncoming()}
+              {isSecondary ? (
+                ops.length === 0 ? (
+                  pendingIncoming.length === 0 && (
+                    <p className="text-xs text-ink-soft italic px-1">
+                      No edits yet — select text in the tagger and pick "Suggest edit",
+                      "Delete section" or "Line break".
+                    </p>
+                  )
+                ) : (
+                  <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5">
+                    {ops.map(o => (
+                      <li key={o.id} className="rounded group" style={{ border: '1px solid var(--cline)' }}>
+                        <button
+                          type="button"
+                          onClick={() => { if (o.anchor_syl_id) scrollTaggerToSyllable(o.anchor_syl_id); }}
+                          className="block w-full text-left p-1.5 hover:bg-cream rounded-t"
+                          title="Scroll to this edit in the text"
+                        >
+                          <div className="flex items-center gap-1 mb-0.5">
+                            <span className="text-[9px] text-bronze uppercase">{o.op_kind}</span>
+                          </div>
+                          <p className="tibetan-text-sm text-xs text-ink break-words line-clamp-2">{o.summary}</p>
+                        </button>
+                        <div className="flex gap-0.5 px-1.5 pb-1 justify-end opacity-0 group-hover:opacity-100">
+                          <button onClick={() => handleDeleteOp(o.id)} title="Undo this edit" className="text-bronze hover:text-vermilion-deep p-0.5 rounded">
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              ) : appliedSuggestions.length === 0 ? (
+                pendingIncoming.length === 0 && (
+                  <p className="text-xs text-ink-soft italic px-1">
+                    No corrections yet — select text in the tagger and pick "Suggest edit".
+                  </p>
+                )
               ) : (
-                <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5">
-                  {suggestions.map(s => (
-                    <SuggestionRow
-                      key={s.id}
-                      s={s}
-                      rawText={currentText.raw_text}
-                      onDelete={() => deleteSuggestion(s.id)}
-                    />
-                  ))}
-                </ul>
+                <>
+                  {!consultMode && (
+                    <button
+                      type="button"
+                      onClick={handleApplyCorrections}
+                      className="mb-2 shrink-0 text-xs px-2 py-1.5 rounded bg-amber-robe/10 text-amber-robe hover:bg-amber-robe hover:text-cream-hi transition-colors font-medium"
+                      style={{ border: '1px solid var(--cline)' }}
+                      title="Bake all corrections into the base text so they ripple to every text derived from this one"
+                    >
+                      Apply all to base — ripples to derived texts
+                    </button>
+                  )}
+                  <ul className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5">
+                    {appliedSuggestions.map(s => (
+                      <SuggestionRow
+                        key={s.id}
+                        s={s}
+                        rawText={currentText.raw_text}
+                        onDelete={() => deleteSuggestion(s.id)}
+                      />
+                    ))}
+                  </ul>
+                </>
               )}
             </div>
           )}

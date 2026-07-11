@@ -47,6 +47,8 @@ interface TreeNodeState {
     position?: number;
     title?: string | null;
     segment_start?: number | null;
+    /** Part 6: syllable that starts the linked segment (preferred over segment_start). */
+    segment_start_syl_id?: string | null;
     transparent?: boolean;
   }) => Promise<TreeNode>;
   updateNode: (nodeId: number, params: {
@@ -54,6 +56,8 @@ interface TreeNodeState {
     transparent?: boolean;
     /** integer offset to link to a segment, null to unlink, omit to leave alone */
     segment_start?: number | null;
+    /** Part 6: syllable that starts the linked segment (preferred over segment_start). */
+    segment_start_syl_id?: string | null;
   }) => Promise<TreeNode>;
   moveNode: (nodeId: number, new_parent_id: number | null, new_position: number) => Promise<void>;
   reorderSiblings: (textId: number, parent_id: number | null, ordered_ids: number[]) => Promise<void>;
@@ -97,7 +101,9 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
           parent_id: params.parent_id ?? null,
           position: params.position,
           title: params.title ?? null,
+          // Part 6: send the syllable id when we have it; the server derives the offset.
           segment_start: params.segment_start ?? null,
+          segment_start_syl_id: params.segment_start_syl_id ?? null,
           transparent: params.transparent ?? false,
         }),
       });

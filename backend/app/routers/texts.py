@@ -1,22 +1,31 @@
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends, Body
 from typing import List, Any, Dict
-import json
 import os
-import sqlite3
 from typing import Optional
 
 from ..db import get_db
-from ..schemas import TextOut, TextDetailOut, ExtractIn, CloneIn
+from ..schemas import TextOut, TextDetailOut, ExtractIn, CloneIn, TextMetaUpdate
+from .text_groups import normalize_group_path
 from ..tokenizer import prepare_and_tokenize
-from ..cherrytree_importer import import_cherrytree
-from ..exporters.json_exporter import SCHEMA_VERSION as JSON_SCHEMA_VERSION
 from ..manifest import (
     persist_syllables, default_instance_id, corrected_root_units, load_syllables,
-    syllable_ids_between, _text_corrected,
+    syllable_ids_between, _text_corrected, units_from_syllables,
+    offset_to_syllable_index,
 )
-from ..main_text_align import snap_portions_to_syllables, snap_section_boundary
 
 router = APIRouter(prefix="/api/texts", tags=["texts"])
+
+
+def _units_for(conn, text_id: int):
+    """The text's units, DERIVED from its token sequence (Part 6: units are a
+    projection, not a stored ``units_json`` column). Primaries project their syllable
+    partition; secondaries project their COMPOSED sequence (parent refs + ops), which
+    carries the same cumulative offsets. A frontend render/selection aid."""
+    row = conn.execute("SELECT text_type FROM texts WHERE id = ?", (text_id,)).fetchone()
+    if row and row["text_type"] == "secondary":
+        from ..derivation import compose_secondary
+        return units_from_syllables(compose_secondary(conn, text_id))
+    return units_from_syllables(load_syllables(conn, text_id))
 
 
 def _apply_instance_metadata(
@@ -41,6 +50,9 @@ def _apply_instance_metadata(
         "WHERE id = ?",
         (instance_id, teaching_id, title_bo, access_level, doc_id),
     )
+    # Part 6, Phase 3: the syllables table is the sole tokenisation. Units are derived
+    # from it on read (_units_for); annotations are anchored by syllable UUID, so there
+    # are no cached offsets to heal when the syllable layer is (re)built.
     persist_syllables(conn, doc_id, instance_id, raw_text)
     return instance_id
 
@@ -50,12 +62,11 @@ def _create_primary_text(conn, filename: str, title: str, source_text: str,
     """Create a fresh, independent primary text from a raw string, building its own
     syllable layer (fresh instance_id + uuids). Shared by /extract and /clone. Mirrors
     the tokenize→insert→persist_syllables path of upload_text."""
-    raw_text, units = prepare_and_tokenize(source_text)
+    raw_text, _units = prepare_and_tokenize(source_text)
     cur = conn.execute(
-        "INSERT INTO texts (filename, title, source_text, raw_text, units_json, "
-        "cloned_from_text_id) VALUES (?, ?, ?, ?, ?, ?)",
-        (filename, title, source_text, raw_text, json.dumps(units, ensure_ascii=False),
-         cloned_from_text_id),
+        "INSERT INTO texts (filename, title, source_text, raw_text, cloned_from_text_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (filename, title, source_text, raw_text, cloned_from_text_id),
     )
     new_id = cur.lastrowid
     _apply_instance_metadata(conn, new_id, raw_text, None, fallback_title=title)
@@ -69,178 +80,134 @@ def _extract_title(text: str) -> str:
 
 
 def _insert_delete_suggestion(conn, text_id: int, start_off: int, end_off: int,
-                              start_syl_id: str, end_syl_id: str) -> None:
+                              start_syl_id: str, end_syl_id: str,
+                              extracted_text_id: Optional[int] = None) -> None:
     """Reversibly remove a raw-text range by recording a delete-suggestion (empty
     replacement). Non-destructive: raw_text/syllables are untouched; deleting the row
-    restores the range. Offsets here are the existing frontend-facing suggestion aid."""
+    restores the range. Offsets here are the existing frontend-facing suggestion aid.
+
+    ``extracted_text_id`` (set by /extract) labels this delete as an *extraction* and
+    links the text the range was moved into, so the UI can show "extracted → <title>"
+    (and offer to open it) rather than a plain "removed".
+
+    Guards against overlapping an existing suggestion the same way the normal
+    delete-section path does: extracting two overlapping ranges must not create
+    overlapping delete-suggestions (which would otherwise make one of them unplaceable
+    on read). If the range overlaps an existing suggestion it is already (partly)
+    covered, so we skip creating a redundant/overlapping row."""
     if end_off <= start_off:
         return
-    conn.execute(
-        "INSERT INTO suggestions (text_id, start_offset, end_offset, suggested_text, "
-        "start_syl_id, end_syl_id) VALUES (?, ?, ?, '', ?, ?)",
-        (text_id, start_off, end_off, start_syl_id, end_syl_id),
-    )
-
-
-@router.post("/import-cherrytree", response_model=TextDetailOut)
-async def import_cherrytree_endpoint(
-    file: UploadFile = File(...),
-    title: Optional[str] = Form(None),
-    instance_id: Optional[str] = Form(None),
-    teaching_id: Optional[str] = Form(None),
-    title_bo: Optional[str] = Form(None),
-    access_level: Optional[int] = Form(None),
-):
-    """Import a CherryTree .ctd XML file as a new text.
-
-    Creates: text, tags (per format used), spans, and tree_nodes mirroring
-    the CherryTree node hierarchy. See cherrytree_importer.py for the mapping.
-    Also builds the syllable base layer for publishing.
-    """
-    if not (file.filename or '').lower().endswith('.ctd'):
-        raise HTTPException(400, "Only .ctd files are supported by this endpoint.")
-    contents = await file.read()
+    from fastapi import HTTPException
+    from ..syllable_anchors import _syl_offset_maps
+    from .suggestions import _existing_suggestions, _check_overlap
+    id2start, id2end = _syl_offset_maps(conn, text_id)
     try:
-        doc_id = import_cherrytree(contents, file.filename, title)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-    conn = get_db()
-    cursor = conn.cursor()
-    _doc = cursor.execute("SELECT raw_text, title FROM texts WHERE id = ?", (doc_id,)).fetchone()
-    _apply_instance_metadata(
-        conn, doc_id, _doc["raw_text"], instance_id, teaching_id, title_bo,
-        access_level, fallback_title=_doc["title"],
-    )
-    conn.commit()
-    cursor.execute("""
-        SELECT d.*,
-               (SELECT COUNT(*) FROM spans WHERE text_id = d.id) as span_count,
-               (SELECT COUNT(*) FROM tags  WHERE text_id = d.id) as tag_count
-        FROM texts d
-        WHERE d.id = ?
-    """, (doc_id,))
-    row = dict(cursor.fetchone())
-    units = json.loads(row["units_json"])
-    conn.close()
-    return {**row, "units": units}
-
-
-@router.post("/import-json", response_model=TextDetailOut)
-def import_json_endpoint(payload: Dict[str, Any] = Body(...)):
-    """Recreate a text from a JSON dump produced by GET /export/json.
-
-    Old IDs in the payload are remapped to fresh autoincrement IDs as the rows
-    are inserted (tags first → spans next, using the tag-id map; tree_nodes
-    are inserted parent-before-child via the parent-NULL-first ordering and a
-    parallel node-id map; spans/markers/suggestions are straightforward).
-    """
-    if not isinstance(payload, dict):
-        raise HTTPException(400, "Body must be a JSON object")
-    if payload.get("schema_version") != JSON_SCHEMA_VERSION:
-        raise HTTPException(
-            400,
-            f"Unsupported schema_version (got {payload.get('schema_version')!r}, "
-            f"expected {JSON_SCHEMA_VERSION})",
-        )
-    doc = payload.get("text") or {}
-    for required in ("filename", "title", "source_text", "raw_text", "units"):
-        if required not in doc:
-            raise HTTPException(400, f"text.{required} is required")
-
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO texts (filename, title, source_text, raw_text, units_json) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                doc["filename"], doc["title"], doc["source_text"], doc["raw_text"],
-                json.dumps(doc["units"], ensure_ascii=False),
-            ),
-        )
-        doc_id = cursor.lastrowid
-
-        # Tags — track old → new id mapping.
-        tag_id_map: Dict[int, int] = {}
-        for t in payload.get("tags", []):
-            cursor.execute(
-                "INSERT INTO tags (text_id, name, color, tag_kind, open_position, close_position) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    doc_id, t["name"], t["color"], t.get("tag_kind", "regular"),
-                    t.get("open_position"), t.get("close_position"),
-                ),
-            )
-            tag_id_map[t["id"]] = cursor.lastrowid
-
-        # Spans — remap tag_id.
-        for s in payload.get("spans", []):
-            new_tag_id = tag_id_map.get(s["tag_id"])
-            if new_tag_id is None:
-                raise HTTPException(400, f"Span references unknown tag id {s['tag_id']}")
-            cursor.execute(
-                "INSERT INTO spans (text_id, tag_id, start_offset, end_offset) VALUES (?, ?, ?, ?)",
-                (doc_id, new_tag_id, s["start_offset"], s["end_offset"]),
-            )
-
-        # Markers.
-        for m in payload.get("markers", []):
-            cursor.execute(
-                "INSERT INTO markers (text_id, position) VALUES (?, ?)",
-                (doc_id, m["position"]),
-            )
-
-        # Tree nodes — payload is dumped parent-NULL-first, so for each row the
-        # mapped parent already exists in the node_id_map.
-        node_id_map: Dict[int, int] = {}
-        for n in payload.get("tree_nodes", []):
-            old_parent = n["parent_id"]
-            new_parent = node_id_map.get(old_parent) if old_parent is not None else None
-            if old_parent is not None and new_parent is None:
-                raise HTTPException(400, f"Tree node parent {old_parent} missing from payload (out-of-order rows)")
-            cursor.execute(
-                "INSERT INTO tree_nodes (text_id, parent_id, position, title, segment_start, transparent) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (doc_id, new_parent, n["position"], n.get("title"), n.get("segment_start"), int(bool(n.get("transparent", False)))),
-            )
-            node_id_map[n["id"]] = cursor.lastrowid
-
-        # Suggestions.
-        for sg in payload.get("suggestions", []):
-            cursor.execute(
-                "INSERT INTO suggestions (text_id, start_offset, end_offset, suggested_text, status) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (
-                    doc_id, sg["start_offset"], sg["end_offset"],
-                    sg["suggested_text"], sg.get("status", "pending"),
-                ),
-            )
-
-        conn.commit()
+        _check_overlap(_existing_suggestions(conn, text_id, id2start, id2end),
+                       start_off, end_off)
     except HTTPException:
-        conn.rollback()
-        conn.close()
-        raise
-    except sqlite3.Error as e:
-        conn.rollback()
-        conn.close()
-        raise HTTPException(400, f"Import failed: {e}")
-
-    cursor.execute(
-        """
-        SELECT d.*,
-               (SELECT COUNT(*) FROM spans WHERE text_id = d.id) as span_count,
-               (SELECT COUNT(*) FROM tags WHERE text_id = d.id) as tag_count
-        FROM texts d
-        WHERE d.id = ?
-        """,
-        (doc_id,),
+        return  # overlaps an existing suggestion — don't create an overlapping row
+    conn.execute(
+        "INSERT INTO suggestions (text_id, suggested_text, start_syl_id, end_syl_id, "
+        "extracted_text_id) VALUES (?, '', ?, ?, ?)",
+        (text_id, start_syl_id, end_syl_id, extracted_text_id),
     )
-    row = dict(cursor.fetchone())
-    units = json.loads(row["units_json"])
+
+
+def _apply_corrections_core(conn, text_id: int) -> bool:
+    """Bake the text's staged suggestions into its base layer — the ripple mechanism.
+
+    ``raw_text`` becomes the corrected text and the syllable layer is re-persisted with
+    stable-id reconciliation (``id_reconcile`` via ``persist_syllables``: an *edited*
+    syllable KEEPS its uuid, an inserted one is minted, a deleted one drops). Because
+    every downstream reference — derivation ops, spans, markers, tree links, notes,
+    reading positions, and descendants' parent-links — anchors by syllable uuid, a
+    correction baked here ripples through all texts based on this one, any depth.
+    Anchors on content the bake deleted dangle and are skipped on read.
+
+    The consumed suggestions are deleted (they are now part of the base). Only APPLIED
+    suggestions bake — 'pending' rows (incoming from derived texts, awaiting review)
+    survive untouched, their uuid anchors intact. Returns True if anything was baked,
+    False for a no-op (no applied suggestions)."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM suggestions WHERE text_id = ? AND status = 'applied'",
+        (text_id,),
+    ).fetchone()[0]
+    if n == 0:
+        return False
+    got = _text_corrected(conn, text_id)
+    if got is None:
+        return False
+    instance_id, corrected_text, _segments = got
+    # Same normalization as upload/clone so the base layer stays canonical.
+    raw_text, _units = prepare_and_tokenize(corrected_text)
+    row = conn.execute("SELECT title, filename FROM texts WHERE id = ?", (text_id,)).fetchone()
+    instance = (instance_id or "").strip() or default_instance_id(row["title"] or row["filename"] or "")
+    conn.execute(
+        "UPDATE texts SET raw_text = ?, instance_id = ? WHERE id = ?",
+        (raw_text, instance, text_id),
+    )
+    persist_syllables(conn, text_id, instance, raw_text)
+    conn.execute("DELETE FROM suggestions WHERE text_id = ? AND status = 'applied'", (text_id,))
+    return True
+
+
+def _apply_one_suggestion_core(conn, suggestion_id: int) -> bool:
+    """Bake ONE suggestion into its text's base layer and delete it — the
+    "accept & ripple" path for an incoming upstream suggestion.
+
+    Same stable-id mechanics as ``_apply_corrections_core`` (an edited syllable keeps
+    its uuid, so every derived text picks the fix up immediately), but splicing only
+    this row: the owner's other staged corrections remain staged and un-baked, their
+    anchors intact."""
+    from ..suggestion_applier import splice_suggestions, segments_text
+
+    row = conn.execute(
+        "SELECT * FROM suggestions WHERE id = ?", (suggestion_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    text_id = row["text_id"]
+    txt = conn.execute(
+        "SELECT title, filename, instance_id FROM texts WHERE id = ?", (text_id,)
+    ).fetchone()
+    raw_syllables = load_syllables(conn, text_id)
+    segments = splice_suggestions(raw_syllables, [dict(row)])
+    raw_text, _units = prepare_and_tokenize(segments_text(segments))
+    instance = (txt["instance_id"] or "").strip() or default_instance_id(
+        txt["title"] or txt["filename"] or "")
+    conn.execute(
+        "UPDATE texts SET raw_text = ?, instance_id = ? WHERE id = ?",
+        (raw_text, instance, text_id),
+    )
+    persist_syllables(conn, text_id, instance, raw_text)
+    conn.execute("DELETE FROM suggestions WHERE id = ?", (suggestion_id,))
+    return True
+
+
+@router.post("/{id}/apply-corrections", response_model=TextDetailOut)
+def apply_corrections(id: int):
+    """Bake all staged suggestions into the primary's base layer so they ripple to
+    every text derived from it (see ``_apply_corrections_core``). Primaries only —
+    a secondary's edits are derivation ops, not suggestions."""
+    conn = get_db()
+    cursor = conn.cursor()
+    src = cursor.execute("SELECT * FROM texts WHERE id = ?", (id,)).fetchone()
+    if not src:
+        conn.close()
+        raise HTTPException(404, "Text not found")
+    if src["text_type"] != "primary":
+        conn.close()
+        raise HTTPException(400, "Only a primary text's corrections can be applied to its base.")
+    _apply_corrections_core(conn, id)
+    conn.commit()
+    row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (id,)).fetchone())
+    units = _units_for(conn, id)
+    span_count = cursor.execute(
+        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (id,)).fetchone()[0]
+    tag_count = cursor.execute(
+        "SELECT COUNT(*) FROM tags WHERE text_id = ?", (id,)).fetchone()[0]
     conn.close()
-    return {**row, "units": units}
+    return {**row, "units": units, "span_count": span_count, "tag_count": tag_count}
 
 
 @router.post("", response_model=TextDetailOut)
@@ -259,17 +226,16 @@ async def upload_text(
     source_text = contents.decode("utf-8")
     doc_title = title or file.filename.rsplit(".", 1)[0]
 
-    raw_text, units = prepare_and_tokenize(source_text)
-    units_json = json.dumps(units, ensure_ascii=False)
+    raw_text, _units = prepare_and_tokenize(source_text)
 
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO texts (filename, title, source_text, raw_text, units_json)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO texts (filename, title, source_text, raw_text)
+        VALUES (?, ?, ?, ?)
         """,
-        (file.filename, doc_title, source_text, raw_text, units_json)
+        (file.filename, doc_title, source_text, raw_text)
     )
     doc_id = cursor.lastrowid
     _apply_instance_metadata(
@@ -334,7 +300,7 @@ def build_manifest(
         (id,),
     ).fetchone()
     res = dict(detail)
-    res["units"] = json.loads(res["units_json"])
+    res["units"] = _units_for(conn, id)
     conn.close()
     res["instance_id"] = used
     res["syllable_count"] = syl_count
@@ -356,6 +322,47 @@ def list_texts():
     conn.close()
     return rows
 
+@router.patch("/{id}", response_model=TextOut)
+def update_text_meta(id: int, patch: TextMetaUpdate):
+    """Edit a text's list-view metadata: its title (inline rename) and/or its group
+    (collection label; empty string clears it to NULL == ungrouped). Only provided
+    fields change. Does not bump updated_at, so a rename/regroup won't reorder the list."""
+    provided = patch.model_dump(exclude_unset=True)
+    conn = get_db()
+    cursor = conn.cursor()
+    if not cursor.execute("SELECT id FROM texts WHERE id = ?", (id,)).fetchone():
+        conn.close()
+        raise HTTPException(404, "Text not found")
+
+    sets, params = [], []
+    if "title" in provided:
+        title = (patch.title or "").strip()
+        if not title:
+            conn.close()
+            raise HTTPException(400, "Title cannot be empty")
+        sets.append("title = ?")
+        params.append(title)
+    if "text_group" in provided:
+        # A group is a "/"-separated path (arbitrary-depth sub-groups); normalize it the
+        # same way the text-groups router does (all-empty → NULL == ungrouped).
+        sets.append("text_group = ?")
+        params.append(normalize_group_path(patch.text_group))
+
+    if sets:
+        params.append(id)
+        cursor.execute(f"UPDATE texts SET {', '.join(sets)} WHERE id = ?", params)
+        conn.commit()
+
+    row = cursor.execute("""
+        SELECT d.*,
+               (SELECT COUNT(*) FROM spans WHERE text_id = d.id) as span_count,
+               (SELECT COUNT(*) FROM tags WHERE text_id = d.id) as tag_count,
+               EXISTS(SELECT 1 FROM texts c WHERE c.cloned_from_text_id = d.id) as has_clone
+        FROM texts d WHERE d.id = ?
+    """, (id,)).fetchone()
+    conn.close()
+    return dict(row)
+
 @router.get("/{id}", response_model=TextDetailOut)
 def get_text(id: int):
     conn = get_db()
@@ -368,13 +375,13 @@ def get_text(id: int):
         FROM texts d WHERE d.id = ?
     """, (id,))
     row = cursor.fetchone()
-    conn.close()
-    
     if not row:
+        conn.close()
         raise HTTPException(404, "Text not found")
 
     res = dict(row)
-    res["units"] = json.loads(res["units_json"])
+    res["units"] = _units_for(conn, id)
+    conn.close()
     # A secondary text has no raw_text of its own — project its composed content so
     # the workspace (which builds segments from raw_text) renders the derived text.
     if res.get("text_type") == "secondary":
@@ -389,34 +396,264 @@ def get_text(id: int):
 
 @router.post("/{id}/derive", response_model=TextDetailOut)
 def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
-    """Create a new *secondary* text derived from primary text ``id``. The secondary
-    text has no syllables/raw_text of its own (stored empty); its content is composed
-    from the parent's syllables plus derivation_ops (Part 4). Only a primary text may
-    be a parent."""
+    """Create a new *secondary* text derived from text ``id`` — primary OR secondary,
+    so derivation chains of any depth work. The secondary stores no base text of its
+    own; it composes on read from its parent's sequence plus its own derivation ops,
+    which is what makes corrections baked into the root primary ripple into every
+    descendant automatically.
+
+    Deriving from a primary first BAKES the parent's staged corrections into its base
+    (``_apply_corrections_core``), so the child starts from the corrected view and both
+    share the stable base uuids. The parent's current annotations (tags/spans, markers,
+    notes, passages) and TOC are then copied onto the child — an identity remap, since a
+    parent-link token IS the parent's syllable — after which the two annotation sets are
+    fully independent."""
     conn = get_db()
     cursor = conn.cursor()
     parent = cursor.execute("SELECT * FROM texts WHERE id = ?", (id,)).fetchone()
     if not parent:
         conn.close()
         raise HTTPException(404, "Text not found")
-    if parent["text_type"] != "primary":
-        conn.close()
-        raise HTTPException(400, "Only a primary text can be derived from.")
+
+    # Freeze the corrected view as the shared base (primaries only — a secondary's
+    # edits are already ops over its parent).
+    if parent["text_type"] == "primary":
+        _apply_corrections_core(conn, id)
 
     title = (payload or {}).get("title") or f"{parent['title']} (secondary)"
     cursor.execute(
         """
-        INSERT INTO texts (filename, title, source_text, raw_text, units_json,
+        INSERT INTO texts (filename, title, source_text, raw_text,
                            text_type, parent_text_id)
-        VALUES (?, ?, '', '', '[]', 'secondary', ?)
+        VALUES (?, ?, '', '', 'secondary', ?)
         """,
         (parent["filename"], title, id),
     )
     new_id = cursor.lastrowid
+
+    # Inherit the parent's annotations + TOC, anchored to the same token uuids the
+    # child composes from (identity remap over the parent's exposed sequence).
+    from ..derivation import base_tokens
+    src_tokens = base_tokens(conn, id)
+    remap = {t["id"]: t["id"] for t in src_tokens}
+    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True)
+
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
+    units = _units_for(conn, new_id)
+    span_count = cursor.execute(
+        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (new_id,)).fetchone()[0]
+    tag_count = cursor.execute(
+        "SELECT COUNT(*) FROM tags WHERE text_id = ?", (new_id,)).fetchone()[0]
     conn.close()
-    return {**row, "units": [], "span_count": 0, "tag_count": 0}
+    return {**row, "units": units, "span_count": span_count, "tag_count": tag_count}
+
+
+def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: list,
+                      *, copy_tree: bool = False) -> None:
+    """Copy the source's syllable-anchored annotations onto ``new_id``, re-anchoring every
+    id through ``remap`` (source_syl_id -> new_syl_id). Anchors absent from ``remap`` (an
+    out-of-range syllable for /extract, or one baked away by /clone) are dropped, and a
+    span straddling them is clamped to its surviving syllables.
+
+    Copies regular-tag **spans** (+ tag defs: shared reused, private recreated, session
+    re-anchored), segment **markers**, **notes** (+ categories, + session links), fully
+    -contained **passages**, and — when ``copy_tree`` — the whole **tree (TOC)** preserving
+    hierarchy. Idempotent via unique constraints + ``INSERT OR IGNORE``. Shared by /extract
+    (relative-offset remap) and /clone (suggestion-bake remap). ``src_syls`` is the source's
+    ordered syllable list (used to resolve each span's run)."""
+    if not remap:
+        return
+    pos_of = {s["id"]: i for i, s in enumerate(src_syls)}
+
+    # --- Tags: shared (NULL owner) reused as-is; private recreated privately on new_id.
+    tag_remap: dict = {}  # source tag id -> a tag id valid on new_id (or None if unmappable)
+
+    def _resolve_tag(old_tag_id):
+        if old_tag_id in tag_remap:
+            return tag_remap[old_tag_id]
+        row = conn.execute(
+            "SELECT id, text_id, name, color, tag_kind, open_syl_id, close_syl_id "
+            "FROM tags WHERE id = ?", (old_tag_id,),
+        ).fetchone()
+        if row is None:
+            tag_remap[old_tag_id] = None
+            return None
+        if row["text_id"] is None:  # shared tag — every text sees it already
+            tag_remap[old_tag_id] = row["id"]
+            return row["id"]
+        open_syl = close_syl = None
+        if row["tag_kind"] == "session":  # per-text anchors: only if fully in-range
+            if row["open_syl_id"] not in remap or row["close_syl_id"] not in remap:
+                tag_remap[old_tag_id] = None
+                return None
+            open_syl, close_syl = remap[row["open_syl_id"]], remap[row["close_syl_id"]]
+        conn.execute(
+            "INSERT OR IGNORE INTO tags "
+            "(text_id, name, color, tag_kind, open_syl_id, close_syl_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_id, row["name"], row["color"], row["tag_kind"], open_syl, close_syl),
+        )
+        got = conn.execute(
+            "SELECT id FROM tags WHERE text_id = ? AND name = ?", (new_id, row["name"]),
+        ).fetchone()
+        tag_remap[old_tag_id] = got["id"] if got else None
+        return tag_remap[old_tag_id]
+
+    # --- Spans: map each source span's syllable run through remap; write the surviving
+    # sub-run (this naturally clamps a span that straddles dropped/baked-away syllables).
+    for sp in conn.execute(
+        "SELECT tag_id, start_syl_id, end_syl_id FROM spans WHERE text_id = ?", (src_id,),
+    ).fetchall():
+        i, j = pos_of.get(sp["start_syl_id"]), pos_of.get(sp["end_syl_id"])
+        if i is None or j is None or i > j:
+            continue
+        survivors = [remap[src_syls[k]["id"]] for k in range(i, j + 1) if src_syls[k]["id"] in remap]
+        if not survivors:
+            continue
+        new_tag = _resolve_tag(sp["tag_id"])
+        if new_tag is None:
+            continue
+        conn.execute(
+            "INSERT INTO spans (text_id, tag_id, start_syl_id, end_syl_id) VALUES (?, ?, ?, ?)",
+            (new_id, new_tag, survivors[0], survivors[-1]),
+        )
+
+    # --- Markers: single-boundary; skip the NULL end-of-text sentinel and out-of-range.
+    for mk in conn.execute(
+        "SELECT syl_id FROM markers WHERE text_id = ?", (src_id,),
+    ).fetchall():
+        nid = remap.get(mk["syl_id"])
+        if nid is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO markers (text_id, syl_id) VALUES (?, ?)",
+                (new_id, nid),
+            )
+
+    # --- Notes: range fully in-range; recreate category by name; copy session links.
+    cat_remap: dict = {}
+
+    def _resolve_category(old_cat_id):
+        if old_cat_id is None:
+            return None
+        if old_cat_id in cat_remap:
+            return cat_remap[old_cat_id]
+        row = conn.execute(
+            "SELECT name FROM note_categories WHERE id = ?", (old_cat_id,),
+        ).fetchone()
+        if row is None:
+            cat_remap[old_cat_id] = None
+            return None
+        conn.execute(
+            "INSERT OR IGNORE INTO note_categories (text_id, name) VALUES (?, ?)",
+            (new_id, row["name"]),
+        )
+        got = conn.execute(
+            "SELECT id FROM note_categories WHERE text_id = ? AND name = ?",
+            (new_id, row["name"]),
+        ).fetchone()
+        cat_remap[old_cat_id] = got["id"] if got else None
+        return cat_remap[old_cat_id]
+
+    for nt in conn.execute(
+        "SELECT id, category_id, body, start_syl_id, end_syl_id FROM notes WHERE text_id = ?",
+        (src_id,),
+    ).fetchall():
+        if nt["start_syl_id"] not in remap or nt["end_syl_id"] not in remap:
+            continue
+        cur = conn.execute(
+            "INSERT INTO notes (text_id, category_id, body, start_syl_id, end_syl_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (new_id, _resolve_category(nt["category_id"]), nt["body"],
+             remap[nt["start_syl_id"]], remap[nt["end_syl_id"]]),
+        )
+        new_note_id = cur.lastrowid
+        for ns in conn.execute(
+            "SELECT tag_id FROM note_sessions WHERE note_id = ?", (nt["id"],),
+        ).fetchall():
+            new_tag = _resolve_tag(ns["tag_id"])
+            if new_tag is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO note_sessions (note_id, tag_id) VALUES (?, ?)",
+                    (new_note_id, new_tag),
+                )
+
+    # --- Passages: copy only if the anchor AND every member run are fully in-range
+    # (a transclusion source outside the extracted range cannot be linked).
+    for pg in conn.execute(
+        "SELECT id, anchor_syl_id, position, color FROM passages WHERE text_id = ?",
+        (src_id,),
+    ).fetchall():
+        anchor = pg["anchor_syl_id"]
+        if anchor is not None and anchor not in remap:
+            continue
+        members = conn.execute(
+            "SELECT position, src_start_syl_id, src_end_syl_id FROM passage_members "
+            "WHERE passage_id = ? ORDER BY position", (pg["id"],),
+        ).fetchall()
+        if not members or any(
+            m["src_start_syl_id"] not in remap or m["src_end_syl_id"] not in remap
+            for m in members
+        ):
+            continue
+        cur = conn.execute(
+            "INSERT INTO passages (text_id, anchor_syl_id, position, color) VALUES (?, ?, ?, ?)",
+            (new_id, remap.get(anchor), pg["position"], pg["color"]),
+        )
+        new_pg_id = cur.lastrowid
+        for m in members:
+            conn.execute(
+                "INSERT INTO passage_members "
+                "(passage_id, position, src_start_syl_id, src_end_syl_id) VALUES (?, ?, ?, ?)",
+                (new_pg_id, m["position"], remap[m["src_start_syl_id"]], remap[m["src_end_syl_id"]]),
+            )
+
+    # --- Tree (clone only): duplicate the whole TOC, preserving hierarchy. A node's
+    # segment link is re-anchored through remap (NULL when its segment start was baked
+    # away); a node left with neither title nor link gets a placeholder to satisfy the
+    # CHECK constraint. Two passes so parent ids can be remapped after all rows exist.
+    if copy_tree:
+        rows = conn.execute(
+            "SELECT id, parent_id, position, title, segment_start_syl_id, transparent "
+            "FROM tree_nodes WHERE text_id = ? ORDER BY id", (src_id,),
+        ).fetchall()
+        node_id_map: dict = {}
+        for r in rows:
+            seg = remap.get(r["segment_start_syl_id"]) if r["segment_start_syl_id"] is not None else None
+            title = r["title"]
+            if title is None and seg is None:
+                title = "(section)"
+            cur = conn.execute(
+                "INSERT INTO tree_nodes (text_id, parent_id, position, title, "
+                "segment_start_syl_id, transparent) VALUES (?, NULL, ?, ?, ?, ?)",
+                (new_id, r["position"], title, seg, r["transparent"]),
+            )
+            node_id_map[r["id"]] = cur.lastrowid
+        for r in rows:
+            if r["parent_id"] is not None and r["parent_id"] in node_id_map:
+                conn.execute(
+                    "UPDATE tree_nodes SET parent_id = ? WHERE id = ?",
+                    (node_id_map[r["parent_id"]], node_id_map[r["id"]]),
+                )
+
+
+def _copy_range_annotations(conn, src_id: int, new_id: int, ids: list,
+                            start_off: int, end_off: int, by_id: dict) -> None:
+    """/extract: build a relative-offset remap (source syllable -> new syllable at the same
+    offset from the extraction start) for the extracted range and copy its in-range
+    annotations (no tree). Delegates to ``_copy_annotations``."""
+    new_syls = load_syllables(conn, new_id)
+    newstart2id = {s["start_offset"]: s["id"] for s in new_syls}
+    remap: dict = {}
+    for sid in ids:
+        rel = by_id[sid]["start_offset"] - start_off
+        nid = newstart2id.get(rel)
+        if nid is None:  # tokenisation shifted (e.g. a trimmed leading space): fall back
+            k = offset_to_syllable_index(new_syls, rel)
+            nid = new_syls[k]["id"] if k is not None else None
+        if nid is not None:
+            remap[sid] = nid
+    _copy_annotations(conn, src_id, new_id, remap, load_syllables(conn, src_id), copy_tree=False)
 
 
 @router.post("/{id}/extract", response_model=TextDetailOut)
@@ -448,11 +685,20 @@ def extract_text(id: int, payload: ExtractIn):
 
     title = (payload.title or "").strip() or _extract_title(extracted)
     new_id = _create_primary_text(conn, src["filename"], title, extracted)
-    _insert_delete_suggestion(conn, id, start_off, end_off, ids[0], ids[-1])
+    # Carry the section's tags/markers/notes/passages into the new text (remapped to
+    # its fresh syllable ids) so extraction preserves the annotations, not just the text.
+    _copy_range_annotations(conn, id, new_id, ids, start_off, end_off, by_id)
+    _insert_delete_suggestion(conn, id, start_off, end_off, ids[0], ids[-1],
+                              extracted_text_id=new_id)
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
+    units = _units_for(conn, new_id)
+    span_count = cursor.execute(
+        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (new_id,)).fetchone()[0]
+    tag_count = cursor.execute(
+        "SELECT COUNT(*) FROM tags WHERE text_id = ?", (new_id,)).fetchone()[0]
     conn.close()
-    return {**row, "units": json.loads(row["units_json"]), "span_count": 0, "tag_count": 0}
+    return {**row, "units": units, "span_count": span_count, "tag_count": tag_count}
 
 
 @router.post("/{id}/clone", response_model=TextDetailOut)
@@ -478,10 +724,39 @@ def clone_text(id: int, payload: CloneIn = Body(default=CloneIn())):
     title = title or src["title"]
     new_id = _create_primary_text(conn, src["filename"], title, corrected_text,
                                   cloned_from_text_id=id)
+
+    # Carry the source's annotations + TOC into the flattened duplicate, re-anchored through
+    # the bake: map each *kept* source syllable to the clone syllable at the same offset in
+    # the corrected text (replaced/inserted content is baked in; deleted content is gone, so
+    # annotations sitting on it are dropped / spans clamped).
+    segments = got[2] if got else []
+    clone_syls = load_syllables(conn, new_id)
+    clonestart2id = {s["start_offset"]: s["id"] for s in clone_syls}
+    remap: dict = {}
+    pos = 0
+    for seg in segments:
+        if seg["kind"] == "keep":
+            syl = seg["syl"]
+            cid = clonestart2id.get(pos)
+            if cid is None:  # re-tokenisation shifted a boundary — fall back to containment
+                k = offset_to_syllable_index(clone_syls, pos)
+                cid = clone_syls[k]["id"] if k is not None else None
+            if cid is not None:
+                remap[syl["id"]] = cid
+            pos += len(syl["text"])
+        else:  # 'edit' — baked replacement/insertion text, no source-syllable provenance
+            pos += len(seg["text"])
+    _copy_annotations(conn, id, new_id, remap, load_syllables(conn, id), copy_tree=True)
+
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
+    units = _units_for(conn, new_id)
+    span_count = cursor.execute(
+        "SELECT COUNT(*) FROM spans WHERE text_id = ?", (new_id,)).fetchone()[0]
+    tag_count = cursor.execute(
+        "SELECT COUNT(*) FROM tags WHERE text_id = ?", (new_id,)).fetchone()[0]
     conn.close()
-    return {**row, "units": json.loads(row["units_json"]), "span_count": 0, "tag_count": 0}
+    return {**row, "units": units, "span_count": span_count, "tag_count": tag_count}
 
 
 @router.put("/{id}/main-text-srt-dir", response_model=TextDetailOut)
@@ -508,8 +783,8 @@ def set_main_text_srt_dir(id: int, payload: Dict[str, Any] = Body(...)):
         FROM texts d WHERE d.id = ?
     """, (id,))
     res = dict(cursor.fetchone())
+    res["units"] = _units_for(conn, id)
     conn.close()
-    res["units"] = json.loads(res["units_json"])
     return res
 
 
@@ -537,8 +812,8 @@ def set_audio_dir(id: int, payload: Dict[str, Any] = Body(...)):
         FROM texts d WHERE d.id = ?
     """, (id,))
     res = dict(cursor.fetchone())
+    res["units"] = _units_for(conn, id)
     conn.close()
-    res["units"] = json.loads(res["units_json"])
     return res
 
 
@@ -603,74 +878,20 @@ def retokenize_text(id: int):
         raise HTTPException(404, "Text not found")
 
     old_raw = row["raw_text"]
-    raw_text, units = prepare_and_tokenize(old_raw)
+    raw_text, _units = prepare_and_tokenize(old_raw)
     if len(raw_text) != len(old_raw):
         conn.close()
         raise HTTPException(500, "re-normalization changed text length; offsets would shift")
-    units_json = json.dumps(units, ensure_ascii=False)
 
-    cursor.execute(
-        "UPDATE texts SET raw_text = ?, units_json = ? WHERE id = ?",
-        (raw_text, units_json, id)
-    )
+    cursor.execute("UPDATE texts SET raw_text = ? WHERE id = ?", (raw_text, id))
+    # Part 6, Phase 3: rebuild the (single) syllable partition. Annotations are anchored
+    # by syllable UUID and the move-stable reconciler carries TEXT syllable ids across the
+    # merge, so every derived offset (markers, tree-node segment starts, portions) follows
+    # its anchor automatically — no offset re-snapping pass is needed anymore.
     persist_syllables(conn, id, row["instance_id"] or default_instance_id(row["title"]), raw_text)
-
-    # Re-tile every session's portions onto the rebuilt syllable grid: collapsing a
-    # cluster (e.g. ``།␣།``) merges two tokens, so an old portion boundary can now fall
-    # inside the merged token, leaving it partially covered. Snapping fixes this without
-    # re-uploading each session's SRT. Offsets are otherwise unchanged.
-    syllables = load_syllables(conn, id)
-    sessions = cursor.execute(
-        "SELECT id FROM tags WHERE text_id = ? AND open_position IS NOT NULL", (id,)
-    ).fetchall()
-    resnapped = 0
-    for sess in sessions:
-        portions = [
-            dict(p) for p in cursor.execute(
-                "SELECT id, start_offset, end_offset FROM text_portions WHERE session_tag_id = ?",
-                (sess["id"],),
-            )
-        ]
-        if snap_portions_to_syllables(portions, syllables):
-            for p in portions:
-                conn.execute(
-                    "UPDATE text_portions SET start_offset = ?, end_offset = ? WHERE id = ?",
-                    (p["start_offset"], p["end_offset"], p["id"]),
-                )
-            resnapped += 1
-
-    # Snap section boundaries (sapche-section markers + tree-node segment_starts) onto the
-    # rebuilt syllable grid too, so a merged punctuation cluster is never split across two
-    # sections — it joins the preceding section (yig-mgo → following).
-    syls_sorted = sorted(syllables, key=lambda s: s["start_offset"])
-    starts = [s["start_offset"] for s in syls_sorted]
-    moved_markers = 0
-    for mk in cursor.execute(
-        "SELECT id, position FROM markers WHERE text_id = ?", (id,)
-    ).fetchall():
-        np = snap_section_boundary(mk["position"], syls_sorted, starts)
-        if np == mk["position"]:
-            continue
-        clash = cursor.execute(
-            "SELECT 1 FROM markers WHERE text_id = ? AND position = ? AND id != ?",
-            (id, np, mk["id"]),
-        ).fetchone()
-        if clash:  # another marker already sits there → this one collapses into it
-            conn.execute("DELETE FROM markers WHERE id = ?", (mk["id"],))
-        else:
-            conn.execute("UPDATE markers SET position = ? WHERE id = ?", (np, mk["id"]))
-        moved_markers += 1
-    moved_nodes = 0
-    for tn in cursor.execute(
-        "SELECT id, segment_start FROM tree_nodes "
-        "WHERE text_id = ? AND segment_start IS NOT NULL", (id,)
-    ).fetchall():
-        np = snap_section_boundary(tn["segment_start"], syls_sorted, starts)
-        if np != tn["segment_start"]:
-            conn.execute("UPDATE tree_nodes SET segment_start = ? WHERE id = ?", (np, tn["id"]))
-            moved_nodes += 1
     conn.commit()
 
+    units = _units_for(conn, id)
     cursor.execute("""
         SELECT d.*,
                (SELECT COUNT(*) FROM spans WHERE text_id = d.id) as span_count,

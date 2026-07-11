@@ -70,6 +70,7 @@ class FormatDocumentUpdated:
             's': self.s_bo_par,
             'n': self.s_bo_par,
             'b': self.s_bo_par,
+            'k': self.s_bo_par,
         }
         self.bo_char_styles = {
             'T': self.s_bo_char_title1,
@@ -77,6 +78,7 @@ class FormatDocumentUpdated:
             's': self.s_bo_char_small,
             'n': self.s_bo_char_big,
             'b': self.s_bo_char_big,
+            'k': self.s_bo_char_big,
         }
 
     def format_booklet(self, parsed_content, out_file, no_phon=False):
@@ -147,7 +149,10 @@ class FormatDocumentUpdated:
                     p = t
                 par.add_run(text, style=self.bo_char_styles[p])
             if t == 'T':
-                par.runs[-1].add_break(WD_BREAK.PAGE)
+                if par.runs:
+                    par.runs[-1].add_break(WD_BREAK.PAGE)
+                else:
+                    par.add_run('').add_break(WD_BREAK.PAGE)
         self.document.save(out_file)
 
     def __initiate_document(self):

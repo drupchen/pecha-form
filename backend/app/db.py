@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import re
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "sapche.db")
 
@@ -8,12 +9,14 @@ CREATE TABLE IF NOT EXISTS texts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     filename      TEXT NOT NULL,
     title         TEXT NOT NULL,
+    -- Optional user-assigned collection label for organizing the texts list.
+    -- NULL == ungrouped. Free-form; orthogonal to primary/secondary relations.
+    text_group    TEXT,
     source_text   TEXT NOT NULL,
     raw_text      TEXT NOT NULL,
-    units_json    TEXT NOT NULL,
     -- 'primary' = a text constituted of its own syllables (may host passages).
     -- 'secondary' = derived from parent_text_id; its content is composed from the
-    -- parent's syllables plus derivation_ops, so raw_text/units_json are empty ''.
+    -- parent's syllables plus derivation_ops, so raw_text is empty ''.
     text_type      TEXT NOT NULL DEFAULT 'primary',
     parent_text_id INTEGER REFERENCES texts(id) ON DELETE CASCADE,
     -- Set on a text produced by "duplicate (bake edits)": the original it was cloned
@@ -24,14 +27,26 @@ CREATE TABLE IF NOT EXISTS texts (
     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Part 12: a registry of known group paths so an *empty* group (created via the
+-- texts-list "+" buttons) persists even with no text in it. Rows are normalized
+-- "/"-paths; the texts tree is built from the union of these and texts.text_group.
+CREATE TABLE IF NOT EXISTS text_groups (
+    path TEXT PRIMARY KEY,
+    -- Part 13: manual per-parent sibling order. NULL == unordered (sorts after
+    -- positioned siblings, alphabetically); assigned lazily on the first reorder.
+    position INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS tags (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    text_id     INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    -- Part 8: a NULL text_id means the tag is *shared* — it appears in every
+    -- text's palette. A non-NULL text_id means it is *private* to that text.
+    -- Deleting a text CASCADE-drops its private tags; shared (NULL) tags survive.
+    -- Only regular tags are ever shared (session tags carry per-text anchors).
+    text_id     INTEGER REFERENCES texts(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     color           TEXT NOT NULL DEFAULT '#6366f1',
     tag_kind        TEXT NOT NULL DEFAULT 'regular',
-    open_position   INTEGER,
-    close_position  INTEGER,
     UNIQUE(text_id, name)
 );
 
@@ -39,19 +54,17 @@ CREATE TABLE IF NOT EXISTS spans (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     tag_id       INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-    start_offset INTEGER NOT NULL,
-    end_offset   INTEGER NOT NULL,
-    CHECK (start_offset < end_offset)
+    start_syl_id TEXT,
+    end_syl_id   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_spans_text ON spans(text_id);
-CREATE INDEX IF NOT EXISTS idx_spans_offsets  ON spans(text_id, start_offset);
 
 CREATE TABLE IF NOT EXISTS markers (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
-    position     INTEGER NOT NULL,
-    UNIQUE(text_id, position)
+    syl_id       TEXT,
+    UNIQUE(text_id, syl_id)
 );
 CREATE INDEX IF NOT EXISTS idx_markers_text ON markers(text_id);
 
@@ -61,11 +74,11 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     parent_id       INTEGER REFERENCES tree_nodes(id) ON DELETE CASCADE,
     position        INTEGER NOT NULL,
     title           TEXT,
-    segment_start   INTEGER,
+    segment_start_syl_id TEXT,
     transparent     INTEGER NOT NULL DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK ((title IS NOT NULL) OR (segment_start IS NOT NULL)),
+    CHECK ((title IS NOT NULL) OR (segment_start_syl_id IS NOT NULL)),
     UNIQUE(parent_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id);
@@ -74,11 +87,8 @@ CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent   ON tree_nodes(parent_id);
 CREATE TABLE IF NOT EXISTS suggestions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
-    start_offset   INTEGER NOT NULL,
-    end_offset     INTEGER NOT NULL,
     suggested_text TEXT NOT NULL,
-    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (start_offset <= end_offset)
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_suggestions_text ON suggestions(text_id);
 
@@ -94,15 +104,11 @@ CREATE TABLE IF NOT EXISTS notes (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     category_id  INTEGER REFERENCES note_categories(id) ON DELETE SET NULL,
-    start_offset INTEGER NOT NULL,
-    end_offset   INTEGER NOT NULL,
     body         TEXT NOT NULL DEFAULT '',
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (start_offset < end_offset)
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_notes_text ON notes(text_id);
-CREATE INDEX IF NOT EXISTS idx_notes_offsets  ON notes(text_id, start_offset);
 
 CREATE TABLE IF NOT EXISTS note_sessions (
     note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
@@ -151,10 +157,9 @@ CREATE TABLE IF NOT EXISTS text_portions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     session_tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-    start_offset   INTEGER NOT NULL,
-    end_offset     INTEGER NOT NULL,
     position       INTEGER NOT NULL DEFAULT 0,  -- order within the session
-    CHECK (start_offset < end_offset)
+    start_syl_id   TEXT,
+    end_syl_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_text_portions_session ON text_portions(session_tag_id);
 
@@ -195,9 +200,8 @@ CREATE TABLE IF NOT EXISTS transcript_spans (
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,
     tag_id         INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-    start_offset   INTEGER NOT NULL,         -- offset into srt_segments.text
-    end_offset     INTEGER NOT NULL,
-    CHECK (start_offset < end_offset)
+    start_syl_id   TEXT,
+    end_syl_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_spans_segment  ON transcript_spans(srt_segment_id);
 CREATE INDEX IF NOT EXISTS idx_transcript_spans_text ON transcript_spans(text_id);
@@ -206,11 +210,10 @@ CREATE TABLE IF NOT EXISTS transcript_suggestions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,
-    start_offset   INTEGER NOT NULL,         -- offset into srt_segments.text
-    end_offset     INTEGER NOT NULL,
     suggested_text TEXT NOT NULL,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (start_offset <= end_offset)
+    start_syl_id   TEXT,
+    end_syl_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_suggestions_segment
     ON transcript_suggestions(srt_segment_id);
@@ -223,12 +226,11 @@ CREATE TABLE IF NOT EXISTS transcript_notes (
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,
     category_id    INTEGER REFERENCES note_categories(id) ON DELETE SET NULL,
-    start_offset   INTEGER NOT NULL,         -- offset into srt_segments.text
-    end_offset     INTEGER NOT NULL,
     body           TEXT NOT NULL DEFAULT '',
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (start_offset < end_offset)
+    start_syl_id   TEXT,
+    end_syl_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_notes_segment  ON transcript_notes(srt_segment_id);
 CREATE INDEX IF NOT EXISTS idx_transcript_notes_text ON transcript_notes(text_id);
@@ -317,6 +319,18 @@ CREATE TABLE IF NOT EXISTS derivation_op_syllables (
     syl_id   TEXT NOT NULL,
     PRIMARY KEY (op_id, position)
 );
+
+-- Per-user last-viewed position in a text: the syllable that begins the segment the
+-- user was last looking at, so reopening a text scrolls back there. `user_id` is the
+-- multi-user piping — until real accounts exist it is a single local user (see
+-- app/auth.py `current_user_id`). PK (user_id, text_id) = one position per user & text.
+CREATE TABLE IF NOT EXISTS reading_positions (
+    user_id    INTEGER NOT NULL DEFAULT 1,
+    text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    syl_id     TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, text_id)
+);
 """
 
 
@@ -328,6 +342,8 @@ _COLUMN_MIGRATIONS = {
         ("teaching_id", "TEXT"),
         ("title_bo", "TEXT"),
         ("access_level", "INTEGER"),
+        # Optional user-assigned collection label for the texts list; NULL == ungrouped.
+        ("text_group", "TEXT"),
         # Primary/secondary text typing (see the texts CREATE above).
         ("text_type", "TEXT NOT NULL DEFAULT 'primary'"),
         ("parent_text_id", "INTEGER REFERENCES texts(id) ON DELETE CASCADE"),
@@ -371,13 +387,25 @@ _COLUMN_MIGRATIONS = {
     # anchors (markers.position, tree_nodes.segment_start) reference the syllable
     # that STARTS at that offset. Transcript tables reference transcript_syllables.
     "spans": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
-    "suggestions": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
+    # extracted_text_id: set when this delete-suggestion was created by /extract; links
+    # the text the range was moved into so the UI can label it "extracted → <title>".
+    # Plain INTEGER (no FK: ALTER ADD can't add one) — a dangling id degrades to "removed".
+    # status/origin_text_id: upstream review flow. 'applied' (default, incl. legacy rows)
+    # = a live correction (splices into the corrected view, bakes/ripples). 'pending' = an
+    # incoming suggestion from a DERIVED text (origin_text_id) awaiting review here — the
+    # level where the syllable first appears; it has no effect until accepted.
+    "suggestions": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT"),
+                    ("extracted_text_id", "INTEGER"),
+                    ("status", "TEXT NOT NULL DEFAULT 'applied'"),
+                    ("origin_text_id", "INTEGER")],
     "notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "markers": [("syl_id", "TEXT")],
     "tree_nodes": [("segment_start_syl_id", "TEXT")],
     "transcript_spans": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_suggestions": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
+    # Part 13: manual per-parent order for the registry (see the text_groups CREATE).
+    "text_groups": [("position", "INTEGER")],
 }
 
 
@@ -453,6 +481,260 @@ def _rename_documents_to_texts(conn) -> None:
             conn.execute(f"ALTER TABLE {t} RENAME COLUMN document_id TO text_id")
 
 
+# Part 6, Phase 3 — drop the char-offset columns. The `syllables` table is now the
+# sole tokenization/identity source and every annotation is anchored by syllable UUID;
+# char offsets are derived on read for the frontend only, never stored as an anchor.
+# `syllables.start_offset/end_offset` are KEPT as a derived render cache. Two shapes:
+#   * a plain column bound by no CHECK/UNIQUE/index → `ALTER TABLE ... DROP COLUMN`;
+#   * a column inside a CHECK/UNIQUE/index → SQLite rebuild-table (create `<t>__new`,
+#     copy the surviving columns, drop the old table, rename) because DROP COLUMN
+#     refuses those. The rebuild DDLs already include the parallel `*_syl_id` anchor
+#     columns, so this yields the same shape a fresh SCHEMA + _add_missing_columns does.
+# Idempotent: each step runs only while its target column is still present, so it is a
+# no-op on fresh and already-migrated DBs.
+
+# (table, column) — droppable directly (not referenced by any CHECK/UNIQUE/index).
+_OFFSET_DROP_SIMPLE = [
+    ("texts", "units_json"),
+    ("tags", "open_position"),
+    ("tags", "close_position"),
+]
+
+# (table, sentinel_offset_col, create_new_ddl, surviving_cols, [index_ddl, ...]).
+# The rebuild runs only while `sentinel_offset_col` is still present.
+_OFFSET_DROP_REBUILD = [
+    ("spans", "start_offset",
+     "CREATE TABLE spans__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "tag_id", "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_spans_text ON spans(text_id)"]),
+    ("markers", "position",
+     "CREATE TABLE markers__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " syl_id TEXT, UNIQUE(text_id, syl_id))",
+     ["id", "text_id", "syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_markers_text ON markers(text_id)"]),
+    ("tree_nodes", "segment_start",
+     "CREATE TABLE tree_nodes__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " parent_id INTEGER REFERENCES tree_nodes(id) ON DELETE CASCADE,"
+     " position INTEGER NOT NULL, title TEXT, segment_start_syl_id TEXT,"
+     " transparent INTEGER NOT NULL DEFAULT 0,"
+     " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " CHECK ((title IS NOT NULL) OR (segment_start_syl_id IS NOT NULL)),"
+     " UNIQUE(parent_id, position))",
+     ["id", "text_id", "parent_id", "position", "title", "segment_start_syl_id",
+      "transparent", "created_at", "updated_at"],
+     ["CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id)",
+      "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id)"]),
+    ("suggestions", "start_offset",
+     "CREATE TABLE suggestions__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " suggested_text TEXT NOT NULL,"
+     " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "suggested_text", "created_at", "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_suggestions_text ON suggestions(text_id)"]),
+    ("notes", "start_offset",
+     "CREATE TABLE notes__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " category_id INTEGER REFERENCES note_categories(id) ON DELETE SET NULL,"
+     " body TEXT NOT NULL DEFAULT '',"
+     " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "category_id", "body", "created_at", "updated_at",
+      "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_notes_text ON notes(text_id)"]),
+    ("text_portions", "start_offset",
+     "CREATE TABLE text_portions__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " session_tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+     " position INTEGER NOT NULL DEFAULT 0, color TEXT, start_tc TEXT, end_tc TEXT,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "session_tag_id", "position", "color", "start_tc", "end_tc",
+      "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_text_portions_session ON text_portions(session_tag_id)"]),
+    ("transcript_spans", "start_offset",
+     "CREATE TABLE transcript_spans__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,"
+     " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "srt_segment_id", "tag_id", "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_transcript_spans_segment ON transcript_spans(srt_segment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_transcript_spans_text ON transcript_spans(text_id)"]),
+    ("transcript_suggestions", "start_offset",
+     "CREATE TABLE transcript_suggestions__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,"
+     " suggested_text TEXT NOT NULL,"
+     " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "srt_segment_id", "suggested_text", "created_at",
+      "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_transcript_suggestions_segment"
+      " ON transcript_suggestions(srt_segment_id)"]),
+    ("transcript_notes", "start_offset",
+     "CREATE TABLE transcript_notes__new ("
+     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+     " text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,"
+     " srt_segment_id INTEGER NOT NULL REFERENCES srt_segments(id) ON DELETE CASCADE,"
+     " category_id INTEGER REFERENCES note_categories(id) ON DELETE SET NULL,"
+     " body TEXT NOT NULL DEFAULT '',"
+     " created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+     " start_syl_id TEXT, end_syl_id TEXT)",
+     ["id", "text_id", "srt_segment_id", "category_id", "body", "created_at",
+      "updated_at", "start_syl_id", "end_syl_id"],
+     ["CREATE INDEX IF NOT EXISTS idx_transcript_notes_segment ON transcript_notes(srt_segment_id)",
+      "CREATE INDEX IF NOT EXISTS idx_transcript_notes_text ON transcript_notes(text_id)"]),
+]
+
+# Pre-flight: rows that would become underivable once offsets are gone (an offset
+# column still present but its syllable anchor NULL). `markers.syl_id` NULL is the
+# legitimate end-of-text sentinel, so it is intentionally not asserted.
+_ANCHOR_PREFLIGHT = [
+    ("spans", "start_offset", "start_syl_id IS NULL OR end_syl_id IS NULL", "span"),
+    ("suggestions", "start_offset", "start_syl_id IS NULL", "suggestion"),
+    ("notes", "start_offset", "start_syl_id IS NULL OR end_syl_id IS NULL", "note"),
+    ("text_portions", "start_offset",
+     "start_syl_id IS NULL OR end_syl_id IS NULL", "text_portion"),
+    ("tree_nodes", "segment_start",
+     "segment_start IS NOT NULL AND segment_start_syl_id IS NULL", "tree_node"),
+    ("tags", "open_position",
+     "(open_position IS NOT NULL AND open_syl_id IS NULL)"
+     " OR (close_position IS NOT NULL AND close_syl_id IS NULL)", "session tag"),
+    ("transcript_spans", "start_offset",
+     "start_syl_id IS NULL OR end_syl_id IS NULL", "transcript_span"),
+    ("transcript_suggestions", "start_offset", "start_syl_id IS NULL",
+     "transcript_suggestion"),
+    ("transcript_notes", "start_offset",
+     "start_syl_id IS NULL OR end_syl_id IS NULL", "transcript_note"),
+]
+
+
+def _needs_offset_drop(conn) -> bool:
+    targets = _OFFSET_DROP_SIMPLE + [(t, c) for (t, c, *_ ) in _OFFSET_DROP_REBUILD]
+    for table, col in targets:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col in cols:
+            return True
+    return False
+
+
+def _assert_anchors_present(conn) -> None:
+    for table, sentinel, bad, label in _ANCHOR_PREFLIGHT:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if sentinel not in cols:
+            continue  # already migrated — nothing to assert
+        n = conn.execute(
+            f"SELECT COUNT(*) c FROM {table} WHERE {bad}"
+        ).fetchone()["c"]
+        if n:
+            raise RuntimeError(
+                f"Refusing offset-column drop: {n} {label} row(s) lack a syllable "
+                f"anchor and would become underivable. Backfill anchors first."
+            )
+
+
+def _drop_offset_columns(conn) -> None:
+    """Drop the retired char-offset columns (rebuild-table where required).
+
+    Must be called OUTSIDE a transaction: it toggles `PRAGMA foreign_keys` (which
+    cannot change mid-transaction) so the table rebuilds don't cascade-delete child
+    rows when an old parent table is dropped.
+    """
+    if not _needs_offset_drop(conn):
+        return
+    _assert_anchors_present(conn)
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:
+            for table, col in _OFFSET_DROP_SIMPLE:
+                cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if col in cols:
+                    conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+            for table, sentinel, create_ddl, surviving, indexes in _OFFSET_DROP_REBUILD:
+                cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+                if sentinel not in cols:
+                    continue
+                conn.execute(create_ddl)
+                collist = ", ".join(surviving)
+                conn.execute(
+                    f"INSERT INTO {table}__new ({collist}) SELECT {collist} FROM {table}"
+                )
+                conn.execute(f"DROP TABLE {table}")
+                conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+                for ddl in indexes:
+                    conn.execute(ddl)
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    f"Foreign-key violations after offset-column drop: {violations[:5]}"
+                )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+# Part 8 — allow `tags.text_id` to be NULL (a NULL owner == a *shared* tag, shown in
+# every text's palette). SQLite can't drop a NOT NULL constraint in place, so rebuild
+# the table (create `tags__new`, copy, drop, rename). `tags` is a parent table
+# (spans/text_portions/transcript_spans/note_sessions FK it), so run with foreign_keys
+# OFF on its own (non-nested) transaction, like `_drop_offset_columns`. Idempotent:
+# runs only while `text_id` is still declared NOT NULL. Columns are copied dynamically
+# so it is robust to whatever earlier migrations left on the table.
+def _make_tags_text_id_nullable(conn) -> None:
+    info = {r["name"]: r for r in conn.execute("PRAGMA table_info(tags)")}
+    if "text_id" not in info or info["text_id"]["notnull"] == 0:
+        return  # fresh (already nullable) or missing — nothing to do
+    # Rebuild from the table's own stored DDL (preserves every column — including the
+    # ALTER-added audio_*/srt_filename/*_syl_id ones — plus AUTOINCREMENT, defaults, the
+    # FK and UNIQUE), dropping only the NOT NULL on text_id.
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tags'"
+    ).fetchone()["sql"]
+    new_sql = re.sub(
+        r"(\btext_id\b\s+INTEGER)\s+NOT\s+NULL", r"\1", sql, count=1, flags=re.IGNORECASE
+    )
+    if new_sql == sql:  # DDL didn't match the expected shape — bail rather than guess
+        raise RuntimeError("Could not strip NOT NULL from tags.text_id; DDL unexpected")
+    before = conn.execute("SELECT COUNT(*) AS n FROM tags").fetchone()["n"]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:
+            conn.execute("ALTER TABLE tags RENAME TO tags__old")
+            conn.execute(new_sql)  # recreates `tags` with text_id nullable
+            conn.execute("INSERT INTO tags SELECT * FROM tags__old")
+            conn.execute("DROP TABLE tags__old")
+            # Row-count guard: a rebuild must never lose tags. If the copy dropped any
+            # row, raise so the `with conn:` block rolls the whole rebuild back rather
+            # than committing an empty/short table.
+            after = conn.execute("SELECT COUNT(*) AS n FROM tags").fetchone()["n"]
+            if after != before:
+                raise RuntimeError(
+                    f"tags rebuild changed row count: {before} -> {after}; rolling back"
+                )
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    f"Foreign-key violations after tags rebuild: {violations[:5]}"
+                )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -467,4 +749,10 @@ def init_db():
         _drop_status_columns(conn)
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
+    # Offset-column drop runs after the additive schema, on its own (non-nested)
+    # transaction with foreign_keys OFF — see _drop_offset_columns.
+    _drop_offset_columns(conn)
+    # Part 8: make tags.text_id nullable (shared tags). Runs after the offset drop so
+    # `tags` already has its final column set; own foreign_keys-OFF transaction.
+    _make_tags_text_id_nullable(conn)
     conn.close()

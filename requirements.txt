@@ -1,0 +1,5 @@
+flask
+pyyaml
+requests
+beautifulsoup4
+python-docx

@@ -4,7 +4,9 @@ import { useUndoStore } from './useUndoStore';
 
 export interface Tag {
   id: number;
-  text_id: number;
+  // Part 8: null text_id == a shared tag (shown in every text's palette).
+  text_id: number | null;
+  is_shared: boolean;
   name: string;
   color: string;
   tag_kind: 'regular' | 'session';
@@ -18,6 +20,9 @@ export interface Span {
   tag_id: number;
   start_offset: number;
   end_offset: number;
+  // Part 6: syllable anchors (source of truth); offsets above are a render aid.
+  start_syl_id: string | null;
+  end_syl_id: string | null;
   tag: Tag;
 }
 
@@ -40,12 +45,15 @@ interface TagState {
     tagId: number,
     params: { name?: string; color?: string; open_position?: number | null; close_position?: number | null },
   ) => Promise<Tag>;
+  // Part 8: flip a regular tag between shared (global) and private to `currentTextId`.
+  setTagShared: (tagId: number, shared: boolean, currentTextId: number) => Promise<Tag>;
   deleteTag: (tagId: number) => Promise<void>;
   createSpan: (
     textId: number,
     tagId: number,
     start: number,
     end: number,
+    sylIds?: { startSylId: string | null; endSylId: string | null },
   ) => Promise<Span>;
   deleteSpan: (spanId: number) => Promise<void>;
   updateSpan: (spanId: number, tagId: number) => Promise<Span>;
@@ -138,6 +146,38 @@ export const useTagStore = create<TagState>((set, get) => ({
     }
   },
 
+  setTagShared: async (tagId, shared, currentTextId) => {
+    const before = get().tags.find(t => t.id === tagId);
+    try {
+      // shared → global (text_id null); private → owned by the currently-open text.
+      const res = await fetch(`${API_BASE}/tags/${tagId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_shared: shared, text_id: shared ? null : currentTextId }),
+      });
+      if (!res.ok) {
+        let msg = await res.text();
+        try { msg = JSON.parse(msg).detail || msg; } catch {}
+        throw new Error(msg);
+      }
+      const updated: Tag = await res.json();
+      set(state => ({
+        tags: state.tags.map(t => t.id === tagId ? updated : t),
+        spans: state.spans.map(s => s.tag_id === tagId ? { ...s, tag: updated } : s),
+      }));
+      if (before) {
+        useUndoStore.getState().push({
+          description: shared ? `Share tag "${before.name}"` : `Make tag "${before.name}" private`,
+          undo: async () => { await get().setTagShared(tagId, before.is_shared, currentTextId); },
+        });
+      }
+      return updated;
+    } catch (e: any) {
+      set({ error: e.message });
+      throw e;
+    }
+  },
+
   deleteTag: async (tagId) => {
     const before = get().tags.find(t => t.id === tagId);
     const beforeSpans = get().spans.filter(s => s.tag_id === tagId);
@@ -165,7 +205,8 @@ export const useTagStore = create<TagState>((set, get) => ({
               await get().updateTag(recreated.id, { close_position: before.close_position });
             }
             for (const s of beforeSpans) {
-              await get().createSpan(before.text_id, recreated.id, s.start_offset, s.end_offset);
+              await get().createSpan(before.text_id, recreated.id, s.start_offset, s.end_offset,
+                { startSylId: s.start_syl_id, endSylId: s.end_syl_id });
             }
           },
         });
@@ -176,12 +217,19 @@ export const useTagStore = create<TagState>((set, get) => ({
     }
   },
 
-  createSpan: async (textId, tagId, start, end) => {
+  createSpan: async (textId, tagId, start, end, sylIds) => {
     try {
+      // Part 6: prefer syllable anchors — the server derives offsets from the
+      // syllables table, so a selection that lands on a real syllable boundary is
+      // always accepted (no units_json disagreement). Fall back to offsets only
+      // when syl ids are unavailable.
+      const body = sylIds?.startSylId
+        ? { tag_id: tagId, start_syl_id: sylIds.startSylId, end_syl_id: sylIds.endSylId }
+        : { tag_id: tagId, start_offset: start, end_offset: end };
       const res = await fetch(`${API_BASE}/texts/${textId}/spans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tag_id: tagId, start_offset: start, end_offset: end }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         let msg = await res.text();
@@ -215,8 +263,10 @@ export const useTagStore = create<TagState>((set, get) => ({
         useUndoStore.getState().push({
           description: `Remove tag (${before.tag.name})`,
           undo: async () => {
-            await get().createSpan(before.text_id, before.tag_id, before.start_offset, before.end_offset);
+            await get().createSpan(before.text_id, before.tag_id, before.start_offset, before.end_offset,
+              { startSylId: before.start_syl_id, endSylId: before.end_syl_id });
           },
+
         });
       }
     } catch (e: any) {

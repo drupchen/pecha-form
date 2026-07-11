@@ -1,40 +1,17 @@
-"""Export the syllable base layer as the webapp's ``manifest.json``.
+"""Build the corrected root syllable layer for the workspace editor.
 
-Shape (one object per syllable), matching
-``floating-pecha-ui/public/data/archive/*/manifest.json``::
+Applies the text's ``suggestions`` (every one an applied correction — delete to
+revert) onto the raw tokenisation, aligns the corrected syllables back to the
+stable uuid skeleton (``corrected_layer.merge_corrected``), and shapes the result
+as ``editor-tokens`` for the tagger. The per-syllable ``original`` string is kept
+where the corrected text differs.
 
-    {"index": 1, "id": "<uuid>", "text": "...", "nature": "TEXT",
-     "size": "BIG", "tags": ["verse", ...]}
-
-``size`` is formatting and is decided in the webapp, so we emit a constant
-default. ``tags`` carries the *semantic* tag names (from regular-tag spans)
-covering each syllable; the webapp maps those names to its own presentation.
-
-Accepted ``suggestions`` are applied into the published ``text`` while the
-original string is preserved per syllable as ``original`` (emitted only when it
-differs from ``text``, i.e. on edited/deleted syllables). The uuid skeleton stays
-the original tokenisation; see ``corrected_layer.merge_corrected``.
+(Export to the webapp's ``manifest.json`` was removed — see git history; it will
+be reintroduced later on the syllable-native model.)
 """
 
-from ..manifest import load_syllables, generate_syllables
-from ..suggestion_applier import apply_suggestions
-from ..corrected_layer import merge_corrected, original_offset_index
-
-DEFAULT_SIZE = "BIG"
-
-
-def _accepted_suggestions(conn, text_id: int) -> list[dict]:
-    # Every suggestion is an applied correction now (no accept lifecycle); delete
-    # to revert. Kept the name for callers.
-    return [
-        dict(r)
-        for r in conn.execute(
-            "SELECT start_offset, end_offset, suggested_text, created_at "
-            "FROM suggestions WHERE text_id = ? "
-            "ORDER BY start_offset ASC, created_at ASC",
-            (text_id,),
-        )
-    ]
+from ..manifest import load_syllables, generate_syllables, _text_corrected
+from ..corrected_layer import merge_corrected
 
 
 def build_root_merged(conn, text_id: int) -> tuple[list[dict], str, str]:
@@ -57,59 +34,14 @@ def build_root_merged(conn, text_id: int) -> tuple[list[dict], str, str]:
     raw_text = doc["raw_text"] or ""
     instance_id = doc["instance_id"] or ""
 
-    accepted = _accepted_suggestions(conn, text_id)
-    corrected_text, _ = apply_suggestions(raw_text, accepted)
+    # Part 6, Phase 3: the corrected string comes from the syllable-native splice
+    # (suggestions anchored by syllable id); re-tokenise it and realign to the stable
+    # uuid skeleton via merge_corrected exactly as before.
+    got = _text_corrected(conn, text_id)
+    corrected_text = got[1] if got else raw_text
     corrected_syls = generate_syllables(corrected_text, instance_id)
     merged = merge_corrected(skeleton, corrected_syls, seed_prefix=instance_id)
     return merged, raw_text, instance_id
-
-
-def build_manifest(conn, text_id: int) -> list[dict]:
-    merged, _raw_text, _instance_id = build_root_merged(conn, text_id)
-
-    # Tag overlay: regular-tag spans projected onto the published tokens via their
-    # stored syllable-UUID anchors. `positions` lists the non-inserted tokens in
-    # original (skeleton) order; `rank_by_id` maps each token uuid to its rank in
-    # that order, so a span [start_syl_id..end_syl_id] (inclusive) covers ranks
-    # r0..r1 — exactly what the old orig-offset bisection resolved (start_syl_id's
-    # orig_start == span.start_offset, end_syl_id's orig_end == span.end_offset).
-    # Robust to moves; inserted syllables carry no tags.
-    _starts, _ends, positions = original_offset_index(merged)
-    rank_by_id = {merged[p]["id"]: k for k, p in enumerate(positions)}
-    tags_per: list[list[str]] = [[] for _ in merged]
-
-    spans = conn.execute(
-        """
-        SELECT s.start_syl_id, s.end_syl_id, t.name
-        FROM spans s JOIN tags t ON s.tag_id = t.id
-        WHERE s.text_id = ? AND t.tag_kind = 'regular'
-        ORDER BY s.start_offset
-        """,
-        (text_id,),
-    ).fetchall()
-
-    for sp in spans:
-        r0 = rank_by_id.get(sp["start_syl_id"])
-        r1 = rank_by_id.get(sp["end_syl_id"])
-        if r0 is None or r1 is None:
-            continue
-        for k in range(r0, r1 + 1):
-            tags_per[positions[k]].append(sp["name"])
-
-    out: list[dict] = []
-    for i, m in enumerate(merged):
-        entry = {
-            "index": i + 1,
-            "id": m["id"],
-            "text": m["text"],
-            "nature": m["nature"],
-            "size": DEFAULT_SIZE,
-            "tags": tags_per[i],
-        }
-        if m["original"] is not None and m["original"] != m["text"]:
-            entry["original"] = m["original"]
-        out.append(entry)
-    return out
 
 
 def build_editor_tokens(conn, text_id: int) -> list[dict]:

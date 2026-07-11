@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ChevronRight, ChevronDown, MoreVertical, Trash2, Edit2,
-  ArrowUp, ArrowDown, Indent, Outdent, Plus, EyeOff, Eye,
+  ArrowUp, ArrowDown, Indent, Outdent, Plus, EyeOff, Eye, Unlink,
 } from 'lucide-react';
 import type { NestedTreeNode } from '../../store/useTreeNodeStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
@@ -78,6 +79,7 @@ export const TreeNodeCard: React.FC<Props> = ({
   const toggleNodeCollapse = useUIStore(s => s.toggleNodeCollapse);
   const expandNode = useUIStore(s => s.expandNode);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.title || '');
 
@@ -183,6 +185,27 @@ export const TreeNodeCard: React.FC<Props> = ({
     setMenuOpen(false);
     try { await updateNode(node.id, { transparent: !node.transparent }); } catch {}
   };
+
+  // Release the node from its linked segment. Works even when that segment no longer
+  // exists (e.g. its marker was removed / it was merged away), which strands the node
+  // with no segment-side "tree:" badge to click. Clearing segment_start unlinks it.
+  const handleUnlinkSegment = async () => {
+    setMenuOpen(false);
+    // CHECK constraint: title OR segment_start_syl_id must stay non-null — give an
+    // untitled (segment-derived) node a concrete title before clearing the link.
+    const params: { segment_start: null; title?: string } = { segment_start: null };
+    if (!node.title?.trim()) params.title = displayTitle;
+    try { await updateNode(node.id, params); } catch (e: any) { alert(e.message); }
+  };
+
+  // The ⋯ menu is portaled with fixed positioning, so close it on any scroll so it can
+  // never visually detach from its trigger (capture phase catches the scrolling pane too).
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    window.addEventListener('scroll', close, true);
+    return () => window.removeEventListener('scroll', close, true);
+  }, [menuOpen]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (readOnly) return;
@@ -549,38 +572,64 @@ export const TreeNodeCard: React.FC<Props> = ({
           {/* Three-dot menu */}
           <div className="relative">
             <button
-              onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuRect(e.currentTarget.getBoundingClientRect());
+                setMenuOpen(v => !v);
+              }}
               className="p-1 text-bronze hover:text-lapis"
               title="Options"
             >
               <MoreVertical size={13} />
             </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div
-                  className="absolute right-0 top-full mt-1 bg-cream-hi shadow-lg rounded py-1 z-50 w-48"
-                  style={{ border: '1px solid var(--cline)' }}
-                >
-                  <button
-                    onClick={() => { setRenameValue(node.title || ''); setIsRenaming(true); setMenuOpen(false); }}
-                    className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
-                  >
-                    <Edit2 size={12} /> Rename
-                  </button>
-                  <button onClick={handleAddChild} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
-                    <Plus size={12} /> Add child
-                  </button>
-                  <button onClick={handleToggleTransparent} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
-                    {node.transparent ? <Eye size={12} /> : <EyeOff size={12} />}
-                    {node.transparent ? 'Remove transparent' : 'Mark transparent'}
-                  </button>
-                  <div className="my-1" style={{ borderTop: '1px solid var(--cline)' }} />
-                  <button onClick={handleDelete} className="w-full text-left px-3 py-1.5 text-sm text-vermilion-deep hover:bg-vermilion/10 flex items-center gap-2">
-                    <Trash2 size={12} /> Delete (promote children)
-                  </button>
-                </div>
-              </>
+            {menuOpen && menuRect && createPortal(
+              (() => {
+                // Fixed position, right-aligned to the button, flipped above / clamped to the
+                // viewport so the whole menu is visible without scrolling the tree behind it.
+                const MW = 192, MH = 236;
+                const left = Math.max(8, Math.min(menuRect.right - MW, window.innerWidth - MW - 8));
+                const top = menuRect.bottom + 4 + MH > window.innerHeight
+                  ? Math.max(8, menuRect.top - MH - 4)
+                  : menuRect.bottom + 4;
+                return (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                    <div
+                      className="fixed bg-cream-hi shadow-lg rounded py-1 z-50 w-48"
+                      style={{ top, left, border: '1px solid var(--cline)' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={() => { setRenameValue(node.title || ''); setIsRenaming(true); setMenuOpen(false); }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
+                      >
+                        <Edit2 size={12} /> Rename
+                      </button>
+                      <button onClick={handleAddChild} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
+                        <Plus size={12} /> Add child
+                      </button>
+                      <button onClick={handleToggleTransparent} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
+                        {node.transparent ? <Eye size={12} /> : <EyeOff size={12} />}
+                        {node.transparent ? 'Remove transparent' : 'Mark transparent'}
+                      </button>
+                      {node.segment_start != null && (
+                        <button
+                          onClick={handleUnlinkSegment}
+                          className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
+                          title="Break this node's link to its segment so it can be linked to a different one"
+                        >
+                          <Unlink size={12} /> Unlink from segment
+                        </button>
+                      )}
+                      <div className="my-1" style={{ borderTop: '1px solid var(--cline)' }} />
+                      <button onClick={handleDelete} className="w-full text-left px-3 py-1.5 text-sm text-vermilion-deep hover:bg-vermilion/10 flex items-center gap-2">
+                        <Trash2 size={12} /> Delete (promote children)
+                      </button>
+                    </div>
+                  </>
+                );
+              })(),
+              document.body,
             )}
           </div>
         </div>

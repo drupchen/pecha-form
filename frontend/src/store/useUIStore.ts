@@ -9,6 +9,11 @@ interface UIState {
   sessionMode: boolean;
   setSessionMode: (v: boolean) => void;
   toggleSessionMode: () => void;
+  /** Verse vertical mode — when on, spaces inside spans tagged "verse" render as
+   *  line breaks, laying the verse out vertically (one line per phrase). Manual
+   *  stanza breaks are hosted "\n" edit ops on secondary texts. */
+  verseVerticalMode: boolean;
+  toggleVerseVerticalMode: () => void;
   /** Workspace focus mode — hides all top chrome (app header, the Workspace
    *  bar, and the Tree/Tagger pane titles) to maximize working area. */
   workspaceFullscreen: boolean;
@@ -76,6 +81,8 @@ export const useUIStore = create<UIState>((set) => ({
   sessionMode: false,
   setSessionMode: (v) => set({ sessionMode: v }),
   toggleSessionMode: () => set((s) => ({ sessionMode: !s.sessionMode })),
+  verseVerticalMode: false,
+  toggleVerseVerticalMode: () => set((s) => ({ verseVerticalMode: !s.verseVerticalMode })),
   workspaceFullscreen: false,
   setWorkspaceFullscreen: (v) => set({ workspaceFullscreen: v }),
   toggleWorkspaceFullscreen: () => set((s) => ({ workspaceFullscreen: !s.workspaceFullscreen })),

@@ -181,6 +181,18 @@ def attach_cumulative_offsets(rows: list) -> list[dict]:
     return out
 
 
+def units_from_syllables(syllables: list[dict]) -> list[list]:
+    """Project a syllable list into ``units_json`` shape ``[[start, end, text], …]``.
+
+    Part 6, Phase 2: ``units_json`` is now a *derived view of the syllables table*
+    (one unit per syllable) rather than a second, independent tokenisation
+    (``tokenizer.tokenize_tibetan``). Syllables are the sole partition, so a
+    selection that snaps to a syllable can never fall outside a unit boundary — the
+    root cause of the last-segment tagging bug is structurally gone. ``syllables``
+    must already carry offsets (``generate_syllables`` / ``attach_cumulative_offsets``)."""
+    return [[s["start_offset"], s["end_offset"], s["text"]] for s in syllables]
+
+
 def load_syllables(conn, text_id: int) -> list[dict]:
     """All syllables for a text, ordered by index. Offsets are derived from
     the syllable sequence (see ``attach_cumulative_offsets``), not stored."""
@@ -193,46 +205,44 @@ def load_syllables(conn, text_id: int) -> list[dict]:
 
 
 def _text_corrected(conn, text_id: int):
-    """Shared: ``(instance_id, corrected_text, offset_map)`` for a text with its
-    accepted root ``suggestions`` applied (or ``None`` if the text is missing).
-    ``offset_map`` maps corrected offsets back to raw (see ``apply_suggestions``)."""
-    from .suggestion_applier import apply_suggestions
+    """Shared: ``(instance_id, corrected_text, segments)`` for a text with its root
+    ``suggestions`` applied (or ``None`` if the text is missing).
+
+    Part 6, Phase 3: suggestions are anchored by syllable id and applied by splicing
+    syllable runs — no char offsets. ``segments`` is the syllable-native splice
+    (``suggestion_applier.splice_suggestions``: ``keep``/``edit`` pieces) and
+    ``corrected_text`` is its joined string (identical to the old offset splice)."""
+    from .suggestion_applier import splice_suggestions, segments_text
+    from .syllable_anchors import suggestions_for_apply
 
     row = conn.execute(
         "SELECT raw_text, instance_id FROM texts WHERE id = ?", (text_id,)
     ).fetchone()
     if row is None:
         return None
-    accepted = [
-        dict(r)
-        for r in conn.execute(
-            "SELECT start_offset, end_offset, suggested_text, created_at FROM suggestions "
-            "WHERE text_id = ? "  # all suggestions are applied corrections now
-            "ORDER BY start_offset ASC, created_at ASC",
-            (text_id,),
-        )
-    ]
-    corrected_text, offset_map = apply_suggestions(row["raw_text"] or "", accepted)
-    return row["instance_id"] or "", corrected_text, offset_map
+    instance_id = row["instance_id"] or ""
+    raw_syllables = load_syllables(conn, text_id)
+    if not raw_syllables:
+        # No persisted syllable layer yet — tokenise raw_text so the corrected string
+        # still reflects the text (the old apply-with-no-suggestions passthrough).
+        raw_syllables = generate_syllables(row["raw_text"] or "", instance_id)
+    segments = splice_suggestions(raw_syllables, suggestions_for_apply(conn, text_id))
+    return instance_id, segments_text(segments), segments
 
 
 def corrected_root_units(conn, text_id: int) -> list[list]:
     """Root display units ``[start, end, text]`` with accepted suggestions applied to
-    the *text* but **raw** offsets preserved (snapped through replacements). Same
-    tokeniser/shape as ``texts.units_json`` — a drop-in for the Alignment tab's
-    main-text column, leaving portion building / drag-to-suggest on raw offsets. With
-    no accepted suggestions this reproduces ``units_json`` exactly."""
-    from .suggestion_applier import corr_offset_to_raw
-    from .tokenizer import tokenize_tibetan
+    the *text* but **raw** offsets preserved (snapped through replacements) — a drop-in
+    for the Alignment tab's main-text column, leaving portion building / drag-to-suggest
+    on raw offsets.
 
-    got = _text_corrected(conn, text_id)
-    if got is None:
-        return []
-    _, corrected_text, offset_map = got
+    Part 6, Phase 2: this now derives from the *same* syllable partition as
+    ``corrected_root_syllables`` (``generate_syllables``), not the retired second
+    tokeniser, so the corrected units and the syllables can never disagree. With no
+    accepted suggestions this reproduces ``units_json`` (also syllable-derived)."""
     return [
-        [corr_offset_to_raw(offset_map, start, is_end=False),
-         corr_offset_to_raw(offset_map, end, is_end=True), text]
-        for start, end, text in tokenize_tibetan(corrected_text)
+        [s["start_offset"], s["end_offset"], s["text"]]
+        for s in corrected_root_syllables(conn, text_id)
     ]
 
 
@@ -241,21 +251,31 @@ def corrected_root_syllables(conn, text_id: int) -> list[dict]:
     **raw** offsets preserved — the needle analogue of
     ``transcript_manifest.corrected_segment_syllables`` for the main-text matcher.
     Each dict: ``{start_offset, end_offset, text, nature, inserted}`` (``inserted``
-    True for pure insertions with no raw home)."""
-    from .suggestion_applier import corr_offset_to_raw
+    True for pure insertions with no raw home).
 
+    Part 6, Phase 3: built directly from the syllable-native splice — untouched
+    syllables carry their own raw offsets; a replaced run's tokens all share the run's
+    raw span (``inserted`` False); a pure insertion's tokens share its zero-width raw
+    point (``inserted`` True). No corrected-text re-tokenisation or offset remap."""
     got = _text_corrected(conn, text_id)
     if got is None:
         return []
-    instance_id, corrected_text, offset_map = got
+    instance_id, _corrected_text, segments = got
     out: list[dict] = []
-    for s in generate_syllables(corrected_text, instance_id):
-        rs = corr_offset_to_raw(offset_map, s["start_offset"], is_end=False)
-        re_ = corr_offset_to_raw(offset_map, s["end_offset"], is_end=True)
-        out.append({
-            "start_offset": rs, "end_offset": re_, "text": s["text"],
-            "nature": s["nature"], "inserted": re_ <= rs,
-        })
+    for seg in segments:
+        if seg["kind"] == "keep":
+            s = seg["syl"]
+            out.append({
+                "start_offset": s["start_offset"], "end_offset": s["end_offset"],
+                "text": s["text"], "nature": s["nature"], "inserted": False,
+            })
+        else:
+            inserted = seg["raw_end"] <= seg["raw_start"]
+            for tok in generate_syllables(seg["text"], instance_id):
+                out.append({
+                    "start_offset": seg["raw_start"], "end_offset": seg["raw_end"],
+                    "text": tok["text"], "nature": tok["nature"], "inserted": inserted,
+                })
     return out
 
 

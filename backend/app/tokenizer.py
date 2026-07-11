@@ -196,9 +196,17 @@ def simple_syllable_tokenize(text: str) -> list[tuple[int, int, str]]:
 
 
 def prepare_and_tokenize(upload_text: str) -> tuple[str, list[tuple[int, int, str]]]:
-    """1. NFC-normalize. 2. Tokenize.
-    Returns (raw_text, units)
-    """
+    """1. NFC-normalize / fold. 2. Partition into syllables and project to units.
+    Returns (raw_text, units).
+
+    Part 6, Phase 2: units are now a projection of the *syllable* partition
+    (``manifest.generate_syllables``) — the one and only tokenisation of a text —
+    rather than a second, independent ``tokenize_tibetan`` pass that could disagree
+    with the syllables at a boundary (the last-segment tagging bug). Instance ids do
+    not affect the offsets/text of the partition, so a throwaway id is fine here; the
+    persisted syllables use the text's real instance_id but yield the same units."""
+    from .manifest import generate_syllables, units_from_syllables
+
     raw_text = fold_punct_newlines(normalize_spaces(unicodedata.normalize("NFC", upload_text)))
-    units = tokenize_tibetan(raw_text)
+    units = units_from_syllables(generate_syllables(raw_text, "instance"))
     return raw_text, units

@@ -7,8 +7,10 @@ import { useUIStore } from '../../store/useUIStore';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
 import { useNoteStore } from '../../store/useNoteStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
+import { useEditorTokenStore } from '../../store/useEditorTokenStore';
+import { editRange, insertBreak, suggestUpstream } from '../../api/client';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput } from 'lucide-react';
+import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, CornerDownLeft } from 'lucide-react';
 
 const COLORS = [
   '#ef4444', '#f97316', '#f59e0b', '#84cc16',
@@ -25,7 +27,7 @@ interface Props {
 type Mode = 'tag' | 'suggest' | 'note';
 
 export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose }) => {
-  const { currentText, extractSelection } = useTextStore();
+  const { currentText, extractSelection, loadText } = useTextStore();
   const tagStore = useTagStore();
   const { createTag, createSpan } = tagStore;
   const { createSuggestion } = useSuggestionStore();
@@ -77,7 +79,8 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
     if (!selectedTagId) return;
     setError(null);
     try {
-      await createSpan(currentText.id, selectedTagId, selection.start, selection.end);
+      await createSpan(currentText.id, selectedTagId, selection.start, selection.end,
+        { startSylId: selection.startSylId, endSylId: selection.endSylId });
       onClose();
     } catch (err: any) {
       setError(err.message);
@@ -114,12 +117,73 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
       return;
     }
     setError(null);
+    // A secondary's edits are derivation ops over its parent chain (not suggestions):
+    // edit-range aligns the new text against the selected run. Insert-after = the
+    // selection's own text with the insertion appended (alignment keeps the run).
+    if (currentText.text_type === 'secondary') {
+      try {
+        const selected = currentText.raw_text.substring(selection.start, selection.end);
+        const newText = suggestMode === 'insert-after' ? selected + suggestText : suggestText;
+        await editRange(currentText.id, {
+          start_syl_id: selection.startSylId, end_syl_id: selection.endSylId, new_text: newText,
+        });
+        await loadText(currentText.id);  // full refresh — the composed text changed
+        onClose();
+      } catch (err: any) {
+        setError(err.message);
+      }
+      return;
+    }
     const start = suggestMode === 'insert-after' ? selection.end : selection.start;
     try {
-      await createSuggestion(currentText.id, start, selection.end, suggestText);
+      // A replacement covers the whole selection → anchor by syllable ids (Part 6).
+      // An insertion (insert-after) stays on the offset path for now.
+      const sylIds = suggestMode === 'insert-after'
+        ? undefined
+        : { startSylId: selection.startSylId, endSylId: selection.endSylId };
+      await createSuggestion(currentText.id, start, selection.end, suggestText, sylIds);
       onClose();
     } catch (err: any) {
       setError(err.message);
+    }
+  };
+
+  // The explicit, sporadic upstream path: route this correction to the text where the
+  // selected syllables first appear (their owner), as a pending suggestion reviewed
+  // there. Confirmation popup guards against accidental upstream submissions.
+  const handleSuggestUpstream = async () => {
+    setError(null);
+    if (suggestMode === 'insert-after' && !suggestText) {
+      setError('Insertion text cannot be empty');
+      return;
+    }
+    if (!confirm(
+      'Send this correction upstream, for review in the text this content comes from?\n\n'
+      + 'Nothing changes until it is accepted there — then it ripples back here.',
+    )) return;
+    try {
+      let body: { start_syl_id: string; end_syl_id: string | null; suggested_text: string };
+      if (suggestMode === 'insert-after') {
+        // A zero-width insertion is anchored BEFORE the token after the selection.
+        const tokens = useEditorTokenStore.getState().tokens;
+        const i = tokens.findIndex(t => t.id === selection.endSylId);
+        const before = i >= 0 && i + 1 < tokens.length ? tokens[i + 1] : null;
+        if (!before) {
+          setError('Cannot suggest an insertion at the very end of the text');
+          return;
+        }
+        body = { start_syl_id: before.id, end_syl_id: null, suggested_text: suggestText };
+      } else {
+        body = {
+          start_syl_id: selection.startSylId, end_syl_id: selection.endSylId,
+          suggested_text: suggestText,
+        };
+      }
+      const res = await suggestUpstream(currentText.id, body);
+      onClose();
+      alert(`Sent for review in “${res.routed_to_title}”.`);
+    } catch (e: any) {
+      setError(e.message || 'Could not send the suggestion upstream');
     }
   };
 
@@ -178,8 +242,42 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
   // and syllables are untouched; the Suggestions sidebar lists it for undo.
   const handleDeleteSection = async () => {
     setError(null);
-    await createSuggestion(currentText.id, selection.start, selection.end, '');
+    try {
+      if (currentText.text_type === 'secondary') {
+        // A secondary's deletion is a derivation op (edit the run to nothing).
+        await editRange(currentText.id, {
+          start_syl_id: selection.startSylId, end_syl_id: selection.endSylId, new_text: '',
+        });
+        await loadText(currentText.id);
+      } else {
+        // Anchor the delete-suggestion by syllable ids (Part 6): deleting the full last
+        // segment must not be rejected by the units_json boundary check.
+        await createSuggestion(currentText.id, selection.start, selection.end, '',
+          { startSylId: selection.startSylId, endSylId: selection.endSylId });
+      }
+    } catch (e: any) {
+      // Surface the reason (e.g. "Overlaps with an existing suggestion") instead of
+      // silently doing nothing — the popover renders `error` below.
+      setError(e.message || 'Could not delete this section');
+      return;
+    }
     onClose();
+  };
+
+  // Manual line break AFTER the selection: a hosted "\n" op inserted before the next
+  // composed token (or at the end of the text). Secondary-only formatting.
+  const handleInsertBreak = async () => {
+    setError(null);
+    try {
+      const tokens = useEditorTokenStore.getState().tokens;
+      const i = tokens.findIndex(t => t.id === selection.endSylId);
+      const before = i >= 0 && i + 1 < tokens.length ? tokens[i + 1].id : null;
+      await insertBreak(currentText.id, before);
+      await loadText(currentText.id);
+      onClose();
+    } catch (e: any) {
+      setError(e.message || 'Could not insert a line break');
+    }
   };
 
   // Extract the selection into a new independent primary text (and reversibly remove it
@@ -215,7 +313,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
 
   // Position the popover near the selection rect, clipped to viewport.
   const PW = 320;
-  const PH = 280;
+  const PH = 340;  // taller now that the toolbar wraps to a few rows
   const left = Math.max(8, Math.min(window.innerWidth - PW - 8, selection.rect.left + selection.rect.width / 2 - PW / 2));
   const top = selection.rect.bottom + 8 + PH > window.innerHeight
     ? Math.max(8, selection.rect.top - PH - 8)
@@ -232,10 +330,12 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between px-3 py-2"
+          className="flex items-start justify-between gap-1 px-3 py-2"
           style={{ borderBottom: '1px solid var(--cline)' }}
         >
-          <div className="flex gap-1">
+          {/* Toolbar wraps within the popover width so buttons never overflow past the
+              right edge (and the close X stays visible). */}
+          <div className="flex flex-wrap gap-1 flex-1 min-w-0 [&_button]:whitespace-nowrap">
             {!consultMode && (
               <button
                 onClick={() => setMode('tag')}
@@ -284,15 +384,28 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
                 <Scissors size={12} /> Split here
               </button>
             )}
+            {!sessionMode && !consultMode && (
+              <button
+                onClick={handleDeleteSection}
+                className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-900/40 dark:hover:text-red-300"
+                title={currentText.text_type === 'secondary'
+                  ? 'Remove this range from the derived text (an edit op you can undo from the Edits panel)'
+                  : 'Reversibly hide this range (a delete-suggestion you can undo from the Suggestions panel). Bake it in later with Duplicate.'}
+              >
+                <Trash2 size={12} /> Delete section
+              </button>
+            )}
+            {!sessionMode && !consultMode && currentText.text_type === 'secondary' && (
+              <button
+                onClick={handleInsertBreak}
+                className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-indigo-100 hover:text-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-300"
+                title="Insert a line break after the selection (undo from the Edits panel)"
+              >
+                <CornerDownLeft size={12} /> Line break
+              </button>
+            )}
             {!sessionMode && !consultMode && currentText.text_type === 'primary' && (
               <>
-                <button
-                  onClick={handleDeleteSection}
-                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-900/40 dark:hover:text-red-300"
-                  title="Reversibly hide this range (a delete-suggestion you can undo from the Suggestions panel). Bake it in later with Duplicate."
-                >
-                  <Trash2 size={12} /> Delete section
-                </button>
                 <button
                   onClick={handleExtract}
                   className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-teal-100 hover:text-teal-700 dark:hover:bg-teal-900/40 dark:hover:text-teal-300"
@@ -310,7 +423,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
               </>
             )}
           </div>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700">
+          <button onClick={onClose} className="p-1 shrink-0 text-slate-400 hover:text-slate-700">
             <X size={14} />
           </button>
         </div>
@@ -444,6 +557,18 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, onClose
                 Save suggestion
               </button>
             </div>
+            {currentText.text_type === 'secondary' && (
+              <button
+                type="button"
+                onClick={handleSuggestUpstream}
+                disabled={suggestMode === 'insert-after' && !suggestText}
+                className="text-xs px-2 py-1.5 rounded bg-lapis/10 text-lapis hover:bg-lapis hover:text-cream-hi transition-colors disabled:opacity-50"
+                style={{ border: '1px solid var(--cline)' }}
+                title="Send this correction for review in the text this content comes from — it only takes effect there once accepted, then ripples back here"
+              >
+                Suggest upstream…
+              </button>
+            )}
           </form>
         )}
 
