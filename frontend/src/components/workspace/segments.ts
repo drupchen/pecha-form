@@ -94,6 +94,53 @@ export function computeSegments(
   return segments;
 }
 
+/** Display-only newline synthesis (the body renders `whitespace-pre-wrap`): verse
+ *  mode appends a line break after any space inside a "verse"-tagged token — the
+ *  space usually rides inside a PUNCT token like '༔ ' or '། ', which is why the old
+ *  `nature === 'SPACE'` gate never fired on real Tibetan verse. Sapche mode appends
+ *  one after the LAST token of a "sapche"-tagged span (annotation boundaries sit on
+ *  syllable edges, so that token's end offset equals the span's). Tokens already
+ *  containing '\n' are left alone. */
+export function tokenDisplayText(
+  text: string,
+  endOffset: number,
+  anns: { tag: { name: string }; end_offset: number }[],
+  verseVertical: boolean,
+  sapcheNewlines: boolean,
+  suppressVerseBreak = false,
+): string {
+  if (text.includes('\n')) return text;
+  const named = (n: string) => (a: { tag: { name: string } }) =>
+    a.tag.name.trim().toLowerCase() === n;
+  let out = text;
+  if (verseVertical && !suppressVerseBreak && /\s/.test(text) && anns.some(named('verse'))) out += '\n';
+  if (sapcheNewlines && anns.some(a => named('sapche')(a) && a.end_offset === endOffset)
+      && !out.endsWith('\n')) out += '\n';
+  return out;
+}
+
+/** Whitespace tokens that end a SHORT group — ≤2 TEXT syllables since the previous
+ *  whitespace token or line break. These are seed/invocation syllables like 'ཧྲཱིཿ' or
+ *  'ན་མོ༔' that open a verse line: verse vertical mode must NOT break after them, so
+ *  the seed stays on the same line as the phrase it introduces. Returns the ids to
+ *  pass as `suppressVerseBreak` to `tokenDisplayText`. */
+export function shortVerseGroupEnders(
+  tokens: { id: string; text: string; nature: string }[],
+): Set<string> {
+  const out = new Set<string>();
+  let textSyls = 0;
+  for (const t of tokens) {
+    if (t.text.includes('\n')) { textSyls = 0; continue; }
+    if (/\s/.test(t.text)) {
+      if (textSyls <= 2) out.add(t.id);
+      textSyls = 0;
+    } else if (t.nature === 'TEXT') {
+      textSyls++;
+    }
+  }
+  return out;
+}
+
 /** Walk up from `node` to the nearest element carrying `data-syl-id` (a token span). */
 function enclosingToken(node: Node | null): HTMLElement | null {
   let n: Node | null = node;

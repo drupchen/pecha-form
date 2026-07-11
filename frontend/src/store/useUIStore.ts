@@ -14,6 +14,11 @@ interface UIState {
    *  stanza breaks are hosted "\n" edit ops on secondary texts. */
   verseVerticalMode: boolean;
   toggleVerseVerticalMode: () => void;
+  /** Sapche line breaks — when on, a line break renders after the last syllable of
+   *  every span tagged "sapche", so each inline sapche heading ends its line.
+   *  Display-only, like verse vertical mode. */
+  sapcheNewlineMode: boolean;
+  toggleSapcheNewlineMode: () => void;
   /** Workspace focus mode — hides all top chrome (app header, the Workspace
    *  bar, and the Tree/Tagger pane titles) to maximize working area. */
   workspaceFullscreen: boolean;
@@ -87,6 +92,8 @@ export const useUIStore = create<UIState>((set) => ({
   toggleSessionMode: () => set((s) => ({ sessionMode: !s.sessionMode })),
   verseVerticalMode: false,
   toggleVerseVerticalMode: () => set((s) => ({ verseVerticalMode: !s.verseVerticalMode })),
+  sapcheNewlineMode: false,
+  toggleSapcheNewlineMode: () => set((s) => ({ sapcheNewlineMode: !s.sapcheNewlineMode })),
   workspaceFullscreen: false,
   setWorkspaceFullscreen: (v) => set({ workspaceFullscreen: v }),
   toggleWorkspaceFullscreen: () => set((s) => ({ workspaceFullscreen: !s.workspaceFullscreen })),

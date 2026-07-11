@@ -2,7 +2,7 @@ import React, { useContext, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, Link2, GitBranchPlus, Trash2, X } from 'lucide-react';
 import type { Segment } from './segments';
-import { readTokenSelection } from './segments';
+import { readTokenSelection, tokenDisplayText, shortVerseGroupEnders } from './segments';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore, type Span, type Tag } from '../../store/useTagStore';
 import { HoverTagPopover } from './HoverTagPopover';
@@ -81,6 +81,7 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const verseVertical = useUIStore(s => s.verseVerticalMode);
+  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
   const taggerFontSize = useUIStore(s => s.taggerFontSize);
   const searchMatchIndex = useUIStore(s => s.searchMatchIndex);
   const allSearchMatches = useContext(TaggerSearchContext);
@@ -328,8 +329,13 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
     // passage right after this one.
     const srcOffsets = new Map(editorTokensAll.map(t => [t.id, [t.start_offset, t.end_offset] as const]));
     const passageSpans = allSpansFull.filter(a => a.tag.tag_kind === 'regular');
+    // Verse breaks are suppressed after seed/invocation groups (≤2 syllables).
+    const verseSuppress = verseVertical ? shortVerseGroupEnders(tokens) : new Set<string>();
     const renderPassage = (p: Passage) => {
       const syls = p.members.flatMap(m => m.syllables);
+      const runSuppress = verseVertical
+        ? shortVerseGroupEnders(syls.map(s => ({ id: s.syl_id, text: s.text, nature: s.nature })))
+        : new Set<string>();
       out.push(
         <span
           key={`passage-${p.id}`}
@@ -355,11 +361,8 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';
-            const renderText =
-              verseVertical && s.nature === 'SPACE' && !s.text.includes('\n')
-                && anns.some(a => a.tag.name.trim().toLowerCase() === 'verse')
-                ? '\n'
-                : s.text;
+            const renderText = tokenDisplayText(
+              s.text, reo, anns, verseVertical, sapcheNewlines, runSuppress.has(s.syl_id));
             return (
               <span
                 key={`pt-${p.id}-${si}`}
@@ -538,13 +541,10 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
         ? () => setHoverPopover(null)
         : undefined;
       if (editableAnns.length > 0 && !consultMode) classes.push('cursor-pointer');
-      // Verse vertical mode: a SPACE token inside a "verse"-tagged span renders as a
-      // line break (the body is whitespace-pre-wrap), laying the verse out vertically.
-      const renderText =
-        verseVertical && t.nature === 'SPACE' && !t.text.includes('\n')
-          && anns.some(a => a.tag.name.trim().toLowerCase() === 'verse')
-          ? '\n'
-          : t.text;
+      // Display-only line breaks: verse vertical mode (after each space inside a
+      // verse-tagged run) and sapche mode (after each sapche-tagged run).
+      const renderText = tokenDisplayText(
+        t.text, t.end_offset, anns, verseVertical, sapcheNewlines, verseSuppress.has(t.id));
       out.push(
         <span
           key={`t-${t.idx}`}
@@ -566,7 +566,7 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
     passagesByAnchor.atEnd.forEach(renderPassage);
     renderHairlinesAt(segment.end);
     return out;
-  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
+  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, sapcheNewlines, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
 
   const handleMouseUp = () => {
     // In session mode, the pane-level handler in TaggerPane takes over so it

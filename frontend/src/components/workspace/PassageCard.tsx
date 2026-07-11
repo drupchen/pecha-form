@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, X } from 'lucide-react';
 import type { Segment } from './segments';
-import { readTokenSelection } from './segments';
+import { readTokenSelection, tokenDisplayText, shortVerseGroupEnders } from './segments';
 import type { Passage } from '../../api/client';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
@@ -40,6 +40,7 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   const hoveredKey = useLinkStore(s => s.hoveredKey);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const verseVertical = useUIStore(s => s.verseVerticalMode);
+  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
   const taggerFontSize = useUIStore(s => s.taggerFontSize);
 
   const textRef = useRef<HTMLDivElement>(null);
@@ -57,6 +58,14 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   const groupSyls = useMemo(
     () => group.flatMap(p => p.members.flatMap(m => m.syllables)),
     [group],
+  );
+  // Verse breaks are suppressed after seed/invocation groups (≤2 syllables); the
+  // whole group flows as one run, so suppression is computed over its full length.
+  const verseSuppress = useMemo(
+    () => verseVertical
+      ? shortVerseGroupEnders(groupSyls.map(s => ({ id: s.syl_id, text: s.text, nature: s.nature })))
+      : new Set<string>(),
+    [verseVertical, groupSyls],
   );
   const srcOffsets = useMemo(
     () => new Map(editorTokens.map(t => [t.id, [t.start_offset, t.end_offset] as const])),
@@ -232,11 +241,8 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';
-            const renderText =
-              verseVertical && s.nature === 'SPACE' && !s.text.includes('\n')
-                && anns.some(a => a.tag.name.trim().toLowerCase() === 'verse')
-                ? '\n'
-                : s.text;
+            const renderText = tokenDisplayText(
+              s.text, reo, anns, verseVertical, sapcheNewlines, verseSuppress.has(s.syl_id));
             return (
               <span
                 key={`pc-${p.id}-${si}`}

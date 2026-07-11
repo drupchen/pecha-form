@@ -12,7 +12,7 @@ import { TreePane } from './TreePane';
 import { TaggerPane } from './TaggerPane';
 import { Sidebar } from './Sidebar';
 import { LinkOverlay } from './LinkOverlay';
-import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2, WrapText } from 'lucide-react';
+import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2, WrapText, Pilcrow } from 'lucide-react';
 import { TaggerSearchContext, findMatches } from './TaggerSearchContext';
 import { scrollTaggerToOffset } from './scrollTaggerToOffset';
 
@@ -38,6 +38,8 @@ export const WorkspaceView: React.FC = () => {
   const passageNotice = useUIStore(s => s.passageNotice);
   const verseVertical = useUIStore(s => s.verseVerticalMode);
   const toggleVerseVertical = useUIStore(s => s.toggleVerseVerticalMode);
+  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
+  const toggleSapcheNewlines = useUIStore(s => s.toggleSapcheNewlineMode);
 
   // While "place a passage" is armed, Escape cancels it.
   useEffect(() => {
@@ -257,6 +259,21 @@ export const WorkspaceView: React.FC = () => {
               : 'Verse vertical mode — lay out verse-tagged passages vertically'}
           >
             <WrapText size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={toggleSapcheNewlines}
+            className={`p-1.5 rounded-md transition-colors ${
+              sapcheNewlines
+                ? 'bg-lapis text-cream-hi'
+                : 'text-bronze hover:text-lapis hover:bg-cream'
+            }`}
+            style={{ border: '1px solid var(--cline)' }}
+            title={sapcheNewlines
+              ? 'Sapche line breaks ON — a line break renders after each sapche-tagged run'
+              : 'Sapche line breaks — end the line after each sapche-tagged run'}
+          >
+            <Pilcrow size={14} />
           </button>
           <button
             type="button"
