@@ -75,7 +75,33 @@
 .bk-role-small .bk-translation { font-size: calc(var(--translation-pt) - 1.5pt); color: #555; }
 
 /* The empty-line gap between chunks — the balancing lever (height set inline). */
-.bk-gap { height: calc(var(--translation-pt) * var(--leading)); }
+.bk-gap { height: calc(var(--translation-pt) * var(--leading)); position: relative; }
+.bk-gap-removed { height: 0; position: relative; }
+
+/* Gap controls (−/+/× and restore) — revealed on hover of the gap. */
+.bk-gapctl-group {
+  position: absolute; right: -2px; top: -8px; display: none; gap: 1px;
+}
+.bk-gap:hover .bk-gapctl-group { display: inline-flex; }
+.bk-gap-removed:hover .bk-gapctl,
+.bk-gapctl {
+  font: 600 9px/1 system-ui, sans-serif;
+  min-width: 12px; height: 12px; padding: 0 2px;
+  background: #fff; color: var(--lapis, #2f6f9f);
+  border: 1px solid var(--cline, #ddd); border-radius: 3px; cursor: pointer;
+}
+.bk-gap-removed .bk-gapctl { position: absolute; right: -2px; top: -6px; opacity: 0; }
+.bk-gap-removed:hover .bk-gapctl { opacity: 1; }
+
+/* Wrap-extend control on a translation block. */
+.bk-translation { position: relative; }
+.bk-wrapctl { position: absolute; right: -1px; bottom: -2px; display: none; gap: 1px; }
+.bk-translation:hover .bk-wrapctl { display: inline-flex; }
+.bk-wrapctl button {
+  font: 600 9px/1 system-ui, sans-serif; width: 12px; height: 12px;
+  background: #fff; color: var(--jade, #3a7d5f);
+  border: 1px solid var(--cline, #ddd); border-radius: 3px; cursor: pointer;
+}
 
 /* Per-line-boundary break control (click to force / lift a page break). Hidden
  * until the line is hovered so the page reads cleanly. */
