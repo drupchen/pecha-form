@@ -39,11 +39,16 @@ def _resolve_members(conn, text_id: int, passage_id: int) -> list[dict]:
     return out
 
 
-def _passage_out(conn, row) -> dict:
+def _passage_out(conn, row, stream_text_id=None, inherited=False) -> dict:
+    # Members resolve against the STREAM text (the child for an inherited passage),
+    # and the returned text_id is the stream's so the frontend attributes it here.
+    stream_text_id = stream_text_id if stream_text_id is not None else row["text_id"]
     d = dict(row)
+    d["text_id"] = stream_text_id
     d["attach_prev"] = bool(d.get("attach_prev", 0))
     d["own_segment"] = bool(d.get("own_segment", 0))
-    return {**d, "members": _resolve_members(conn, row["text_id"], row["id"])}
+    d["inherited"] = inherited
+    return {**d, "members": _resolve_members(conn, stream_text_id, row["id"])}
 
 
 def _validate_members(conn, text_id: int, members) -> None:
@@ -75,13 +80,40 @@ def _validate_downstream_anchor(conn, text_id: int, anchor_syl_id, members) -> N
 
 @router.get("/texts/{text_id}/passages", response_model=List[PassageOut])
 def list_passages(text_id: int):
+    """This text's own passages plus those INHERITED from the source chain, resolved
+    onto this text's stream (a source passage applies where its anchor + members all
+    appear here). Own passages come first so a redeclared one stays editable."""
+    from ..inherit import source_texts
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM passages WHERE text_id = ? ORDER BY position, id", (text_id,)
-    ).fetchall()
-    out = [_passage_out(conn, r) for r in rows]
-    conn.close()
-    return out
+    try:
+        stream = {t["id"] for t in base_tokens(conn, text_id)}
+        out = []
+        emitted = set()  # (anchor, member-ranges) already shown
+        for origin in [text_id] + source_texts(conn.cursor(), text_id):
+            inherited = origin != text_id
+            for r in conn.execute(
+                "SELECT * FROM passages WHERE text_id = ? ORDER BY position, id", (origin,)
+            ).fetchall():
+                if r["anchor_syl_id"] is not None and r["anchor_syl_id"] not in stream:
+                    continue
+                members = _resolve_members(conn, text_id, r["id"])
+                # Every member must have at least one surviving syllable in the stream.
+                if not members or any(not m["syllables"] for m in members):
+                    continue
+                key = (r["anchor_syl_id"],
+                       tuple((m["src_start_syl_id"], m["src_end_syl_id"]) for m in members))
+                # OWN passages always render (same-anchor siblings with identical
+                # ranges are distinct); an INHERITED passage is suppressed only when
+                # an already-emitted one (own or earlier source) covers the same range.
+                if inherited and key in emitted:
+                    continue
+                emitted.add(key)
+                d = _passage_out(conn, r, stream_text_id=text_id, inherited=inherited)
+                d["members"] = members
+                out.append(d)
+        return out
+    finally:
+        conn.close()
 
 
 @router.post("/texts/{text_id}/passages", response_model=PassageOut)

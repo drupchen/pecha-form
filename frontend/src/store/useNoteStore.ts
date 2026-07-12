@@ -24,6 +24,8 @@ export interface Note {
   /** Set = a note ON that passage occurrence (renders only inside the passage run,
    *  never at the source occurrence of the shared syllables). */
   passage_id: number | null;
+  /** True when INHERITED from a source text — read-only here (edit on the owner). */
+  inherited?: boolean;
 }
 
 interface NoteState {
@@ -145,6 +147,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   updateNote: async (noteId, params) => {
     const before = get().notes.find(n => n.id === noteId);
+    if (before?.inherited) return;  // inherited notes are read-only; edit on the owner
     try {
       const res = await fetch(`${API_BASE}/notes/${noteId}`, {
         method: 'PATCH',
@@ -174,6 +177,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   deleteNote: async (noteId) => {
     const before = get().notes.find(n => n.id === noteId);
+    if (before?.inherited) return;  // inherited notes are read-only; edit on the owner
     try {
       const res = await fetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());

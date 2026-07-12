@@ -147,28 +147,45 @@ def _hydrate_note_row(cursor, row: dict) -> dict:
 
 @router.get("/texts/{text_id}/notes", response_model=List[NoteOut])
 def list_notes(text_id: int):
+    """This text's own notes plus those INHERITED from the source chain, resolved
+    onto this text's stream (a source note applies where its anchor syllables appear
+    here). Own notes shadow an inherited note on the same range."""
+    from ..inherit import source_texts
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"{NOTE_SELECT} WHERE n.text_id = ?", (text_id,))
     id2start, id2end = _syl_offset_maps(conn, text_id)
-    derived = (_derive_note_offsets(dict(r), id2start, id2end) for r in cursor.fetchall())
-    rows = [r for r in derived if r is not None]  # skip dangling anchors
-    # Batch-fetch all session links for this text and join in Python to
-    # avoid N+1 queries.
-    cursor.execute(
-        "SELECT ns.note_id, ns.tag_id, t.name "
-        "FROM note_sessions ns "
-        "JOIN notes n ON ns.note_id = n.id "
-        "JOIN tags t ON ns.tag_id = t.id "
-        "WHERE n.text_id = ? "
-        "ORDER BY t.name",
-        (text_id,),
-    )
+    rows = []
+    emitted = set()
+    for origin in [text_id] + source_texts(cursor, text_id):
+        inherited = origin != text_id
+        cursor.execute(f"{NOTE_SELECT} WHERE n.text_id = ?", (origin,))
+        for r in cursor.fetchall():
+            d = _derive_note_offsets(dict(r), id2start, id2end)
+            if d is None:  # anchors don't resolve in this stream
+                continue
+            key = (d["start_offset"], d["end_offset"], d.get("passage_id"))
+            # OWN notes always render (several notes may share a span); an INHERITED
+            # note is suppressed only when one already covers the same span here.
+            if inherited and key in emitted:
+                continue
+            emitted.add(key)
+            d["text_id"] = text_id
+            d["inherited"] = inherited
+            rows.append(d)
+    # Batch-fetch session links for all gathered notes (by id, spanning origins).
+    note_ids = [r["id"] for r in rows]
     by_note: dict = {}
-    for r in cursor.fetchall():
-        ids_names = by_note.setdefault(r["note_id"], ([], []))
-        ids_names[0].append(r["tag_id"])
-        ids_names[1].append(r["name"])
+    if note_ids:
+        cursor.execute(
+            f"SELECT ns.note_id, ns.tag_id, t.name FROM note_sessions ns "
+            f"JOIN tags t ON ns.tag_id = t.id "
+            f"WHERE ns.note_id IN ({','.join('?' * len(note_ids))}) ORDER BY t.name",
+            note_ids,
+        )
+        for r in cursor.fetchall():
+            ids_names = by_note.setdefault(r["note_id"], ([], []))
+            ids_names[0].append(r["tag_id"])
+            ids_names[1].append(r["name"])
     for row in rows:
         ids, names = by_note.get(row["id"], ([], []))
         row["session_tag_ids"] = ids

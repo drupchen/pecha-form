@@ -52,9 +52,68 @@ def migrate_markers(conn, dry: bool) -> int:
     return removed
 
 
+def _member_ranges(cur, pid):
+    return tuple((m["src_start_syl_id"], m["src_end_syl_id"]) for m in cur.execute(
+        "SELECT src_start_syl_id, src_end_syl_id FROM passage_members "
+        "WHERE passage_id = ? ORDER BY position", (pid,)).fetchall())
+
+
+def migrate_passages(conn, dry: bool) -> int:
+    cur = conn.cursor()
+    removed = 0
+    for sid in secondaries(conn):
+        srcs = source_texts(cur, sid)
+        if not srcs:
+            continue
+        src_keys = {
+            (r["anchor_syl_id"], _member_ranges(cur, r["id"]))
+            for r in cur.execute(
+                f"SELECT id, anchor_syl_id FROM passages WHERE text_id IN "
+                f"({','.join('?' * len(srcs))})", srcs).fetchall()
+        }
+        copies = [r["id"] for r in cur.execute(
+            "SELECT id, anchor_syl_id FROM passages WHERE text_id = ?", (sid,)).fetchall()
+            if (r["anchor_syl_id"], _member_ranges(cur, r["id"])) in src_keys]
+        removed += len(copies)
+        if not dry:
+            for pid in copies:
+                conn.execute("DELETE FROM passages WHERE id = ?", (pid,))  # cascades members
+        if copies:
+            print(f"  text {sid}: {len(copies)} copied passages")
+    return removed
+
+
+def migrate_notes(conn, dry: bool) -> int:
+    cur = conn.cursor()
+    removed = 0
+    for sid in secondaries(conn):
+        srcs = source_texts(cur, sid)
+        if not srcs:
+            continue
+        src_keys = {
+            (r["start_syl_id"], r["end_syl_id"], r["body"], r["passage_id"])
+            for r in cur.execute(
+                f"SELECT start_syl_id, end_syl_id, body, passage_id FROM notes "
+                f"WHERE text_id IN ({','.join('?' * len(srcs))})", srcs).fetchall()
+        }
+        copies = [r["id"] for r in cur.execute(
+            "SELECT id, start_syl_id, end_syl_id, body, passage_id FROM notes WHERE text_id = ?",
+            (sid,)).fetchall()
+            if (r["start_syl_id"], r["end_syl_id"], r["body"], r["passage_id"]) in src_keys]
+        removed += len(copies)
+        if not dry:
+            for nid in copies:
+                conn.execute("DELETE FROM notes WHERE id = ?", (nid,))
+        if copies:
+            print(f"  text {sid}: {len(copies)} copied notes")
+    return removed
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--markers", action="store_true")
+    ap.add_argument("--notes", action="store_true")
+    ap.add_argument("--passages", action="store_true")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -64,6 +123,12 @@ if __name__ == "__main__":
     if args.markers or args.all:
         print("markers:")
         total += migrate_markers(conn, args.dry_run)
+    if args.passages or args.all:
+        print("passages:")
+        total += migrate_passages(conn, args.dry_run)
+    if args.notes or args.all:
+        print("notes:")
+        total += migrate_notes(conn, args.dry_run)
     if not args.dry_run:
         conn.commit()
     conn.close()

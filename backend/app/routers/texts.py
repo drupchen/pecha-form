@@ -581,8 +581,9 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
     from ..derivation import base_tokens
     src_tokens = base_tokens(conn, id)
     remap = {t["id"]: t["id"] for t in src_tokens}
-    _copy_annotations(conn, id, new_id, remap, src_tokens,
-                      copy_tree=True, copy_spans=False, copy_markers=False)
+    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True,
+                      copy_spans=False, copy_markers=False, copy_notes=False,
+                      copy_passages=False)
 
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
@@ -598,7 +599,8 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
 
 def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: list,
                       *, copy_tree: bool = False, copy_spans: bool = True,
-                      copy_markers: bool = True) -> None:
+                      copy_markers: bool = True, copy_notes: bool = True,
+                      copy_passages: bool = True) -> None:
     """Copy the source's syllable-anchored annotations onto ``new_id``, re-anchoring every
     id through ``remap`` (source_syl_id -> new_syl_id). Anchors absent from ``remap`` (an
     out-of-range syllable for /extract, or one baked away by /clone) are dropped, and a
@@ -710,10 +712,10 @@ def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: lis
         cat_remap[old_cat_id] = got["id"] if got else None
         return cat_remap[old_cat_id]
 
-    for nt in conn.execute(
+    for nt in (conn.execute(
         "SELECT id, category_id, body, start_syl_id, end_syl_id FROM notes WHERE text_id = ?",
         (src_id,),
-    ).fetchall():
+    ).fetchall() if copy_notes else []):
         if nt["start_syl_id"] not in remap or nt["end_syl_id"] not in remap:
             continue
         cur = conn.execute(
@@ -735,10 +737,10 @@ def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: lis
 
     # --- Passages: copy only if the anchor AND every member run are fully in-range
     # (a transclusion source outside the extracted range cannot be linked).
-    for pg in conn.execute(
+    for pg in (conn.execute(
         "SELECT id, anchor_syl_id, position, color FROM passages WHERE text_id = ?",
         (src_id,),
-    ).fetchall():
+    ).fetchall() if copy_passages else []):
         anchor = pg["anchor_syl_id"]
         if anchor is not None and anchor not in remap:
             continue

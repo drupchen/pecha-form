@@ -49,6 +49,8 @@ export const usePassageStore = create<PassageState>((set, get) => ({
   },
 
   editPassage: async (passageId, patch) => {
+    // Inherited passages are read-only here — edit them on their owning text.
+    if (get().passages.find(p => p.id === passageId)?.inherited) return;
     try {
       const updated = await updatePassage(passageId, patch);
       set(state => ({ passages: state.passages.map(p => (p.id === passageId ? updated : p)) }));
@@ -60,12 +62,14 @@ export const usePassageStore = create<PassageState>((set, get) => ({
   splitPassageAt: async (passageId, body) => {
     // Rethrows so the popover can surface the reason. The endpoint renumbers sibling
     // positions server-side, so refresh the whole list rather than patching in place.
-    const textId = get().passages.find(p => p.id === passageId)?.text_id;
+    const p = get().passages.find(x => x.id === passageId);
+    if (p?.inherited) return;
     await splitPassage(passageId, body);
-    if (textId != null) await get().fetchPassages(textId);
+    if (p?.text_id != null) await get().fetchPassages(p.text_id);
   },
 
   removePassage: async (passageId) => {
+    if (get().passages.find(p => p.id === passageId)?.inherited) return;
     try {
       await deletePassage(passageId);
       set(state => ({ passages: state.passages.filter(p => p.id !== passageId) }));

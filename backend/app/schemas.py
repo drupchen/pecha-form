@@ -133,6 +133,8 @@ class PassageOut(BaseModel):
     color: Optional[str] = None
     attach_prev: bool = False
     own_segment: bool = False
+    # True when INHERITED from a source text — read-only here (edit on the owner).
+    inherited: bool = False
     members: List[PassageMemberOut] = []
 
 class PassageSplitOut(BaseModel):
@@ -505,6 +507,8 @@ class NoteOut(BaseModel):
     session_tag_ids: List[int] = []
     session_tag_names: List[str] = []
     passage_id: Optional[int] = None
+    # True when INHERITED from a source text — read-only here (edit on the owner).
+    inherited: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Display-only line-break overrides (the ¶ mode) ─────────────────────────────

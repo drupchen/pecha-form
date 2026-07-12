@@ -416,6 +416,8 @@ export interface Passage {
   attach_prev: boolean;
   /** The marker-free "manual split": render as a standalone card (its own segment). */
   own_segment: boolean;
+  /** True when INHERITED from a source text — read-only here (edit on the owner). */
+  inherited?: boolean;
   members: PassageMember[];
 }
 
