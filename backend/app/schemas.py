@@ -600,3 +600,40 @@ class TocEntry(BaseModel):
     text_id: int
     text_title: str
     sections: List[TocSection] = []
+
+# ─── Pagination layout (Phase D2) ───────────────────────────────────────────────
+
+DocumentLayoutKind = Literal['page_break', 'line_space', 'line_nospace', 'wrap_extend']
+
+class DocumentLayoutRow(BaseModel):
+    id: int
+    document_id: int
+    item_id: int
+    anchor_syl_id: str
+    kind: str
+    char_offset: Optional[int] = None
+    value: Optional[float] = None
+    lang: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class DocumentLayoutIn(BaseModel):
+    item_id: int
+    anchor_syl_id: str
+    kind: DocumentLayoutKind
+    char_offset: Optional[int] = None
+    value: Optional[float] = None
+    lang: Optional[str] = None
+
+class DocumentLayoutDeleteIn(BaseModel):
+    item_id: int
+    anchor_syl_id: str
+    kind: DocumentLayoutKind
+    lang: Optional[str] = None
+
+class DocumentLayoutConfigIn(BaseModel):
+    # Partial page-geometry/type overrides merged onto the built-in defaults.
+    config: dict
+
+class DocumentLayoutOut(BaseModel):
+    config: dict                       # effective geometry (defaults + overrides)
+    rows: List[DocumentLayoutRow] = []

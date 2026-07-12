@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Library, Plus, Trash2, ChevronUp, ChevronDown, FileText, Image as ImageIcon,
-  BookOpen, List, Copyright, Square, BookMarked,
+  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate,
 } from 'lucide-react';
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
 import { getLanguages, type Language, type DocumentItemKind, type TocSection } from '../../api/client';
+import { PaginationBench } from './PaginationBench';
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -58,6 +59,7 @@ export const DocumentsView: React.FC = () => {
   const [editingTitle, setEditingTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [pickingText, setPickingText] = useState(false);
+  const [paginating, setPaginating] = useState(false);
   const pickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -94,6 +96,11 @@ export const DocumentsView: React.FC = () => {
     }
     setRenaming(false);
   };
+
+  // The pagination bench takes over the whole view for the current document.
+  if (paginating && current) {
+    return <PaginationBench documentId={current.id} onClose={() => setPaginating(false)} />;
+  }
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -191,6 +198,16 @@ export const DocumentsView: React.FC = () => {
             </div>
             <div className="flex-1" />
             {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
+            <button
+              type="button"
+              onClick={() => setPaginating(true)}
+              disabled={current.items.every(i => i.kind !== 'text')}
+              className="px-2 py-1 rounded-md text-lapis hover:bg-cream text-xs flex items-center gap-1 disabled:opacity-40"
+              style={{ border: '1px solid var(--cline)' }}
+              title="Open the pagination bench"
+            >
+              <LayoutTemplate size={13} /> layout
+            </button>
             <button
               type="button"
               onClick={() => { if (confirm(`Delete "${current.title}"?`)) void remove(current.id); }}

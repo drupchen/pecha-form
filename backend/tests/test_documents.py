@@ -105,6 +105,66 @@ def test_document_compose_reorder_languages_toc_and_cascade():
     conn.close()
 
 
+def test_document_layout_config_and_rows():
+    from app.routers.documents import (
+        create_document, add_item, get_layout, put_layout_config,
+        upsert_layout_row, delete_layout_row, delete_document,
+        DEFAULT_LAYOUT_CONFIG,
+    )
+    from app.schemas import (
+        DocumentCreate, DocumentItemIn, DocumentLayoutConfigIn,
+        DocumentLayoutIn, DocumentLayoutDeleteIn,
+    )
+
+    conn = get_db()
+    t = _mk_primary(conn, "LayoutT", "layout_t", RAW)
+    syls = load_syllables(conn, t)
+    conn.close()
+
+    doc = create_document(DocumentCreate(title="Booklet"))
+    item = add_item(doc.id, DocumentItemIn(kind="text", text_id=t))
+
+    # Defaults until overridden.
+    lay = get_layout(doc.id)
+    assert lay.config["page_width_mm"] == DEFAULT_LAYOUT_CONFIG["page_width_mm"]
+    assert lay.rows == []
+
+    # Config override merges onto defaults; junk keys ignored.
+    lay = put_layout_config(doc.id, DocumentLayoutConfigIn(
+        config={"translation_pt": 12.0, "bogus": 99}))
+    assert lay.config["translation_pt"] == 12.0
+    assert "bogus" not in lay.config
+    assert lay.config["page_height_mm"] == DEFAULT_LAYOUT_CONFIG["page_height_mm"]
+
+    # A shared page break (lang None → stored as '') plus a per-line balancing row.
+    br = upsert_layout_row(doc.id, DocumentLayoutIn(
+        item_id=item.id, anchor_syl_id=syls[3]["id"], kind="page_break", char_offset=2))
+    assert br.kind == "page_break" and br.char_offset == 2 and (br.lang or "") == ""
+    upsert_layout_row(doc.id, DocumentLayoutIn(
+        item_id=item.id, anchor_syl_id=syls[1]["id"], kind="line_space", value=-4.0))
+
+    # Upsert is idempotent (same key updates, no duplicate).
+    upsert_layout_row(doc.id, DocumentLayoutIn(
+        item_id=item.id, anchor_syl_id=syls[3]["id"], kind="page_break", char_offset=5))
+    rows = get_layout(doc.id).rows
+    breaks = [r for r in rows if r.kind == "page_break"]
+    assert len(breaks) == 1 and breaks[0].char_offset == 5
+    assert len(rows) == 2
+
+    # Delete the break; the balancing row remains.
+    delete_layout_row(doc.id, DocumentLayoutDeleteIn(
+        item_id=item.id, anchor_syl_id=syls[3]["id"], kind="page_break"))
+    rows = get_layout(doc.id).rows
+    assert len(rows) == 1 and rows[0].kind == "line_space"
+
+    # Deleting the document cascades the layout rows.
+    delete_document(doc.id)
+    conn = get_db()
+    assert conn.execute("SELECT COUNT(*) c FROM document_layout WHERE document_id=?",
+                        (doc.id,)).fetchone()["c"] == 0
+    conn.close()
+
+
 if __name__ == "__main__":
     test_document_compose_reorder_languages_toc_and_cascade()
     print("ok")

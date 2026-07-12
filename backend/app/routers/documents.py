@@ -11,14 +11,28 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 
 from ..db import get_db
+import json
+
 from ..schemas import (
     DocumentCreate, DocumentUpdate, DocumentOut, DocumentDetailOut,
     DocumentItemIn, DocumentItemPatch, DocumentItemOut,
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
+    DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
+    DocumentLayoutConfigIn, DocumentLayoutOut,
 )
 from .tree_nodes import get_nested_tree
 
 router = APIRouter(prefix="/api", tags=["documents"])
+
+# Built-in booklet geometry (mm / pt). The future style designer makes these editable;
+# a document's layout_config JSON holds only overrides, merged onto this.
+DEFAULT_LAYOUT_CONFIG = {
+    "page_width_mm": 148.0, "page_height_mm": 210.0,   # A5
+    "margin_top_mm": 18.0, "margin_bottom_mm": 18.0,
+    "margin_bind_mm": 22.0, "margin_outer_mm": 14.0,   # bind side (spine) vs outer edge
+    "tibetan_pt": 15.0, "phonetics_pt": 10.5, "translation_pt": 11.0,
+    "leading": 1.45,
+}
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────────
@@ -282,3 +296,109 @@ def document_toc(document_id: int):
             text_title=titles.get(it["text_id"], ""),
             sections=_to_toc_sections(tree["roots"])))
     return out
+
+
+# ─── Pagination layout (Phase D2) ───────────────────────────────────────────────
+
+def _effective_config(row) -> dict:
+    cfg = dict(DEFAULT_LAYOUT_CONFIG)
+    raw = row["layout_config"] if "layout_config" in row.keys() else None
+    if raw:
+        try:
+            cfg.update(json.loads(raw))
+        except (ValueError, TypeError):
+            pass
+    return cfg
+
+
+@router.get("/documents/{document_id}/layout", response_model=DocumentLayoutOut)
+def get_layout(document_id: int):
+    conn = get_db()
+    try:
+        row = _require_doc(conn, document_id)
+        rows = conn.execute(
+            "SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
+            (document_id,)).fetchall()
+        return DocumentLayoutOut(
+            config=_effective_config(row),
+            rows=[DocumentLayoutRow(**dict(r)) for r in rows])
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/layout-config", response_model=DocumentLayoutOut)
+def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
+    """Merge partial geometry overrides onto the document's config."""
+    conn = get_db()
+    try:
+        row = _require_doc(conn, document_id)
+        current = {}
+        raw = row["layout_config"] if "layout_config" in row.keys() else None
+        if raw:
+            try:
+                current = json.loads(raw)
+            except (ValueError, TypeError):
+                current = {}
+        # Only keep keys the defaults know about (guard against junk).
+        for k, v in payload.config.items():
+            if k in DEFAULT_LAYOUT_CONFIG:
+                current[k] = v
+        conn.execute("UPDATE documents SET layout_config = ?, updated_at = CURRENT_TIMESTAMP "
+                     "WHERE id = ?", (json.dumps(current), document_id))
+        conn.commit()
+        row = _require_doc(conn, document_id)
+        rows = conn.execute("SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
+                            (document_id,)).fetchall()
+        return DocumentLayoutOut(config=_effective_config(row),
+                                 rows=[DocumentLayoutRow(**dict(r)) for r in rows])
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/layout", response_model=DocumentLayoutRow)
+def upsert_layout_row(document_id: int, payload: DocumentLayoutIn):
+    """Set/replace one shared layout decision (page break or balancing adjustment)."""
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                            (payload.item_id, document_id)).fetchone():
+            raise HTTPException(404, "Item not in this document")
+        # '' = shared across editions (SQLite UNIQUE treats NULLs as distinct, which
+        # would defeat the upsert — normalise the shared case to an empty string).
+        lang = payload.lang or ""
+        conn.execute(
+            "INSERT INTO document_layout "
+            "(document_id, item_id, anchor_syl_id, kind, char_offset, value, lang) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(document_id, item_id, anchor_syl_id, kind, lang) DO UPDATE SET "
+            "char_offset = excluded.char_offset, value = excluded.value",
+            (document_id, payload.item_id, payload.anchor_syl_id, payload.kind,
+             payload.char_offset, payload.value, lang))
+        _touch(conn, document_id)
+        conn.commit()
+        r = conn.execute(
+            "SELECT * FROM document_layout WHERE document_id = ? AND item_id = ? "
+            "AND anchor_syl_id = ? AND kind = ? AND lang = ?",
+            (document_id, payload.item_id, payload.anchor_syl_id, payload.kind,
+             lang)).fetchone()
+        return DocumentLayoutRow(**dict(r))
+    finally:
+        conn.close()
+
+
+@router.delete("/documents/{document_id}/layout")
+def delete_layout_row(document_id: int, payload: DocumentLayoutDeleteIn):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        conn.execute(
+            "DELETE FROM document_layout WHERE document_id = ? AND item_id = ? "
+            "AND anchor_syl_id = ? AND kind = ? AND lang = ?",
+            (document_id, payload.item_id, payload.anchor_syl_id, payload.kind,
+             payload.lang or ""))
+        _touch(conn, document_id)
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()

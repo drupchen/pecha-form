@@ -1,0 +1,108 @@
+/*
+ * Built-in booklet stylesheet (Phase D2). Named roles → CSS, used by the pagination
+ * bench now and (identically) by the D3 Chromium PDF later. The future style-sheet
+ * designer will make these editable; for now they are sensible defaults driven by the
+ * document's layout_config via CSS custom properties set on `.booklet-root`.
+ */
+
+.booklet-root {
+  --page-w: 148mm;
+  --page-h: 210mm;
+  --m-top: 18mm;
+  --m-bottom: 18mm;
+  --m-bind: 22mm;   /* spine side */
+  --m-outer: 14mm;  /* trimmed edge — has slack for wrap-extend */
+  --tibetan-pt: 15pt;
+  --phonetics-pt: 10.5pt;
+  --translation-pt: 11pt;
+  --leading: 1.45;
+}
+
+/* A spread = two facing pages: Tibetan verso (left) + phonetics/translation recto. */
+.booklet-spread {
+  display: flex;
+  gap: 10mm;
+  justify-content: center;
+}
+
+.booklet-page {
+  width: var(--page-w);
+  height: var(--page-h);
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.14);
+  box-sizing: border-box;
+  position: relative;
+  overflow: hidden;
+  color: #1a1a1a;
+}
+
+/* Verso (Tibetan) — spine on the RIGHT; recto (translation) — spine on the LEFT. */
+.booklet-page.verso { padding: var(--m-top) var(--m-bind) var(--m-bottom) var(--m-outer); }
+.booklet-page.recto { padding: var(--m-top) var(--m-outer) var(--m-bottom) var(--m-bind); }
+
+.booklet-content { height: 100%; }
+
+/* Recto page number (verso is unnumbered). */
+.booklet-folio {
+  position: absolute;
+  bottom: calc(var(--m-bottom) / 2);
+  right: var(--m-outer);
+  font: 400 9pt/1 Georgia, serif;
+  color: #666;
+}
+
+/* ── Line roles ── */
+.bk-line { break-inside: avoid; }
+.bk-tibetan {
+  font-family: 'Jomolhari', 'Noto Serif Tibetan', serif;
+  font-size: var(--tibetan-pt);
+  line-height: var(--leading);
+  white-space: pre-wrap;
+}
+.bk-phonetics {
+  font-size: var(--phonetics-pt);
+  line-height: 1.3;
+  color: #444;
+  font-style: italic;
+}
+.bk-translation {
+  font-size: var(--translation-pt);
+  line-height: var(--leading);
+  margin: 0 0 1mm 0;
+}
+.bk-role-mantra .bk-tibetan, .bk-role-mantra .bk-phonetics { font-weight: 600; }
+.bk-role-title .bk-translation { font-weight: 700; font-size: calc(var(--translation-pt) + 1.5pt); }
+.bk-role-small .bk-translation { font-size: calc(var(--translation-pt) - 1.5pt); color: #555; }
+
+/* The empty-line gap between chunks — the balancing lever (height set inline). */
+.bk-gap { height: calc(var(--translation-pt) * var(--leading)); }
+
+/* Per-line-boundary break control (click to force / lift a page break). Hidden
+ * until the line is hovered so the page reads cleanly. */
+.bk-linewrap:hover > .bk-breakctl { opacity: 1; }
+.bk-breakctl {
+  position: absolute;
+  left: -14px;
+  top: -6px;
+  width: 14px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--lapis, #2f6f9f);
+  background: #fff;
+  border: 1px solid var(--cline, #ddd);
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.12s;
+  cursor: pointer;
+}
+.bk-breakctl:hover { background: var(--cream, #f4efe3); }
+
+/* Measurement container: off-screen, same widths as the real pages. */
+.booklet-measure {
+  position: absolute;
+  visibility: hidden;
+  left: -9999px;
+  top: 0;
+}

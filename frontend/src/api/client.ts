@@ -339,6 +339,49 @@ export const setDocumentLanguages = (id: number, langs: string[]) =>
     { method: 'PUT', headers: J, body: JSON.stringify({ langs }) });
 export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/documents/${id}/toc`);
 
+// ── D2 pagination layout: shared page breaks + per-line balancing, on the document ──
+
+export type DocumentLayoutKind = 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend';
+
+export interface DocumentLayoutRow {
+  id: number;
+  document_id: number;
+  item_id: number;
+  anchor_syl_id: string;
+  kind: DocumentLayoutKind;
+  char_offset: number | null;
+  value: number | null;
+  lang: string | null;   // '' / null = shared across all editions
+}
+
+/** Page geometry + type sizes (mm / pt). Built-in defaults, per-document overrides. */
+export interface LayoutConfig {
+  page_width_mm: number; page_height_mm: number;
+  margin_top_mm: number; margin_bottom_mm: number;
+  margin_bind_mm: number; margin_outer_mm: number;
+  tibetan_pt: number; phonetics_pt: number; translation_pt: number;
+  leading: number;
+}
+
+export interface DocumentLayout { config: LayoutConfig; rows: DocumentLayoutRow[] }
+
+export const getDocumentLayout = (id: number) =>
+  jfetch<DocumentLayout>(`${API_BASE}/documents/${id}/layout`);
+export const putLayoutConfig = (id: number, config: Partial<LayoutConfig>) =>
+  jfetch<DocumentLayout>(`${API_BASE}/documents/${id}/layout-config`,
+    { method: 'PUT', headers: J, body: JSON.stringify({ config }) });
+export const putLayoutRow = (id: number, body: {
+  item_id: number; anchor_syl_id: string; kind: DocumentLayoutKind;
+  char_offset?: number | null; value?: number | null; lang?: string | null;
+}) =>
+  jfetch<DocumentLayoutRow>(`${API_BASE}/documents/${id}/layout`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+export const deleteLayoutRow = (id: number, body: {
+  item_id: number; anchor_syl_id: string; kind: DocumentLayoutKind; lang?: string | null;
+}) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/layout`,
+    { method: 'DELETE', headers: J, body: JSON.stringify(body) });
+
 export async function deleteText(id: number) {
   const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());

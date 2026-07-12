@@ -508,6 +508,30 @@ CREATE TABLE IF NOT EXISTS document_languages (
     position    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (document_id, lang)
 );
+
+-- ─── Pagination layout (Phase D2): shared page breaks + per-line balancing ──────
+-- The booklet's page breaks and balancing live on the DOCUMENT at SHARED,
+-- syllable-anchored positions, so all language editions page-align exactly (tuning
+-- one lays out all four). kind: 'page_break' (a page boundary at anchor_syl_id,
+-- optional char_offset for a mid-line/mid-syllable hairline split), 'line_space'
+-- (signed empty-line gap delta), 'line_nospace' (drop the blank line), 'wrap_extend'
+-- (push a translation line's right wrap limit rightward). `value` is REAL (mm/px or
+-- a signed unit per kind). `lang` NULL = applies to every edition; a language code
+-- scopes a translation-only adjustment (e.g. a per-language split of a straddling
+-- chunk). Page geometry/type sizes live in documents.layout_config (JSON).
+CREATE TABLE IF NOT EXISTS document_layout (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
+    anchor_syl_id TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN
+                     ('page_break','line_space','line_nospace','wrap_extend')),
+    char_offset  INTEGER,
+    value        REAL,
+    lang         TEXT,
+    UNIQUE(document_id, item_id, anchor_syl_id, kind, lang)
+);
+CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_id);
 """
 
 
@@ -597,6 +621,8 @@ _COLUMN_MIGRATIONS = {
     "transcript_notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     # Part 13: manual per-parent order for the registry (see the text_groups CREATE).
     "text_groups": [("position", "INTEGER")],
+    # D2: page geometry + type sizes for the booklet layout (JSON; NULL = defaults).
+    "documents": [("layout_config", "TEXT")],
 }
 
 
@@ -680,7 +706,7 @@ def _rename_documents_to_texts(conn) -> None:
     # `document_items`/`document_languages` that own a real `document_id`. Only the
     # LEGACY `documents` table (the former `texts`) carries text columns like
     # `raw_text`; distinguish them so this historical rename never touches the booklets.
-    NEW_BOOKLET_TABLES = {"document_items", "document_languages"}
+    NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout"}
     documents_is_legacy = "documents" in tables and "raw_text" in {
         r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if documents_is_legacy:
