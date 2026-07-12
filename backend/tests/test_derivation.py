@@ -248,10 +248,15 @@ def test_derive_copies_annotations_and_secondary_is_taggable():
     assert len(spans) == 1 and spans[0]["start_offset"] > 0
     assert spans[0]["inherited"] is True
     assert [m["position"] for m in list_markers(s1)]  # inherited marker resolves
+    # The tree is NOT copied either — the child owns 0 nodes but inherits the parent's
+    # section live on read.
+    from app.routers.tree_nodes import list_tree_nodes
     conn = get_db()
     assert conn.execute(
-        "SELECT COUNT(*) FROM tree_nodes WHERE text_id = ?", (s1,)).fetchone()[0] == 1
+        "SELECT COUNT(*) FROM tree_nodes WHERE text_id = ?", (s1,)).fetchone()[0] == 0
     conn.close()
+    inherited_tree = list_tree_nodes(s1)
+    assert len(inherited_tree) == 1 and inherited_tree[0]["inherited"] is True
 
     # Fully taggable: a new span anchored on parent-link syllables of the secondary.
     tg2 = create_tag(s1, TagCreate(name="own", color="#123456"))

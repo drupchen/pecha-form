@@ -67,7 +67,8 @@ export const TreeNodeCard: React.FC<Props> = ({
   const hoveredKey = useLinkStore(s => s.hoveredKey);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult') || useContext(TreeConsultContext);
-  const readOnly = sessionMode || consultMode;
+  // An INHERITED section is read-only here — edit the sapche on its owning text.
+  const readOnly = sessionMode || consultMode || !!node.inherited;
   const { updateNode, moveNode, deleteNode, createNode } = useTreeNodeStore();
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);

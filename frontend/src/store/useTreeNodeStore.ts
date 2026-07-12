@@ -14,6 +14,8 @@ export interface TreeNode {
   transparent: boolean;
   created_at: string;
   updated_at: string;
+  /** True when INHERITED from a source text — read-only here (edit on the owner). */
+  inherited?: boolean;
 }
 
 export interface NestedTreeNode extends TreeNode {
@@ -62,7 +64,7 @@ interface TreeNodeState {
     segment_start_syl_id?: string | null;
     /** Link the node to a passage occurrence (clears the segment link); null unlinks. */
     passage_id?: number | null;
-  }) => Promise<TreeNode>;
+  }) => Promise<TreeNode | undefined>;
   moveNode: (nodeId: number, new_parent_id: number | null, new_position: number) => Promise<void>;
   reorderSiblings: (textId: number, parent_id: number | null, ordered_ids: number[]) => Promise<void>;
   deleteNode: (nodeId: number, onChildren?: 'promote' | 'cascade') => Promise<void>;
@@ -128,6 +130,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   updateNode: async (nodeId, params) => {
     const before = get().nodes.find(n => n.id === nodeId);
+    if (before?.inherited) return undefined;  // read-only; edit on the owning text
     set({ saveStatus: 'saving' });
     try {
       const res = await fetch(`${API_BASE}/tree-nodes/${nodeId}`, {
@@ -162,6 +165,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   moveNode: async (nodeId, new_parent_id, new_position) => {
     const before = get().nodes.find(n => n.id === nodeId);
+    if (before?.inherited) return;  // read-only; edit on the owning text
     const oldParent = before?.parent_id ?? null;
     const oldPosition = before?.position ?? 0;
     set({ saveStatus: 'saving' });
@@ -206,6 +210,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   deleteNode: async (nodeId, onChildren = 'promote') => {
     const before = get().nodes.find(n => n.id === nodeId);
+    if (before?.inherited) return;  // read-only; edit on the owning text
     // Capture direct children's pre-delete (parent_id, position) so undo can
     // move them back. Only relevant for the 'promote' path — cascade wipes
     // the subtree, which we can't faithfully reconstruct here.
@@ -267,8 +272,11 @@ export function buildNestedTree(flat: TreeNode[]): NestedTreeNode[] {
   const roots: NestedTreeNode[] = [];
   for (const n of flat) {
     const wrapped = byId.get(n.id)!;
-    if (n.parent_id === null) roots.push(wrapped);
-    else byId.get(n.parent_id)?.children.push(wrapped);
+    const parent = n.parent_id !== null ? byId.get(n.parent_id) : undefined;
+    // A node whose parent isn't in the set (filtered out by inheritance
+    // applicability) attaches at root rather than silently vanishing.
+    if (parent) parent.children.push(wrapped);
+    else roots.push(wrapped);
   }
   const sortRec = (nodes: NestedTreeNode[]) => {
     nodes.sort((a, b) => a.position - b.position);

@@ -573,15 +573,14 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
     )
     new_id = cursor.lastrowid
 
-    # Inherit the parent's notes/passages + TOC, anchored to the same token uuids the
-    # child composes from (identity remap over the parent's exposed sequence). SPANS
-    # and MARKERS are NOT copied: the child inherits ancestor tags AND segment
-    # boundaries LIVE on read (app/inherit.source_texts), so later tag/segmentation
-    # changes on the parent mirror here. (Phases 2–3 extend this to notes/passages/tree.)
+    # A secondary COPIES nothing structural — it inherits the parent chain's spans,
+    # markers, notes, passages AND tree LIVE on read (app/inherit.source_texts), so
+    # every later change on the parent mirrors here. (extract/clone still snapshot,
+    # since those make independent texts.)
     from ..derivation import base_tokens
     src_tokens = base_tokens(conn, id)
     remap = {t["id"]: t["id"] for t in src_tokens}
-    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True,
+    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=False,
                       copy_spans=False, copy_markers=False, copy_notes=False,
                       copy_passages=False)
 

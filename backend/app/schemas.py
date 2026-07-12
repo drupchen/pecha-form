@@ -320,6 +320,8 @@ class TreeNodeOut(TreeNodeBase):
     passage_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # True when INHERITED from a source text — read-only here (edit on the owner).
+    inherited: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Suggestions ──────────────────────────────────────────────────────────────

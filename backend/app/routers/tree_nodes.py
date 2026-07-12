@@ -136,19 +136,89 @@ def _shift_siblings(
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
+def _gathered_tree_rows(conn, text_id: int) -> list[dict]:
+    """The tree applicable to this text: its OWN nodes plus those INHERITED from the
+    source chain (parent + transclusion sources), resolved onto this text's stream.
+    A node applies when its anchor (segment syllable or passage) resolves here, OR it
+    is a structural (free-form) node with at least one applicable descendant. parent_id
+    links resolve within the gathered set (node ids are globally unique), so an own
+    node can nest under an inherited one and the whole hierarchy composes."""
+    from ..inherit import source_texts
+    cursor = conn.cursor()
+    id2start, _ = _syl_offset_maps(conn, text_id)
+    stream = set(id2start)
+    live_passage_ids = {
+        p["id"] for p in cursor.execute(
+            "SELECT id FROM passages WHERE text_id = ?", (text_id,)).fetchall()
+    }
+    # NOTE: passages now inherit live, but tree.passage_id references the OWNING
+    # text's passage id; resolve via the passages endpoint's id space.
+    from .passages import list_passages
+    try:
+        live_passage_ids |= {p["id"] for p in list_passages(text_id)}
+    except Exception:
+        pass
+
+    gathered: dict[int, dict] = {}
+    for origin in [text_id] + source_texts(cursor, text_id):
+        inherited = origin != text_id
+        for r in cursor.execute(
+            "SELECT * FROM tree_nodes WHERE text_id = ?", (origin,)).fetchall():
+            if r["id"] in gathered:
+                continue
+            d = _row_to_node(r, id2start)
+            d["text_id"] = text_id
+            d["inherited"] = inherited
+            gathered[r["id"]] = d
+
+    # Directly-applicable: anchor resolves in this stream.
+    def anchored_ok(d) -> bool:
+        syl = d.get("segment_start_syl_id")
+        if syl is not None:
+            return syl in stream
+        if d.get("passage_id") is not None:
+            return d["passage_id"] in live_passage_ids
+        return False  # free-form: decided by descendants
+
+    children_of: dict[Optional[int], list[int]] = {}
+    for nid, d in gathered.items():
+        children_of.setdefault(d["parent_id"], []).append(nid)
+
+    keep: dict[int, bool] = {}
+
+    def applies(nid: int) -> bool:
+        if nid in keep:
+            return keep[nid]
+        keep[nid] = False  # cycle guard
+        d = gathered[nid]
+        free_form = d.get("segment_start_syl_id") is None and d.get("passage_id") is None
+        kids = children_of.get(nid, [])
+        # OWN nodes always apply (the user put them on THIS text). An INHERITED node
+        # applies when: its anchor resolves here; OR any descendant applies (keep the
+        # structural parents of included content); OR it is a free-form LEAF (a
+        # standalone section title — never dropped). An ANCHORED node whose anchor
+        # doesn't resolve, or a free-form section whose whole subtree is excluded, is
+        # dropped (its content isn't in this booklet).
+        ok = (not d["inherited"]) or anchored_ok(d) \
+            or any(applies(c) for c in kids) \
+            or (free_form and not kids)
+        keep[nid] = ok
+        return ok
+
+    for nid in gathered:
+        applies(nid)
+    return [d for nid, d in gathered.items() if keep[nid]]
+
+
 @router.get("/texts/{text_id}/tree-nodes", response_model=List[TreeNodeOut])
 def list_tree_nodes(text_id: int):
-    """Flat list of tree nodes for a text, sorted by parent_id, position."""
+    """Flat list of the text's own + inherited tree nodes (see _gathered_tree_rows)."""
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM tree_nodes WHERE text_id = ? "
-        "ORDER BY parent_id IS NULL DESC, parent_id ASC, position ASC",
-        (text_id,),
-    )
-    id2start, _ = _syl_offset_maps(conn, text_id)
-    rows = [_row_to_node(r, id2start) for r in cursor.fetchall()]
-    conn.close()
+    try:
+        rows = _gathered_tree_rows(conn, text_id)
+    finally:
+        conn.close()
+    rows.sort(key=lambda n: (n["parent_id"] is not None, n["parent_id"] or 0, n["position"]))
     return rows
 
 
@@ -156,18 +226,18 @@ def list_tree_nodes(text_id: int):
 def get_nested_tree(text_id: int):
     """Convenience: nested tree shape for read-only consumption."""
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM tree_nodes WHERE text_id = ? ORDER BY parent_id, position",
-        (text_id,),
-    )
-    id2start, _ = _syl_offset_maps(conn, text_id)
-    rows = [_row_to_node(r, id2start) for r in cursor.fetchall()]
-    conn.close()
+    try:
+        rows = _gathered_tree_rows(conn, text_id)
+    finally:
+        conn.close()
 
+    present = {r["id"] for r in rows}
     by_parent: dict[Optional[int], list[dict]] = {}
     for r in rows:
-        by_parent.setdefault(r["parent_id"], []).append(r)
+        # An orphaned node (its parent was filtered out) attaches at root so it
+        # never silently vanishes.
+        pid = r["parent_id"] if r["parent_id"] in present else None
+        by_parent.setdefault(pid, []).append(r)
 
     def build(parent_id: Optional[int]) -> list[dict]:
         children = by_parent.get(parent_id, [])

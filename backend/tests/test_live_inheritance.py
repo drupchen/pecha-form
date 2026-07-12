@@ -80,6 +80,41 @@ def test_markers_notes_passages_inherit_live():
     assert len(own) == 1 and own[0]["syl_id"] == syls[7]["id"]
 
 
+def test_tree_inherits_live_and_own_nests_under_inherited():
+    from app.routers.texts import derive_secondary_text
+    from app.routers.tree_nodes import list_tree_nodes
+
+    conn = get_db()
+    p = _mk_primary(conn, "TreeP", "tree_p", RAW)
+    syls = load_syllables(conn, p)
+    # A parent section anchored at syls[2].
+    parent_node = conn.execute(
+        "INSERT INTO tree_nodes (text_id, parent_id, position, title, segment_start_syl_id, "
+        "transparent) VALUES (?, NULL, 0, 'Parent Sec', ?, 0)", (p, syls[2]["id"])).lastrowid
+    conn.commit()
+    conn.close()
+
+    child = derive_secondary_text(p, {})["id"]
+
+    # Nothing copied; the parent section shows inherited.
+    conn = get_db()
+    assert conn.execute("SELECT COUNT(*) c FROM tree_nodes WHERE text_id=?", (child,)).fetchone()["c"] == 0
+    # The child adds its OWN subsection nested UNDER the inherited parent node
+    # (parent_id references the inherited node's real id).
+    conn.execute(
+        "INSERT INTO tree_nodes (text_id, parent_id, position, title, segment_start_syl_id, "
+        "transparent) VALUES (?, ?, 0, 'Own Sub', ?, 0)", (child, parent_node, syls[3]["id"]))
+    conn.commit()
+    conn.close()
+
+    nodes = list_tree_nodes(child)
+    titles = {n["title"]: n for n in nodes}
+    assert titles["Parent Sec"]["inherited"] is True
+    assert titles["Own Sub"]["inherited"] is False
+    # The own node nests under the inherited parent.
+    assert titles["Own Sub"]["parent_id"] == parent_node
+
+
 if __name__ == "__main__":
     test_markers_notes_passages_inherit_live()
     print("ok")
