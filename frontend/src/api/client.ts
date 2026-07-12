@@ -440,7 +440,7 @@ export async function createPassage(
 
 export async function updatePassage(
   passageId: number,
-  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; members: PassageMemberInput[] }>,
+  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; attach_prev: boolean; members: PassageMemberInput[] }>,
 ): Promise<Passage> {
   const res = await fetch(`${API_BASE}/passages/${passageId}`, {
     method: 'PATCH',

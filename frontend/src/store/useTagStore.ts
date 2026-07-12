@@ -38,7 +38,8 @@ interface TagState {
   fetchTags: (textId: number) => Promise<void>;
   fetchSpans: (textId: number) => Promise<void>;
   createTag: (
-    textId: number,
+    // null = a SHARED tag (visible across all texts).
+    textId: number | null,
     name: string,
     color?: string,
     kind?: 'regular' | 'session',
@@ -208,7 +209,9 @@ export const useTagStore = create<TagState>((set, get) => ({
               await get().updateTag(recreated.id, { close_position: before.close_position });
             }
             for (const s of beforeSpans) {
-              await get().createSpan(before.text_id, recreated.id, s.start_offset, s.end_offset,
+              // Recreate each span on ITS OWN text (a shared tag's spans live on
+              // specific texts even though the tag's text_id is null).
+              await get().createSpan(s.text_id, recreated.id, s.start_offset, s.end_offset,
                 { startSylId: s.start_syl_id, endSylId: s.end_syl_id });
             }
           },

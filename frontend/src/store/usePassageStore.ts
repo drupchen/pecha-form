@@ -13,7 +13,7 @@ interface PassageState {
   ) => Promise<Passage>;
   editPassage: (
     passageId: number,
-    patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; members: PassageMemberInput[] }>,
+    patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; attach_prev: boolean; members: PassageMemberInput[] }>,
   ) => Promise<void>;
   removePassage: (passageId: number) => Promise<void>;
   splitPassageAt: (

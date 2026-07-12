@@ -62,6 +62,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   // Refuses to STACK next to an existing newline: blank lines must come only from
   // the explicit "empty line" option, never from two adjacent single breaks.
   const addDisplayBreak = async (count: 1 | 2) => {
+    if (!currentText) return;
     const tokens = useEditorTokenStore.getState().tokens;
     const regular = useTagStore.getState().spans.filter(s => s.tag.tag_kind === 'regular');
     const overrides = useDisplayBreakStore.getState().breaks;

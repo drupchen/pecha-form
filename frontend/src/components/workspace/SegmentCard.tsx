@@ -79,7 +79,6 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
   const splitPassageAt = usePassageStore(s => s.splitPassageAt);
   const createMarker = useMarkerStore(s => s.createMarker);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
-  const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
@@ -142,10 +141,13 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
       .filter(t => t.open_position! < segment.end && t.close_position! > segment.start)
       .map(t => ({
         id: -t.id, // pseudo id; negative to distinguish from real spans
-        text_id: t.text_id,
+        // Session tags are always text-scoped (never shared/null).
+        text_id: t.text_id!,
         tag_id: t.id,
         start_offset: t.open_position!,
         end_offset: t.close_position!,
+        start_syl_id: null,
+        end_syl_id: null,
         tag: t,
       }));
   }, [sessionMode, tags, segment.start, segment.end]);
