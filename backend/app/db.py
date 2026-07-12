@@ -454,6 +454,25 @@ CREATE TABLE IF NOT EXISTS layout_titles (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (layout_id, lang)
 );
+
+-- ─── Phonetics (Phase P; table created at T3 for the legacy import) ─────────────
+-- One row per run/line, anchored to origin-text syllables like translations, so
+-- phonetics ripple into every booklet reusing the passage. kind: 'bo' = Tibetan
+-- phonetics (bophono later), 'skt' = Sanskrit mantra romanization.
+CREATE TABLE IF NOT EXISTS phonetics (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    start_syl_id   TEXT NOT NULL,
+    end_syl_id     TEXT NOT NULL,
+    kind           TEXT NOT NULL CHECK (kind IN ('bo', 'skt')),
+    body           TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'auto' CHECK (status IN ('auto', 'edited', 'reviewed')),
+    engine         TEXT,
+    engine_version TEXT,
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(origin_text_id, start_syl_id, end_syl_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id);
 """
 
 
