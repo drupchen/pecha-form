@@ -5,11 +5,12 @@ import { TextPicker } from './components/TextPicker'
 import { WorkspaceView } from './components/workspace/WorkspaceView'
 import { TranslateView } from './components/translate/TranslateView'
 import { PhoneticsView } from './components/phonetics/PhoneticsView'
+import { DocumentsView } from './components/documents/DocumentsView'
 import { useUndoStore } from './store/useUndoStore'
 import { useTextStore } from './store/useTextStore'
 import { useUIStore } from './store/useUIStore'
 
-export type Route = '/' | '/workspace' | '/translate' | '/phonetics';
+export type Route = '/' | '/workspace' | '/translate' | '/phonetics' | '/documents';
 
 export default function App() {
   const [route, setRoute] = useState<Route>('/');
@@ -53,6 +54,7 @@ export default function App() {
           {route === '/workspace' && <WorkspaceView />}
           {route === '/translate' && <TranslateView />}
           {route === '/phonetics' && <PhoneticsView />}
+          {route === '/documents' && <DocumentsView />}
         </main>
       </div>
     </ErrorBoundary>

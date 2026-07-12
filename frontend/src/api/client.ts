@@ -272,6 +272,73 @@ export const deletePhonetic = (body: {
   jfetch<{ ok: boolean }>(`${API_BASE}/phonetics`,
     { method: 'DELETE', headers: J, body: JSON.stringify(body) });
 
+// --------------------------------------------------------------------------
+// Documents (Phase D1): booklets assembled from ordered pages, in a set of
+// languages. Structure only — pagination (D2) and PDF (D3) come later.
+// --------------------------------------------------------------------------
+
+export type DocumentItemKind =
+  'cover' | 'blank' | 'toc' | 'copyright' | 'text' | 'image_page' | 'backcover';
+
+export interface DocumentItem {
+  id: number;
+  document_id: number;
+  position: number;
+  kind: DocumentItemKind;
+  text_id: number | null;
+  text_title: string | null;
+  caption: string | null;
+  body: string | null;
+}
+
+export interface DocumentSummary {
+  id: number;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  item_count: number;
+  languages: string[];
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  items: DocumentItem[];
+}
+
+export interface TocSection { title: string | null; level: number | null; children: TocSection[] }
+export interface TocEntry { item_id: number; text_id: number; text_title: string; sections: TocSection[] }
+
+export const getDocuments = () => jfetch<DocumentSummary[]>(`${API_BASE}/documents`);
+export const createDocument = (title: string) =>
+  jfetch<DocumentSummary>(`${API_BASE}/documents`,
+    { method: 'POST', headers: J, body: JSON.stringify({ title }) });
+export const getDocument = (id: number) => jfetch<DocumentDetail>(`${API_BASE}/documents/${id}`);
+export const renameDocument = (id: number, title: string) =>
+  jfetch<DocumentSummary>(`${API_BASE}/documents/${id}`,
+    { method: 'PATCH', headers: J, body: JSON.stringify({ title }) });
+export const deleteDocument = (id: number) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}`, { method: 'DELETE' });
+
+export const addDocumentItem = (id: number, body: {
+  kind: DocumentItemKind; text_id?: number | null; caption?: string | null; body?: string | null;
+}) =>
+  jfetch<DocumentItem>(`${API_BASE}/documents/${id}/items`,
+    { method: 'POST', headers: J, body: JSON.stringify(body) });
+export const patchDocumentItem = (itemId: number, body: {
+  text_id?: number | null; caption?: string | null; body?: string | null;
+}) =>
+  jfetch<DocumentItem>(`${API_BASE}/document-items/${itemId}`,
+    { method: 'PATCH', headers: J, body: JSON.stringify(body) });
+export const deleteDocumentItem = (itemId: number) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/document-items/${itemId}`, { method: 'DELETE' });
+export const reorderDocumentItems = (id: number, orderedIds: number[]) =>
+  jfetch<DocumentItem[]>(`${API_BASE}/documents/${id}/items/reorder`,
+    { method: 'POST', headers: J, body: JSON.stringify({ ordered_ids: orderedIds }) });
+
+export const setDocumentLanguages = (id: number, langs: string[]) =>
+  jfetch<string[]>(`${API_BASE}/documents/${id}/languages`,
+    { method: 'PUT', headers: J, body: JSON.stringify({ langs }) });
+export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/documents/${id}/toc`);
+
 export async function deleteText(id: number) {
   const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());

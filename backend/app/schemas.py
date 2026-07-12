@@ -535,3 +535,68 @@ class ReadingPositionOut(BaseModel):
     syl_id: Optional[str] = None
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+# ─── Documents (Phase D1: booklets assembled from ordered pages) ────────────────
+
+DocumentItemKind = Literal['cover', 'blank', 'toc', 'copyright', 'text', 'image_page', 'backcover']
+
+class DocumentCreate(BaseModel):
+    title: str
+
+class DocumentUpdate(BaseModel):
+    title: str
+
+class DocumentItemIn(BaseModel):
+    kind: DocumentItemKind
+    text_id: Optional[int] = None      # required iff kind == 'text'
+    caption: Optional[str] = None
+    body: Optional[str] = None
+
+class DocumentItemPatch(BaseModel):
+    text_id: Optional[int] = None
+    caption: Optional[str] = None
+    body: Optional[str] = None
+
+class DocumentItemOut(BaseModel):
+    id: int
+    document_id: int
+    position: int
+    kind: str
+    text_id: Optional[int] = None
+    # Resolved title of the linked text (kind='text'), for display; None otherwise.
+    text_title: Optional[str] = None
+    caption: Optional[str] = None
+    body: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class DocumentOut(BaseModel):
+    id: int
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    item_count: int = 0
+    languages: List[str] = []          # ordered language codes
+    model_config = ConfigDict(from_attributes=True)
+
+class DocumentDetailOut(DocumentOut):
+    items: List[DocumentItemOut] = []
+
+class DocumentReorderIn(BaseModel):
+    ordered_ids: List[int]
+
+class DocumentLanguagesIn(BaseModel):
+    # The ordered set of language codes this document is published in.
+    langs: List[str]
+
+# TOC: for each text page, its title and its top-level sections (no page numbers
+# yet — pagination lands them in D2).
+class TocSection(BaseModel):
+    title: Optional[str] = None
+    level: Optional[int] = None
+    children: List['TocSection'] = []
+
+class TocEntry(BaseModel):
+    item_id: int
+    text_id: int
+    text_title: str
+    sections: List[TocSection] = []

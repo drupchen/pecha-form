@@ -1,18 +1,22 @@
 import React from 'react';
-import { Layout, FileText, Undo2, Languages, Volume2 } from 'lucide-react';
+import { Layout, FileText, Undo2, Languages, Volume2, Library } from 'lucide-react';
 import type { Route } from '../App';
 import { useUndoStore } from '../store/useUndoStore';
+import { useTextStore } from '../store/useTextStore';
 
 interface HeaderProps {
   currentRoute: Route;
   onNavigate: (route: Route) => void;
 }
 
-const TABS: { route: Route; label: string; icon: React.ReactNode }[] = [
+// `needsText` tabs operate on the currently-open text and are disabled until one is
+// loaded (i.e. while on the Texts landing). Texts and Documents are text-independent.
+const TABS: { route: Route; label: string; icon: React.ReactNode; needsText?: boolean }[] = [
   { route: '/', label: 'Texts', icon: <FileText size={16} /> },
-  { route: '/workspace', label: 'Workspace', icon: <Layout size={16} /> },
-  { route: '/translate', label: 'Translate', icon: <Languages size={16} /> },
-  { route: '/phonetics', label: 'Phonetics', icon: <Volume2 size={16} /> },
+  { route: '/workspace', label: 'Workspace', icon: <Layout size={16} />, needsText: true },
+  { route: '/translate', label: 'Translate', icon: <Languages size={16} />, needsText: true },
+  { route: '/phonetics', label: 'Phonetics', icon: <Volume2 size={16} />, needsText: true },
+  { route: '/documents', label: 'Documents', icon: <Library size={16} /> },
 ];
 
 export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
@@ -21,6 +25,7 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
   const topDescription = useUndoStore(s => s.topDescription());
   const undo = useUndoStore(s => s.undo);
   const canUndo = historyLen > 0;
+  const hasText = useTextStore(s => s.currentText != null);
   return (
     <header
       className="shrink-0 border-b text-mist-100"
@@ -56,8 +61,8 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
             Undo
           </button>
           {TABS.map(t => {
-            // Workspace needs a loaded document; Texts is always available.
-            const disabled = t.route !== '/' && currentRoute === '/';
+            // Text-scoped tabs need a loaded document; Texts and Documents don't.
+            const disabled = !!t.needsText && !hasText;
             const active = currentRoute === t.route;
             return (
               <button

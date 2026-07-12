@@ -476,6 +476,38 @@ CREATE TABLE IF NOT EXISTS phonetics (
     UNIQUE(origin_text_id, start_syl_id, end_syl_id, kind, lang)
 );
 CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id);
+
+-- ─── Documents (Phase D1): booklets assembled from ordered pages ────────────────
+-- A document is a booklet: an ordered sequence of `document_items` (multiple
+-- secondary texts + furniture pages), published in a set of `document_languages`
+-- that page-align. Pagination + PDF are D2/D3; D1 is the structure only.
+CREATE TABLE IF NOT EXISTS documents (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS document_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL DEFAULT 0,
+    kind        TEXT NOT NULL CHECK (kind IN
+                    ('cover','blank','toc','copyright','text','image_page','backcover')),
+    -- Set for kind='text' — the secondary (or primary) text this page renders.
+    text_id     INTEGER REFERENCES texts(id) ON DELETE SET NULL,
+    -- Furniture params (styled at D2/D3): image caption, cover/copyright text, etc.
+    caption     TEXT,
+    body        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_document_items_doc ON document_items(document_id);
+
+CREATE TABLE IF NOT EXISTS document_languages (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    lang        TEXT NOT NULL REFERENCES languages(code),
+    position    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (document_id, lang)
+);
 """
 
 
@@ -644,7 +676,14 @@ def _drop_status_columns(conn) -> None:
 def _rename_documents_to_texts(conn) -> None:
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
-    if "documents" in tables:
+    # The NEW booklet entity (Phase D1) is also named `documents`, with child tables
+    # `document_items`/`document_languages` that own a real `document_id`. Only the
+    # LEGACY `documents` table (the former `texts`) carries text columns like
+    # `raw_text`; distinguish them so this historical rename never touches the booklets.
+    NEW_BOOKLET_TABLES = {"document_items", "document_languages"}
+    documents_is_legacy = "documents" in tables and "raw_text" in {
+        r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
+    if documents_is_legacy:
         doc_rows = conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
         texts_rows = (
             conn.execute("SELECT COUNT(*) c FROM texts").fetchone()["c"]
@@ -674,6 +713,8 @@ def _rename_documents_to_texts(conn) -> None:
         tables.discard("documents")
         tables.add("texts")
     for t in tables:
+        if t in NEW_BOOKLET_TABLES:
+            continue  # their `document_id` legitimately references the booklet entity
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
         if "document_id" in cols and "text_id" not in cols:
             conn.execute(f"ALTER TABLE {t} RENAME COLUMN document_id TO text_id")
