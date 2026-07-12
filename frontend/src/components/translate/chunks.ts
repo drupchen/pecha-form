@@ -26,6 +26,9 @@ export interface DerivedChunk {
   tagType: string;
   /** The classifying tag's color (pill tint), null for 'plain'. */
   tagColor: string | null;
+  /** Per-token render strings (token text + synthesized line breaks) so the bench
+   *  can render the Tibetan as selectable syllable spans (data-syl-id). */
+  tokens: { id: string; render: string }[];
   /** Set when this chunk's content was MOVED here by a scramble layout row —
    *  the translator sees it originally belonged elsewhere. */
   movedLayoutId?: number;
@@ -79,6 +82,7 @@ export function insertTitleChunks(
       startSylId: '', endSylId: '',
       text: '',
       sylIds: [],
+      tokens: [],
       startOffset: -1,
       tagType: 'title',
       tagColor: null,
@@ -146,6 +150,7 @@ export function deriveChunks(
   const chunks: DerivedChunk[] = [];
   let cur: EditorToken[] = [];
   let curText = '';
+  let curRenders: { id: string; render: string }[] = [];
   let curType: { name: string; color: string | null } | null = null;
 
   const flush = () => {
@@ -158,6 +163,7 @@ export function deriveChunks(
         endSylId: last.id,
         text: curText.replace(/\n{2,}/g, '\n').trim(),
         sylIds: cur.map(t => t.id),
+        tokens: curRenders,
         startOffset: cur[0].start_offset,
         tagType: curType?.name ?? 'plain',
         tagColor: curType?.color ?? null,
@@ -166,6 +172,7 @@ export function deriveChunks(
     }
     cur = [];
     curText = '';
+    curRenders = [];
     curType = null;
   };
 
@@ -184,7 +191,9 @@ export function deriveChunks(
     const count = effective(i);
     const isReal = t.text.includes('\n');
     cur.push(t);
-    curText += (isReal ? '' : t.text) + (count >= 1 ? '\n' : '');
+    const render = (isReal ? '' : t.text) + (count >= 1 ? '\n' : '');
+    curText += render;
+    curRenders.push({ id: t.id, render });
     // Empty line AFTER this token: explicit count-2 override, or a real newline
     // pair (a blank line in the raw text).
     const nxt = tokens[i + 1];

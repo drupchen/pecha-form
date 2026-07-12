@@ -62,19 +62,26 @@ const InnerEditor: React.FC<{
     autofocus: 'end',
   });
 
-  // Commit when focus leaves the editor+toolbar+popover entirely.
+  // Commit when focus leaves the editor+toolbar+popover entirely. An EMPTY result
+  // never commits: it is almost always an editor that mounted before the data
+  // loaded (a blur would silently wipe the stored translation). Clearing a
+  // translation is a deliberate action, not an empty blur.
   useEffect(() => {
     const onFocusOut = (e: FocusEvent) => {
       const wrap = wrapRef.current;
       if (!wrap || !editor) return;
       const next = e.relatedTarget as Node | null;
       if (next && wrap.contains(next)) return;
-      onDone(sanitizeTranslationHtml(editor.getHTML()));
+      const html = sanitizeTranslationHtml(editor.getHTML());
+      const div = document.createElement('div');
+      div.innerHTML = html;
+      if (!(div.textContent ?? '').trim()) { onDone(sanitizeTranslationHtml(initial)); return; }
+      onDone(html);
     };
     const wrap = wrapRef.current;
     wrap?.addEventListener('focusout', onFocusOut);
     return () => wrap?.removeEventListener('focusout', onFocusOut);
-  }, [editor, onDone]);
+  }, [editor, onDone, initial]);
 
   if (!editor) return null;
 

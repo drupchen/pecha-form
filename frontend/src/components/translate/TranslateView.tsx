@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Languages, Check, GitBranch, Undo2, ArrowUpToLine, MoveRight, Plus, X, Trash2 } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
@@ -10,8 +10,9 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
 import { TreePane } from '../workspace/TreePane';
 import { deriveChunks, applyMoves, insertTitleChunks, type DerivedChunk } from './chunks';
+import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
-import { sanitizeTranslationHtml, translationText } from './sanitize';
+import { sanitizeTranslationHtml } from './sanitize';
 import type { TranslationChunk } from '../../api/client';
 
 /** Read-only rendering of a stored translation body (sanitized HTML subset). */
@@ -73,6 +74,27 @@ export const TranslateView: React.FC = () => {
   const [armedMove, setArmedMove] = useState<{
     srcStart: string; srcEnd: string; bookletOnly: boolean; label: string;
   } | null>(null);
+  /** Floating "move selection" button over a syllable-snapped selection. */
+  const [selMove, setSelMove] = useState<{
+    startSylId: string; endSylId: string; label: string; x: number; y: number;
+  } | null>(null);
+  /** Insertion caret while placing INSIDE a chunk (hairline mechanism). */
+  const [hairline, setHairline] = useState<{
+    left: number; top: number; height: number; sylId: string; side: 'before' | 'after';
+  } | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // Esc cancels an armed placement or a pending selection button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setArmedMove(null);
+      setSelMove(null);
+      setHairline(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     if (!currentText) return;
@@ -89,13 +111,18 @@ export const TranslateView: React.FC = () => {
   }, [currentText, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchLanguages, fetchChunks, fetchCollab]);
 
   // The translator's units: scramble MOVES rearrange the token stream first, the
-  // stream chunks naturally, then synthetic TITLE chunks are spliced in.
-  const chunks = useMemo(() => {
-    if (!tokens.length) return [];
+  // stream chunks naturally, then synthetic TITLE chunks are spliced in. `movedBy`
+  // (syl → layout id) marks moved-in tokens and drives the per-chunk undo pills.
+  const { chunks, movedBy, streamIds } = useMemo(() => {
+    if (!tokens.length) return { chunks: [], movedBy: new Map<string, number>(), streamIds: [] as string[] };
     const markerOffsets = new Set(markers.map(m => m.position));
     const { tokens: rearranged, movedBy } = applyMoves(tokens, layouts);
     const derived = deriveChunks(rearranged, markerOffsets, spans, breakOverrides, lineBreakGroups, movedBy);
-    return insertTitleChunks(derived, layouts);
+    return {
+      chunks: insertTitleChunks(derived, layouts),
+      movedBy,
+      streamIds: rearranged.map(t => t.id),
+    };
   }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts]);
 
   // Server chunks matched to derived units: exact range first, else overlap
@@ -157,13 +184,86 @@ export const TranslateView: React.FC = () => {
     );
   }
 
+  const movable = (u: DerivedChunk) => u.tagType === 'small' || u.tagType === 'sapche';
+
+  /** Syllable-snapped selection inside a movable chunk → floating "move selection"
+   *  button (the Workspace's edge-snapping via readTokenSelection). */
+  const handleChunkMouseUp = (e: React.MouseEvent) => {
+    const container = e.currentTarget as HTMLElement;
+    const sel = readTokenSelection(container);
+    if (!sel) { setSelMove(null); return; }
+    const text = window.getSelection()?.toString() ?? '';
+    setSelMove({
+      startSylId: sel.startSylId, endSylId: sel.endSylId,
+      label: text.slice(0, 24) + (text.length > 24 ? '…' : ''),
+      x: sel.rect.left + sel.rect.width / 2, y: sel.rect.bottom,
+    });
+  };
+
+  /** Hairline caret while a move is armed: snaps before/after the hovered syllable
+   *  (by pointer half), positioned inside the scrollable chunk list. */
+  const handlePlacementMove = (e: React.MouseEvent) => {
+    if (!armedMove) return;
+    const el = (e.target as HTMLElement).closest('[data-syl-id]') as HTMLElement | null;
+    const list = listRef.current;
+    if (!el || !el.dataset.sylId || !list) { setHairline(null); return; }
+    const r = el.getBoundingClientRect();
+    const cr = list.getBoundingClientRect();
+    const side: 'before' | 'after' = e.clientX < r.left + r.width / 2 ? 'before' : 'after';
+    setHairline({
+      left: (side === 'before' ? r.left : r.right) - cr.left + list.scrollLeft,
+      top: r.top - cr.top + list.scrollTop,
+      height: r.height,
+      sylId: el.dataset.sylId,
+      side,
+    });
+  };
+
+  const handlePlacementClick = () => {
+    if (!armedMove || !hairline) return;
+    let anchor: string | null = hairline.sylId;
+    if (hairline.side === 'after') {
+      const at = streamIds.indexOf(hairline.sylId);
+      anchor = at >= 0 && at + 1 < streamIds.length ? streamIds[at + 1] : null;
+    }
+    const m = armedMove;
+    setArmedMove(null);
+    setHairline(null);
+    void addMove({
+      textId: m.bookletOnly ? currentText!.id : null,
+      srcStart: m.srcStart, srcEnd: m.srcEnd, anchor,
+    }).catch((e: any) => setSaveError(e.message || 'Move failed'));
+  };
+
+  const tibetanTokens = (u: DerivedChunk) => (
+    <div
+      className={`tibetan-text whitespace-pre-wrap ${u.tagType === 'mantra' ? 'opacity-40' : ''} ${
+        armedMove && movable(u) ? 'cursor-crosshair' : ''}`}
+      onMouseUp={!armedMove && movable(u) ? handleChunkMouseUp : undefined}
+      onMouseMove={armedMove && movable(u) ? handlePlacementMove : undefined}
+      onClick={armedMove && movable(u) ? handlePlacementClick : undefined}
+    >
+      {u.tokens.map((t, ti) => {
+        const mv = movedBy.get(t.id);
+        return (
+          <span
+            key={`${u.key}-${ti}`}
+            data-syl-id={t.id}
+            data-ro={ti}
+            data-reo={ti + 1}
+            className={mv != null ? 'moved-syl' : undefined}
+            title={mv != null ? 'Moved here for translation flow — its original place is elsewhere in the Tibetan' : undefined}
+          >
+            {t.render}
+          </span>
+        );
+      })}
+    </div>
+  );
+
   const sourceContent = (u: DerivedChunk, match: TranslationChunk | null): React.ReactNode => {
     if (sourceLang === 'bo') {
-      return (
-        <div className={`tibetan-text whitespace-pre-wrap ${u.tagType === 'mantra' ? 'opacity-40' : ''}`}>
-          {u.text}
-        </div>
-      );
+      return tibetanTokens(u);
     }
     const ovSrc = overrideFor(match?.id, sourceLang);
     const tr = translationOf(match, sourceLang);
@@ -172,7 +272,7 @@ export const TranslateView: React.FC = () => {
     return (
       <div>
         <div className="text-xs text-ink-soft italic mb-1">no {sourceLang} yet — Tibetan:</div>
-        <div className={`tibetan-text whitespace-pre-wrap ${u.tagType === 'mantra' ? 'opacity-40' : ''}`}>{u.text}</div>
+        {tibetanTokens(u)}
       </div>
     );
   };
@@ -332,7 +432,14 @@ export const TranslateView: React.FC = () => {
         >
           <TreePane forceConsult />
         </div>
-        <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div ref={listRef} className="flex-1 overflow-y-auto px-5 py-4 relative">
+          {/* Insertion caret for in-chunk placement (hairline mechanism). */}
+          {hairline && (
+            <div
+              className="scramble-hairline"
+              style={{ left: hairline.left, top: hairline.top, height: hairline.height }}
+            />
+          )}
           <div className="max-w-6xl mx-auto flex flex-col gap-3">
             {chunks.map((u, i) => {
               // ── Synthetic TITLE chunk (scramble layer) ──
@@ -450,21 +557,25 @@ export const TranslateView: React.FC = () => {
                             })}
                           </span>
                         )}
-                        {u.movedLayoutId != null && (
-                          <span className="px-1.5 rounded-full bg-lapis/15 text-lapis flex items-center gap-1"
-                                title="This instruction was moved here for translation flow — it originally sits elsewhere in the Tibetan">
-                            moved here
-                            <button
-                              type="button"
-                              onClick={() => void removeLayout(u.movedLayoutId!)
-                                .catch((e: any) => setSaveError(e.message))}
-                              className="underline underline-offset-2"
-                              title="Undo the move"
+                        {[...new Set(u.tokens.map(t => movedBy.get(t.id)).filter((x): x is number => x != null))]
+                          .map(layoutId => (
+                            <span
+                              key={`mv-${layoutId}`}
+                              className="px-1.5 rounded-full bg-lapis/15 text-lapis flex items-center gap-1"
+                              title="Syllables moved here for translation flow — their original place is elsewhere in the Tibetan"
                             >
-                              undo
-                            </button>
-                          </span>
-                        )}
+                              {layoutId === u.movedLayoutId ? 'moved here' : 'moved in'}
+                              <button
+                                type="button"
+                                onClick={() => void removeLayout(layoutId)
+                                  .catch((e: any) => setSaveError(e.message))}
+                                className="underline underline-offset-2"
+                                title="Undo the move"
+                              >
+                                undo
+                              </button>
+                            </span>
+                          ))}
                         {(u.tagType === 'small' || u.tagType === 'sapche') && !u.movedLayoutId && !armedMove && (
                           <button
                             type="button"
@@ -679,6 +790,26 @@ export const TranslateView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Floating "move selection" button over a syllable-snapped selection. */}
+      {selMove && !armedMove && (
+        <button
+          type="button"
+          className="fixed z-50 px-2 py-1 rounded-md text-xs bg-lapis text-cream-hi shadow-lg flex items-center gap-1"
+          style={{ left: selMove.x, top: selMove.y + 6, transform: 'translateX(-50%)' }}
+          onClick={() => {
+            setArmedMove({
+              srcStart: selMove.startSylId, srcEnd: selMove.endSylId,
+              bookletOnly: false, label: selMove.label,
+            });
+            setSelMove(null);
+            window.getSelection()?.removeAllRanges();
+          }}
+          title="Move the selected syllables — place them anywhere in another small/sapche chunk (display only; translated once at their new place)"
+        >
+          <MoveRight size={11} /> move selection
+        </button>
+      )}
     </div>
   );
 };
