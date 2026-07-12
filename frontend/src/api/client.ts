@@ -121,6 +121,94 @@ export async function upsertTranslation(body: {
   return res.json();
 }
 
+// ── Phase T2: booklet overrides, watermarks, suggestions, scramble layouts ──
+
+export interface TranslationOverride {
+  chunk_id: number;
+  lang: string;
+  body: string;
+  base_updated_at: string | null;
+  updated_at: string;
+}
+
+export interface TranslationSuggestion {
+  id: number;
+  chunk_id: number;
+  lang: string;
+  body: string;
+  from_text_id: number | null;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+export interface ChunkLayout {
+  id: number;
+  text_id: number | null;      // null = global default; else booklet-specific
+  kind: 'move' | 'title';
+  src_start_syl_id: string | null;
+  src_end_syl_id: string | null;
+  anchor_syl_id: string | null; // lands BEFORE the chunk starting here; null = end
+  level: number | null;
+  disabled: boolean;
+  position: number;
+  titles: Record<string, string>;
+}
+
+async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+const J = { 'Content-Type': 'application/json' };
+
+export const getOverrides = (textId: number) =>
+  jfetch<TranslationOverride[]>(`${API_BASE}/texts/${textId}/translation-overrides`);
+export const putOverride = (textId: number, body: { chunk_id: number; lang: string; body: string }) =>
+  jfetch<TranslationOverride>(`${API_BASE}/texts/${textId}/translation-overrides`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+export const ackOverride = (textId: number, body: { chunk_id: number; lang: string }) =>
+  jfetch<TranslationOverride>(`${API_BASE}/texts/${textId}/translation-overrides/ack`,
+    { method: 'POST', headers: J, body: JSON.stringify(body) });
+export const deleteOverride = (textId: number, chunkId: number, lang: string) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/texts/${textId}/translation-overrides/${chunkId}/${lang}`,
+    { method: 'DELETE' });
+
+export const getSeen = (textId: number) =>
+  jfetch<{ chunk_id: number; lang: string; seen_updated_at: string }[]>(
+    `${API_BASE}/texts/${textId}/translation-seen`);
+export const markSeen = (textId: number, body: { chunk_id: number; lang: string; seen_updated_at: string }) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/texts/${textId}/translation-seen`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
+export const getSuggestions = (textId: number) =>
+  jfetch<TranslationSuggestion[]>(`${API_BASE}/texts/${textId}/translation-suggestions`);
+export const createSuggestion = (body: { chunk_id: number; lang: string; body: string; from_text_id?: number | null }) =>
+  jfetch<TranslationSuggestion>(`${API_BASE}/translation-suggestions`,
+    { method: 'POST', headers: J, body: JSON.stringify(body) });
+export const resolveSuggestion = (id: number, accept: boolean) =>
+  jfetch<TranslationSuggestion>(`${API_BASE}/translation-suggestions/${id}/resolve`,
+    { method: 'POST', headers: J, body: JSON.stringify({ accept }) });
+
+export const getLayouts = (textId: number) =>
+  jfetch<ChunkLayout[]>(`${API_BASE}/texts/${textId}/chunk-layouts`);
+export const createLayout = (body: {
+  text_id?: number | null; kind: 'move' | 'title';
+  src_start_syl_id?: string | null; src_end_syl_id?: string | null;
+  anchor_syl_id?: string | null; level?: number | null;
+}) =>
+  jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts`,
+    { method: 'POST', headers: J, body: JSON.stringify(body) });
+export const patchLayout = (id: number, body: {
+  anchor_syl_id?: string; level?: number; disabled?: boolean; clear_anchor?: boolean;
+}) =>
+  jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts/${id}`,
+    { method: 'PATCH', headers: J, body: JSON.stringify(body) });
+export const deleteLayout = (id: number) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/chunk-layouts/${id}`, { method: 'DELETE' });
+export const putLayoutTitle = (id: number, body: { lang: string; body: string }) =>
+  jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts/${id}/title`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
 export async function setChunkLevel(body: {
   context_text_id: number;
   start_syl_id: string;

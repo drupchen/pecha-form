@@ -385,6 +385,75 @@ CREATE TABLE IF NOT EXISTS translations (
     UNIQUE(chunk_id, lang)
 );
 CREATE INDEX IF NOT EXISTS idx_translations_chunk ON translations(chunk_id);
+
+-- ─── Translation collaboration (Phase T2) ───────────────────────────────────────
+-- Booklet-local variant of a canonical translation (style/wording tweaks that stay
+-- at the booklet level). `text_id` = the booklet (secondary text; Documents wrap
+-- these later). `base_updated_at` snapshots the canonical row's updated_at at fork
+-- time — the override is STALE when the canonical has moved past it.
+CREATE TABLE IF NOT EXISTS translation_overrides (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text_id         INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    chunk_id        INTEGER NOT NULL REFERENCES translation_chunks(id) ON DELETE CASCADE,
+    lang            TEXT NOT NULL REFERENCES languages(code),
+    body            TEXT NOT NULL DEFAULT '',
+    base_updated_at TEXT,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(text_id, chunk_id, lang)
+);
+
+-- Per-booklet acknowledgement watermark: "update available" = the canonical
+-- translation's updated_at is newer than what this booklet last acknowledged.
+CREATE TABLE IF NOT EXISTS translation_seen (
+    text_id         INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    chunk_id        INTEGER NOT NULL REFERENCES translation_chunks(id) ON DELETE CASCADE,
+    lang            TEXT NOT NULL,
+    seen_updated_at TEXT NOT NULL,
+    PRIMARY KEY (text_id, chunk_id, lang)
+);
+
+-- Suggest-upstream: a booklet proposes its wording for the CANONICAL translation.
+-- Accepting updates the canonical row → ripples to every booklet reusing the chunk.
+CREATE TABLE IF NOT EXISTS translation_suggestions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id     INTEGER NOT NULL REFERENCES translation_chunks(id) ON DELETE CASCADE,
+    lang         TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    from_text_id INTEGER REFERENCES texts(id) ON DELETE SET NULL,
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at  TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_translation_suggestions_chunk ON translation_suggestions(chunk_id);
+
+-- Scramble layer: translator-driven DISPLAY arrangement of the chunk stream.
+-- kind='move': the small/sapche instruction fragment (src range) displays before
+-- the chunk starting at anchor_syl_id (NULL = end of stream) instead of at its
+-- source position. kind='title': a synthetic title chunk (no Tibetan) appears
+-- before the anchor, with a heading level; its per-language text lives in
+-- layout_titles. text_id NULL = GLOBAL default (applies wherever the content
+-- appears); non-NULL = booklet-specific. A booklet 'move' row with the same src
+-- range shadows the global one; disabled=1 lets a booklet switch a global row off.
+CREATE TABLE IF NOT EXISTS chunk_layouts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    text_id          INTEGER REFERENCES texts(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL CHECK (kind IN ('move', 'title')),
+    src_start_syl_id TEXT,
+    src_end_syl_id   TEXT,
+    anchor_syl_id    TEXT,
+    level            INTEGER,
+    disabled         INTEGER NOT NULL DEFAULT 0,
+    position         INTEGER NOT NULL DEFAULT 0,
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS layout_titles (
+    layout_id  INTEGER NOT NULL REFERENCES chunk_layouts(id) ON DELETE CASCADE,
+    lang       TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (layout_id, lang)
+);
 """
 
 

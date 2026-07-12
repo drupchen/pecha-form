@@ -1,4 +1,4 @@
-import type { EditorToken } from '../../api/client';
+import type { EditorToken, ChunkLayout } from '../../api/client';
 import type { Span } from '../../store/useTagStore';
 import { tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from '../workspace/segments';
 
@@ -26,11 +26,72 @@ export interface DerivedChunk {
   tagType: string;
   /** The classifying tag's color (pill tint), null for 'plain'. */
   tagColor: string | null;
+  /** Set when this chunk's content was MOVED here by a scramble layout row —
+   *  the translator sees it originally belonged elsewhere. */
+  movedLayoutId?: number;
+  /** Synthetic title chunk (scramble layer): no Tibetan, per-language bodies
+   *  live on the layout row; `level` = heading level. */
+  titleLayout?: ChunkLayout;
 }
 
 /** Content-type priority: the FIRST of these covering a substantial token wins
  *  (a mantra seed inside a verse run classifies as mantra, etc.). */
 const TYPE_PRIORITY = ['mantra', 'small', 'sapche', 'title', 'verse', 'prose'];
+
+/** Apply the scramble layer's MOVE rows as token-stream surgery BEFORE chunk
+ *  derivation: each active move excises its source range and splices it in front
+ *  of the anchor token (null anchor = end of stream). The rearranged stream then
+ *  chunks naturally (the moved fragment forms its own type-homogeneous chunk).
+ *  Returns the new stream plus a map syl_id → layout id for "moved here" badges. */
+export function applyMoves(
+  tokens: EditorToken[],
+  layouts: ChunkLayout[],
+): { tokens: EditorToken[]; movedBy: Map<string, number> } {
+  const movedBy = new Map<string, number>();
+  let stream = tokens;
+  for (const l of layouts) {
+    if (l.kind !== 'move' || l.disabled || !l.src_start_syl_id || !l.src_end_syl_id) continue;
+    const si = stream.findIndex(t => t.id === l.src_start_syl_id);
+    const ei = stream.findIndex(t => t.id === l.src_end_syl_id);
+    if (si < 0 || ei < 0 || ei < si) continue;
+    const frag = stream.slice(si, ei + 1);
+    const rest = [...stream.slice(0, si), ...stream.slice(ei + 1)];
+    let at = l.anchor_syl_id ? rest.findIndex(t => t.id === l.anchor_syl_id) : rest.length;
+    if (at < 0) at = rest.length;
+    stream = [...rest.slice(0, at), ...frag, ...rest.slice(at)];
+    frag.forEach(t => movedBy.set(t.id, l.id));
+  }
+  return { tokens: stream, movedBy };
+}
+
+/** Insert the scramble layer's synthetic TITLE chunks: each appears before the
+ *  chunk containing its anchor token (null anchor = end of stream). */
+export function insertTitleChunks(
+  chunks: DerivedChunk[],
+  layouts: ChunkLayout[],
+): DerivedChunk[] {
+  const titles = layouts.filter(l => l.kind === 'title' && !l.disabled);
+  if (!titles.length) return chunks;
+  const out = [...chunks];
+  for (const l of titles) {
+    const entry: DerivedChunk = {
+      key: `title-${l.id}`,
+      startSylId: '', endSylId: '',
+      text: '',
+      sylIds: [],
+      startOffset: -1,
+      tagType: 'title',
+      tagColor: null,
+      titleLayout: l,
+    };
+    const at = l.anchor_syl_id
+      ? out.findIndex(c => c.sylIds.includes(l.anchor_syl_id!))
+      : -1;
+    if (at >= 0) out.splice(at, 0, entry);
+    else out.push(entry);
+  }
+  return out;
+}
 
 /** Split the composed stream into translation chunks. Boundaries: segment markers,
  *  EMPTY lines — an explicit "empty line" break override (count 2) or two
@@ -43,6 +104,7 @@ export function deriveChunks(
   spans: Span[],
   overrides: Map<string, number>,
   groups: { verse: boolean; sapche: boolean; mantra: boolean },
+  movedBy?: Map<string, number>,
 ): DerivedChunk[] {
   const regular = spans.filter(s => s.tag.tag_kind === 'regular');
   const sylSpace = new Map<string, number | 'host'>();
@@ -99,6 +161,7 @@ export function deriveChunks(
         startOffset: cur[0].start_offset,
         tagType: curType?.name ?? 'plain',
         tagColor: curType?.color ?? null,
+        movedLayoutId: movedBy?.get(first.id),
       });
     }
     cur = [];
