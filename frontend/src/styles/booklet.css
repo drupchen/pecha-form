@@ -1,21 +1,40 @@
 /*
- * Built-in booklet stylesheet (Phase D2). Named roles → CSS, used by the pagination
- * bench now and (identically) by the D3 Chromium PDF later. The future style-sheet
- * designer will make these editable; for now they are sensible defaults driven by the
- * document's layout_config via CSS custom properties set on `.booklet-root`.
+ * Built-in booklet stylesheet (Phase D2). Named roles → CSS, matched to the manual
+ * reference booklets' docx styles + fonts (see the plan). Used by the pagination bench
+ * now and (identically) by the D3 Chromium PDF later; the future style designer makes
+ * these editable. Geometry/type sizes come from layout_config via `.booklet-root` vars.
  */
+
+/* ── Fonts (bundled in /public/fonts; the reference booklets' actual fonts) ── */
+@font-face { font-family: 'Chogyal'; src: url('/fonts/TibetanChogyalUnicode-170221.ttf'); font-display: swap; }
+@font-face { font-family: 'Jomolhari'; src: url('/fonts/Jomolhari.ttf'); font-display: swap; }
+@font-face { font-family: 'Gentium Basic'; src: url('/fonts/GentiumBasic-Regular.ttf'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Gentium Basic'; src: url('/fonts/GentiumBasic-Bold.ttf'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Gentium Basic'; src: url('/fonts/GentiumBasic-Italic.ttf'); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Raleway'; src: url('/fonts/Raleway-VariableFont_wght.ttf'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Raleway'; src: url('/fonts/Raleway-Italic-VariableFont_wght.ttf'); font-weight: 100 900; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Libertinus Serif Display'; src: url('/fonts/LibertinusSerifDisplay-Regular.otf'); font-display: swap; }
+@font-face { font-family: 'Libertinus Serif'; src: url('/fonts/LibertinusSerif-Semibold.otf'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Libertinus Serif'; src: url('/fonts/LibertinusSerif-SemiboldItalic.otf'); font-weight: 600; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Ubuntu Booklet'; src: url('/fonts/Ubuntu-R.ttf'); font-display: swap; }
 
 .booklet-root {
   --page-w: 148mm;
   --page-h: 210mm;
-  --m-top: 18mm;
-  --m-bottom: 18mm;
-  --m-bind: 22mm;   /* spine side */
-  --m-outer: 14mm;  /* trimmed edge — has slack for wrap-extend */
-  --tibetan-pt: 15pt;
-  --phonetics-pt: 10.5pt;
+  --m-top: 10mm;
+  --m-bottom: 12.4mm;
+  --m-bind: 16mm;    /* spine side */
+  --m-outer: 20mm;   /* trimmed edge — has slack for wrap-extend */
+  --tibetan-pt: 16pt;
+  --phonetics-pt: 10pt;
   --translation-pt: 11pt;
-  --leading: 1.45;
+  --leading: 1.2;
+  /* Role font stacks (Cambria→serif fallback; Caladea/Carlito not bundled) */
+  --font-tibetan: 'Chogyal', 'Jomolhari', serif;
+  --font-translation: 'Gentium Basic', 'Gentium', Georgia, serif;
+  --font-phonetics: 'Raleway', 'Ubuntu Booklet', sans-serif;
+  --font-small: 'Libertinus Serif Display', 'Libertinus Serif', Georgia, serif;
+  --font-title: 'Libertinus Serif', 'Libertinus Serif Display', Georgia, serif;
 }
 
 /* A spread = two facing pages: Tibetan verso (left) + phonetics/translation recto. */
@@ -51,28 +70,59 @@
   color: #666;
 }
 
-/* ── Line roles ── */
+/* ── Line roles (mapped to the reference docx named styles) ── */
 .bk-line { break-inside: avoid; }
+
+/* Tibetan body = `བོད་ཡིག` (Chogyal 16); title = `ཁ་བྱང་།` (Chogyal 24, centred). */
 .bk-tibetan {
-  font-family: 'Jomolhari', 'Noto Serif Tibetan', serif;
+  font-family: var(--font-tibetan);
   font-size: var(--tibetan-pt);
   line-height: var(--leading);
   white-space: pre-wrap;
 }
+.bk-role-title .bk-tibetan { font-size: calc(var(--tibetan-pt) * 1.5); text-align: center; }
+
+/* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic). */
 .bk-phonetics {
+  font-family: var(--font-phonetics);
   font-size: var(--phonetics-pt);
-  line-height: 1.3;
-  color: #444;
+  font-weight: 600;
   font-style: italic;
+  line-height: 1.25;
+  color: #333;
 }
+
+/* Translation = `Translation` (Gentium Basic 11, ~2.85pt after). */
 .bk-translation {
+  font-family: var(--font-translation);
   font-size: var(--translation-pt);
   line-height: var(--leading);
-  margin: 0 0 1mm 0;
+  margin: 0 0 2.85pt 0;
 }
-.bk-role-mantra .bk-tibetan, .bk-role-mantra .bk-phonetics { font-weight: 600; }
-.bk-role-title .bk-translation { font-weight: 700; font-size: calc(var(--translation-pt) + 1.5pt); }
-.bk-role-small .bk-translation { font-size: calc(var(--translation-pt) - 1.5pt); color: #555; }
+
+/* Mantras = `Mantras` (Gentium Basic 11, bold+italic) — the romanized mantra. */
+.bk-role-mantra .bk-phonetics {
+  font-family: var(--font-translation);
+  font-weight: 700; font-style: italic;
+  font-size: var(--translation-pt);
+  color: #1a1a1a;
+}
+.bk-role-mantra .bk-translation { font-weight: 700; font-style: italic; }
+
+/* Small letters = `Small Letters` (Libertinus Serif Display 9, bold+italic). */
+.bk-role-small .bk-phonetics,
+.bk-role-small .bk-translation {
+  font-family: var(--font-small);
+  font-size: 9pt; font-weight: 600; font-style: italic; color: #333;
+}
+
+/* Section heading = `Sections` (Libertinus Serif Display 15, bold+italic). */
+.bk-role-sapche .bk-translation,
+.bk-role-title .bk-translation {
+  font-family: var(--font-small);
+  font-size: 15pt; font-weight: 600; font-style: italic;
+  margin-top: 19.2pt; margin-bottom: 7.8pt;
+}
 
 /* The empty-line gap between chunks — the balancing lever (height set inline). */
 .bk-gap { height: calc(var(--translation-pt) * var(--leading)); position: relative; }

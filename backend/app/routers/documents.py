@@ -27,11 +27,11 @@ router = APIRouter(prefix="/api", tags=["documents"])
 # Built-in booklet geometry (mm / pt). The future style designer makes these editable;
 # a document's layout_config JSON holds only overrides, merged onto this.
 DEFAULT_LAYOUT_CONFIG = {
-    "page_width_mm": 148.0, "page_height_mm": 210.0,   # A5
-    "margin_top_mm": 18.0, "margin_bottom_mm": 18.0,
-    "margin_bind_mm": 22.0, "margin_outer_mm": 14.0,   # bind side (spine) vs outer edge
-    "tibetan_pt": 15.0, "phonetics_pt": 10.5, "translation_pt": 11.0,
-    "leading": 1.45,
+    "page_width_mm": 148.0, "page_height_mm": 210.0,   # A5 (matches the reference booklets)
+    "margin_top_mm": 10.0, "margin_bottom_mm": 12.4,
+    "margin_bind_mm": 16.0, "margin_outer_mm": 20.0,   # bind side (spine) vs outer edge (slack)
+    "tibetan_pt": 16.0, "phonetics_pt": 10.0, "translation_pt": 11.0,
+    "leading": 1.2,
 }
 
 

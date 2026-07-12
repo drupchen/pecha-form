@@ -189,3 +189,6 @@ frontend/dist/
 # Vite dev-server cache.
 frontend/.vite/
 orca.yaml
+
+# Bundled booklet fonts (kept local — licensing/size; placed in public/fonts)
+frontend/public/fonts/
