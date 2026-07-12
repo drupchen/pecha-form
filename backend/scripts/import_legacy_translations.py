@@ -128,7 +128,10 @@ def parse_sheet(path: Path):
             cur = {"type": hub.strip("|"), "lines": []}
         if cur is None:
             cur = {"type": "n", "lines": []}
-        tib = get(cells, "tib") or get(cells, "tib_nophon")
+        # Pure-mantra rows carry their recited text in the "Sanskrit" column (the
+        # Tibetan/Phonetics columns are empty) — fall back to it for alignment so
+        # the mantra locates in the stream and its Sanskrit phonetics import.
+        tib = get(cells, "tib") or get(cells, "tib_nophon") or get(cells, "skt_fallback")
         if not tib.strip() and not get(cells, "trans").strip():
             continue  # blank spacer row
         ti = col.get("trans")
@@ -303,12 +306,12 @@ def import_sheet(stem: str, lang: str, text_id: int, dry: bool = False):
                 if not dry:
                     conn.execute(
                         "INSERT INTO phonetics (origin_text_id, start_syl_id, end_syl_id, "
-                        "kind, body, status, engine, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, 'reviewed', 'legacy-import', CURRENT_TIMESTAMP) "
-                        "ON CONFLICT(origin_text_id, start_syl_id, end_syl_id, kind) "
+                        "kind, lang, body, status, engine, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'reviewed', 'legacy-import', CURRENT_TIMESTAMP) "
+                        "ON CONFLICT(origin_text_id, start_syl_id, end_syl_id, kind, lang) "
                         "DO UPDATE SET body = excluded.body, status = 'reviewed', "
                         "updated_at = CURRENT_TIMESTAMP",
-                        (origin, l_start, l_end, kind, val.strip()))
+                        (origin, l_start, l_end, kind, lang, val.strip()))
                 stats["phon" if kind == "bo" else "skt"] += 1
 
     flush_titles(None)  # trailing titles anchor at the end of the stream

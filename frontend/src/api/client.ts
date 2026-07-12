@@ -224,6 +224,54 @@ export async function setChunkLevel(body: {
   return res.json();
 }
 
+// --------------------------------------------------------------------------
+// Phonetics layer (Phase P): line-level romanization, rippling like translations.
+// A row = one recitation line, anchored to origin-text syllables so it auto-
+// populates every document that includes the same primary/secondary. `kind`:
+// 'bo' = Tibetan phonetics, 'skt' = Sanskrit mantra romanization.
+// --------------------------------------------------------------------------
+
+export interface Phonetic {
+  id: number;
+  origin_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  kind: 'bo' | 'skt';
+  /** The booklet language this phonetics body is written for (en/fr/de/pt). */
+  lang: string;
+  body: string;
+  status: 'auto' | 'edited' | 'reviewed';
+  /** The line's FULL Tibetan text from its origin (shown whole even if included
+   *  only partially by this document). */
+  text: string;
+  updated_at: string;
+}
+
+export const getPhonetics = (textId: number, lang: string) =>
+  jfetch<Phonetic[]>(`${API_BASE}/texts/${textId}/phonetics?lang=${encodeURIComponent(lang)}`);
+
+export const putPhonetic = (body: {
+  context_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  kind: 'bo' | 'skt';
+  lang: string;
+  body: string;
+  status: 'auto' | 'edited' | 'reviewed';
+}) =>
+  jfetch<Phonetic>(`${API_BASE}/phonetics`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
+export const deletePhonetic = (body: {
+  context_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  kind: 'bo' | 'skt';
+  lang: string;
+}) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/phonetics`,
+    { method: 'DELETE', headers: J, body: JSON.stringify(body) });
+
 export async function deleteText(id: number) {
   const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());

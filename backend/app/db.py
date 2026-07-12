@@ -456,21 +456,24 @@ CREATE TABLE IF NOT EXISTS layout_titles (
 );
 
 -- ─── Phonetics (Phase P; table created at T3 for the legacy import) ─────────────
--- One row per run/line, anchored to origin-text syllables like translations, so
--- phonetics ripple into every booklet reusing the passage. kind: 'bo' = Tibetan
--- phonetics (bophono later), 'skt' = Sanskrit mantra romanization.
+-- One row per run/line PER LANGUAGE, anchored to origin-text syllables like
+-- translations, so phonetics ripple into every booklet reusing the passage.
+-- kind: 'bo' = Tibetan phonetics, 'skt' = Sanskrit mantra romanization. lang scopes
+-- the body (the booklets ship distinct phonetics per language — e.g. skt fr "Houng"
+-- vs en "Hung"), exactly like the translation layer.
 CREATE TABLE IF NOT EXISTS phonetics (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     origin_text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     start_syl_id   TEXT NOT NULL,
     end_syl_id     TEXT NOT NULL,
     kind           TEXT NOT NULL CHECK (kind IN ('bo', 'skt')),
+    lang           TEXT NOT NULL DEFAULT 'en',
     body           TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT 'auto' CHECK (status IN ('auto', 'edited', 'reviewed')),
     engine         TEXT,
     engine_version TEXT,
     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(origin_text_id, start_syl_id, end_syl_id, kind)
+    UNIQUE(origin_text_id, start_syl_id, end_syl_id, kind, lang)
 );
 CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id);
 """
@@ -571,6 +574,45 @@ def _add_missing_columns(conn) -> None:
         for name, decl in columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _rebuild_phonetics_lang(conn) -> None:
+    """Add the `lang` dimension to a pre-existing `phonetics` table. SQLite can't
+    alter a UNIQUE constraint in place, so rebuild: the legacy-import rows were
+    single-language and are re-imported PER language (scripts/import_legacy_
+    translations.py), so they are dropped here; any user-authored rows are kept as
+    lang='en'. No-op once `lang` exists (incl. fresh DBs created from SCHEMA)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(phonetics)")}
+    if not cols or "lang" in cols:
+        return
+    conn.execute("""
+        CREATE TABLE phonetics_new (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+            start_syl_id   TEXT NOT NULL,
+            end_syl_id     TEXT NOT NULL,
+            kind           TEXT NOT NULL CHECK (kind IN ('bo', 'skt')),
+            lang           TEXT NOT NULL DEFAULT 'en',
+            body           TEXT NOT NULL DEFAULT '',
+            status         TEXT NOT NULL DEFAULT 'auto' CHECK (status IN ('auto', 'edited', 'reviewed')),
+            engine         TEXT,
+            engine_version TEXT,
+            updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(origin_text_id, start_syl_id, end_syl_id, kind, lang)
+        )""")
+    # Keep only user-authored rows (legacy-import is superseded by the per-lang
+    # re-import); label them 'en'.
+    conn.execute("""
+        INSERT INTO phonetics_new
+            (id, origin_text_id, start_syl_id, end_syl_id, kind, lang, body, status,
+             engine, engine_version, updated_at)
+        SELECT id, origin_text_id, start_syl_id, end_syl_id, kind, 'en', body, status,
+             engine, engine_version, updated_at
+        FROM phonetics
+        WHERE engine IS NULL OR engine <> 'legacy-import'""")
+    conn.execute("DROP TABLE phonetics")
+    conn.execute("ALTER TABLE phonetics_new RENAME TO phonetics")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id)")
 
 
 # Suggestions are auto-applied on creation — there is no accept/reject lifecycle, so the
@@ -905,6 +947,7 @@ def init_db():
         _drop_status_columns(conn)
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
+        _rebuild_phonetics_lang(conn)
         # Seed the four working languages (idempotent; more are added via the API).
         conn.executemany(
             "INSERT OR IGNORE INTO languages (code, name) VALUES (?, ?)",

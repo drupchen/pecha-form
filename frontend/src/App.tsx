@@ -4,11 +4,12 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { TextPicker } from './components/TextPicker'
 import { WorkspaceView } from './components/workspace/WorkspaceView'
 import { TranslateView } from './components/translate/TranslateView'
+import { PhoneticsView } from './components/phonetics/PhoneticsView'
 import { useUndoStore } from './store/useUndoStore'
 import { useTextStore } from './store/useTextStore'
 import { useUIStore } from './store/useUIStore'
 
-export type Route = '/' | '/workspace' | '/translate';
+export type Route = '/' | '/workspace' | '/translate' | '/phonetics';
 
 export default function App() {
   const [route, setRoute] = useState<Route>('/');
@@ -51,6 +52,7 @@ export default function App() {
           {route === '/' && <TextPicker onNavigate={setRoute} />}
           {route === '/workspace' && <WorkspaceView />}
           {route === '/translate' && <TranslateView />}
+          {route === '/phonetics' && <PhoneticsView />}
         </main>
       </div>
     </ErrorBoundary>

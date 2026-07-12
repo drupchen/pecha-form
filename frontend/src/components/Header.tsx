@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, FileText, Undo2, Languages } from 'lucide-react';
+import { Layout, FileText, Undo2, Languages, Volume2 } from 'lucide-react';
 import type { Route } from '../App';
 import { useUndoStore } from '../store/useUndoStore';
 
@@ -12,6 +12,7 @@ const TABS: { route: Route; label: string; icon: React.ReactNode }[] = [
   { route: '/', label: 'Texts', icon: <FileText size={16} /> },
   { route: '/workspace', label: 'Workspace', icon: <Layout size={16} /> },
   { route: '/translate', label: 'Translate', icon: <Languages size={16} /> },
+  { route: '/phonetics', label: 'Phonetics', icon: <Volume2 size={16} /> },
 ];
 
 export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {

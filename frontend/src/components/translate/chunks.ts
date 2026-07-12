@@ -39,7 +39,7 @@ export interface DerivedChunk {
 
 /** Content-type priority: the FIRST of these covering a substantial token wins
  *  (a mantra seed inside a verse run classifies as mantra, etc.). */
-const TYPE_PRIORITY = ['mantra', 'small', 'sapche', 'title', 'verse', 'prose'];
+export const TYPE_PRIORITY = ['mantra', 'small', 'sapche', 'title', 'verse', 'prose'];
 
 /** Apply the scramble layer's MOVE rows as token-stream surgery BEFORE chunk
  *  derivation: each active move excises its source range and splices it in front
@@ -109,6 +109,9 @@ export function deriveChunks(
   overrides: Map<string, number>,
   groups: { verse: boolean; sapche: boolean; mantra: boolean },
   movedBy?: Map<string, number>,
+  // Phonetics bench: flush on EVERY automatic break (single line breaks included),
+  // yielding one unit per printed line instead of per empty-line-delimited stretch.
+  lineLevel = false,
 ): DerivedChunk[] {
   const regular = spans.filter(s => s.tag.tag_kind === 'regular');
   const sylSpace = new Map<string, number | 'host'>();
@@ -158,7 +161,12 @@ export function deriveChunks(
     if (substantial.length > 0) {
       const first = substantial[0], last = substantial[substantial.length - 1];
       chunks.push({
-        key: `${first.id}-${last.id}`,
+        // Include the push ordinal: repeated liturgical lines share syllable UUIDs,
+        // so `${first.id}-${last.id}` alone collides — duplicate React keys make rows
+        // duplicate/omit and leak stale nodes across the phonetics bench's tab switch
+        // (and cross-contaminate its l.key-keyed drafts). The ordinal is unique and
+        // stable across renders. Nothing parses `key` (both benches match by rangeKey).
+        key: `${first.id}-${last.id}#${chunks.length}`,
         startSylId: first.id,
         endSylId: last.id,
         text: curText.replace(/\n{2,}/g, '\n').trim(),
@@ -195,9 +203,10 @@ export function deriveChunks(
     curText += render;
     curRenders.push({ id: t.id, render });
     // Empty line AFTER this token: explicit count-2 override, or a real newline
-    // pair (a blank line in the raw text).
+    // pair (a blank line in the raw text). In line mode, ANY break flushes.
     const nxt = tokens[i + 1];
-    if (count >= 2 || (isReal && nxt != null && nxt.text.includes('\n'))) flush();
+    if ((lineLevel && count >= 1) || count >= 2
+        || (isReal && nxt != null && nxt.text.includes('\n'))) flush();
   }
   flush();
   return chunks;
