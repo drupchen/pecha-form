@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { Plus } from 'lucide-react';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTextStore } from '../../store/useTextStore';
 import { useUIStore } from '../../store/useUIStore';
+import { TreeConsultContext } from './treeConsult';
 
 interface Props {
   /** parent_id for the inserted node; null inserts at root level */
@@ -23,7 +24,7 @@ export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position }) => {
   const { createNode } = useTreeNodeStore();
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
   const sessionMode = useUIStore(s => s.sessionMode);
-  const consultMode = useUIStore(s => s.editMode === 'consult');
+  const consultMode = useUIStore(s => s.editMode === 'consult') || useContext(TreeConsultContext);
 
   if (!currentText) return null;
   if (sessionMode || consultMode) return <div className="h-1.5 -my-0.5" />;

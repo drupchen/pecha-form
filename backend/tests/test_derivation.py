@@ -1019,14 +1019,22 @@ def test_insert_between_transcluded_runs():
     text = "".join(t["text"] for t in compose_secondary(conn, sec))
     assert text.index("ཀ་ཁ་ག།") < text.index("ཏ་ཐ་ད།") < text.index("ཅ་ཆ་ཇ།")
 
-    # Line break anchored at a MID token of run B lands AFTER run B.
+    # A REAL line break anchored at a MID token of run B is refused (it can only be
+    # ordered before/after the whole run — silently relocating it surprised users;
+    # display breaks are the mid-run tool).
     toks = compose_secondary(conn, sec)
     b_toks = [t for t in toks if t.get("src_text_id") == b]
-    insert_break(conn, sec, before_syl_id=b_toks[1]["id"])
+    try:
+        insert_break(conn, sec, before_syl_id=b_toks[1]["id"])
+        assert False, "expected 400"
+    except HTTPException as e:
+        assert e.status_code == 400 and "display line break" in e.detail
+    # Before the run's FIRST token still works (the "between two runs" gesture).
+    insert_break(conn, sec, before_syl_id=b_toks[0]["id"])
     conn.commit()
     toks = compose_secondary(conn, sec)
-    b_last_i = max(i for i, t in enumerate(toks) if t.get("src_text_id") == b)
-    assert toks[b_last_i + 1]["text"] == "\n"
+    b_first_i = next(i for i, t in enumerate(toks) if t.get("src_text_id") == b)
+    assert toks[b_first_i - 1]["text"] == "\n"
 
     # edit_range with a transcluded endpoint → the clearer message.
     try:

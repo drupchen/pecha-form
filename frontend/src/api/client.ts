@@ -60,6 +60,82 @@ export async function getEditorTokens(id: number): Promise<EditorToken[]> {
   return (await res.json()).tokens;
 }
 
+// --------------------------------------------------------------------------
+// Translation layer (Phase T1): languages, chunks, canonical translations.
+// A chunk = the unit of translation (empty-line-delimited stretch), anchored to
+// origin-text syllables so translations ripple into every booklet reusing them.
+// --------------------------------------------------------------------------
+
+export interface Language { code: string; name: string }
+
+export interface Translation {
+  lang: string;
+  body: string;
+  status: 'draft' | 'final';
+  translated_from: string | null;
+  updated_at: string;
+}
+
+export interface TranslationChunk {
+  id: number;
+  origin_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  kind: 'text' | 'title';
+  /** Title level for heading chunks (sapche/title), null = not a heading.
+   *  Language-independent — feeds TOC + PDF heading styles. */
+  level: number | null;
+  /** The chunk's FULL Tibetan text from its origin — shown whole even when the
+   *  booklet includes it only partially. */
+  text: string;
+  translations: Translation[];
+}
+
+export async function getLanguages(): Promise<Language[]> {
+  const res = await fetch(`${API_BASE}/languages`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getTextTranslations(textId: number): Promise<TranslationChunk[]> {
+  const res = await fetch(`${API_BASE}/texts/${textId}/translations`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function upsertTranslation(body: {
+  context_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  lang: string;
+  body: string;
+  status?: 'draft' | 'final';
+  translated_from?: string | null;
+}): Promise<TranslationChunk> {
+  const res = await fetch(`${API_BASE}/translations`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function setChunkLevel(body: {
+  context_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  level: number | null;
+}): Promise<TranslationChunk> {
+  const res = await fetch(`${API_BASE}/translation-chunks/level`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function deleteText(id: number) {
   const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
@@ -378,20 +454,6 @@ export interface DerivationOp {
 
 export async function listDerivationOps(textId: number): Promise<DerivationOp[]> {
   const res = await fetch(`${API_BASE}/texts/${textId}/derivation-ops`);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-// Insert a manual line break (a hosted "\n" token) before a composed token of a
-// secondary text (before_syl_id null = at the end). Undone by deleting its op.
-export async function insertBreak(
-  textId: number, beforeSylId: string | null, anchorOpId?: number,
-): Promise<ComposedResult> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/insert-break`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ before_syl_id: beforeSylId, anchor_op_id: anchorOpId ?? null }),
-  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

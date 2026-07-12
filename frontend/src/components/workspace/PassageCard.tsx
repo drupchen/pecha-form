@@ -2,7 +2,9 @@ import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, X } from 'lucide-react';
 import type { Segment } from './segments';
-import { readTokenSelection, tokenDisplayText, shortVerseGroupEnders } from './segments';
+import { readTokenSelection, tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from './segments';
+import { BreakPopover, type BreakTarget } from './BreakPopover';
+import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import type { Passage } from '../../api/client';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
@@ -39,8 +41,11 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   const setHovered = useLinkStore(s => s.setHovered);
   const hoveredKey = useLinkStore(s => s.hoveredKey);
   const consultMode = useUIStore(s => s.editMode === 'consult');
-  const verseVertical = useUIStore(s => s.verseVerticalMode);
-  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
+  const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
+  const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
+  const verseVertical = lineBreaksOn && lineBreakGroups.verse;
+  const sapcheNewlines = lineBreaksOn && lineBreakGroups.sapche;
+  const mantraNewlines = lineBreaksOn && lineBreakGroups.mantra;
   const taggerFontSize = useUIStore(s => s.taggerFontSize);
 
   const textRef = useRef<HTMLDivElement>(null);
@@ -50,6 +55,8 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   } | null>(null);
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const breakOverrides = useDisplayBreakStore(s => s.breaks);
+  const [breakTarget, setBreakTarget] = useState<BreakTarget | null>(null);
 
   const linkKey = -starter.id;  // passage key space (negative), disjoint from segment offsets
   const linkedNode = nodes.find(n => n.passage_id === starter.id);
@@ -84,6 +91,27 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   }, [editorTokens]);
   const spanSpace = (s: { start_syl_id: string | null }): number | 'host' =>
     (s.start_syl_id && sylSpace.get(s.start_syl_id)) || 'host';
+
+  // Tokens immediately BEFORE a mid-card sapche run starter: they get an automatic
+  // break so the heading opens its own line (a starter at the card's first token has
+  // no predecessor and gets none). Computed over the whole group — it flows as one run.
+  const preSapche = useMemo(() => {
+    if (!sapcheNewlines) return new Set<string>();
+    const toks = groupSyls.flatMap(s => {
+      const o = srcOffsets.get(s.syl_id);
+      return o ? [{ id: s.syl_id, start_offset: o[0], end_offset: o[1] }] : [];
+    });
+    const starts = sapcheRunStartIds(
+      toks, regularSpans as any, id => sylSpace.get(id) ?? 'host', spanSpace as any);
+    const out = new Set<string>();
+    const nonEmpty = groupSyls.filter(s => s.text !== '');
+    nonEmpty.forEach((s, i) => {
+      const nxt = nonEmpty[i + 1];
+      if (nxt && starts.has(nxt.syl_id)) out.add(s.syl_id);
+    });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sapcheNewlines, groupSyls, srcOffsets, regularSpans, sylSpace]);
 
   // Synthetic segment for the popover: the SOURCE offset range of the group (tags
   // anchor shared syllable ids anyway; passage splits go through `passageSplit`).
@@ -241,19 +269,43 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';
-            const renderText = tokenDisplayText(
-              s.text, reo, anns, verseVertical, sapcheNewlines, verseSuppress.has(s.syl_id));
+            // Display-only line breaks (¶ mode): clickable ↵ element carrying the
+            // actual newlines; real '\n' tokens move theirs into it.
+            const brk = tokenBreak(s.text, reo, anns, {
+              verse: verseVertical, sapche: sapcheNewlines, mantra: mantraNewlines,
+              suppressVerse: verseSuppress.has(s.syl_id),
+              nextStartsSapche: preSapche.has(s.syl_id),
+            });
+            const override = lineBreaksOn ? breakOverrides.get(s.syl_id) : undefined;
+            const showBreak = lineBreaksOn && (brk.auto > 0 || override !== undefined);
+            const count = override ?? brk.auto;
             return (
-              <span
-                key={`pc-${p.id}-${si}`}
-                data-syl-id={s.syl_id}
-                data-passage-id={p.id}
-                {...(ro >= 0 ? { 'data-ro': ro, 'data-reo': reo } : {})}
-                style={style}
-                title={note ? note.body : undefined}
-              >
-                {renderText}
-              </span>
+              <React.Fragment key={`pc-${p.id}-${si}`}>
+                <span
+                  data-syl-id={s.syl_id}
+                  data-passage-id={p.id}
+                  {...(ro >= 0 ? { 'data-ro': ro, 'data-reo': reo } : {})}
+                  style={style}
+                  title={note ? note.body : undefined}
+                >
+                  {brk.isReal && showBreak ? '' : s.text}
+                </span>
+                {showBreak && (
+                  <span
+                    className={`break-icon${count === 0 ? ' break-icon--off' : ''}`}
+                    title={count === 0 ? 'Suppressed line break — click to edit' : 'Line break — click to edit'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setBreakTarget({
+                        sylId: s.syl_id, auto: brk.auto, count,
+                        anchor: (e.currentTarget as HTMLElement).getBoundingClientRect(),
+                      });
+                    }}
+                  >
+                    {'↵' + '\n'.repeat(count)}
+                  </span>
+                )}
+              </React.Fragment>
             );
           }))}
         </div>
@@ -265,6 +317,14 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
           selection={selection}
           passageSplit={passageSplit}
           onClose={() => { setSelection(null); window.getSelection()?.removeAllRanges(); }}
+        />
+      )}
+
+      {breakTarget && currentText && (
+        <BreakPopover
+          textId={currentText.id}
+          target={breakTarget}
+          onClose={() => setBreakTarget(null)}
         />
       )}
 

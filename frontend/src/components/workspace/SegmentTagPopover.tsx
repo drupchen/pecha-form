@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Segment } from './segments';
+import { hasAdjacentNewline } from './segments';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore, selectRegularTags, selectSessionTags } from '../../store/useTagStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -9,10 +10,11 @@ import { useNoteStore } from '../../store/useNoteStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
 import { usePassageStore } from '../../store/usePassageStore';
 import { useEditorTokenStore } from '../../store/useEditorTokenStore';
+import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import type { Passage } from '../../api/client';
-import { editRange, insertBreak, suggestUpstream, transclude } from '../../api/client';
+import { editRange, suggestUpstream, transclude } from '../../api/client';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, CornerDownLeft, BookPlus, FileText } from 'lucide-react';
+import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, BookPlus, FileText } from 'lucide-react';
 
 const COLORS = [
   '#ef4444', '#f97316', '#f59e0b', '#84cc16',
@@ -51,6 +53,28 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
+  const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
+  const toggleLineBreaks = useUIStore(s => s.toggleLineBreaks);
+  const setDisplayBreak = useDisplayBreakStore(s => s.setBreak);
+  // THE newline gesture — a display-only break after the selection's last syllable.
+  // Works identically everywhere (host text, transcluded runs, passage runs) and
+  // stays at this text's level. Turns ¶ mode on so the break is immediately visible.
+  // Refuses to STACK next to an existing newline: blank lines must come only from
+  // the explicit "empty line" option, never from two adjacent single breaks.
+  const addDisplayBreak = async (count: 1 | 2) => {
+    const tokens = useEditorTokenStore.getState().tokens;
+    const regular = useTagStore.getState().spans.filter(s => s.tag.tag_kind === 'regular');
+    const overrides = useDisplayBreakStore.getState().breaks;
+    const groups = useUIStore.getState().lineBreakGroups;
+    if (hasAdjacentNewline(tokens, regular, overrides, groups, selection.endSylId)) {
+      setError("A line break already sits next to the selection — edit its ↵ icon "
+        + "(e.g. choose 'empty line') instead of adding another.");
+      return;
+    }
+    await setDisplayBreak(currentText.id, selection.endSylId, count);
+    if (!lineBreaksOn) toggleLineBreaks();
+    onClose();
+  };
 
   // In session mode the popover offers only session tags (and only Tag mode);
   // in regular mode only regular tags.
@@ -329,20 +353,6 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
     return { anchorId: anchor?.id ?? null, anchorOpId: anchor?.op_id };
   };
 
-  // Manual line break AFTER the selection: a hosted "\n" op inserted before the next
-  // composed token (or at the end of the text). Secondary-only formatting.
-  const handleInsertBreak = async () => {
-    setError(null);
-    try {
-      const { anchorId, anchorOpId } = anchorAfterSelection();
-      await insertBreak(currentText.id, anchorId, anchorOpId);
-      await loadText(currentText.id);
-      onClose();
-    } catch (e: any) {
-      setError(e.message || 'Could not insert a line break');
-    }
-  };
-
   // Extract the selection into a new independent primary text (and reversibly remove it
   // from this text). Addressed by syllable uuid — never offsets.
   const handleExtract = async () => {
@@ -453,6 +463,26 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
                 <Scissors size={12} /> Split here
               </button>
             )}
+            {/* Display-only line break AFTER the selection's last syllable. Persisted
+                as a display_breaks override; editable via its ↵ icon in ¶ mode. */}
+            {!sessionMode && (
+              <>
+                <button
+                  onClick={() => addDisplayBreak(1)}
+                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-cream hover:text-lapis"
+                  title="Add a display-only line break after the selection (turns ¶ mode on)"
+                >
+                  ↵ line
+                </button>
+                <button
+                  onClick={() => addDisplayBreak(2)}
+                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-cream hover:text-lapis"
+                  title="Add a display-only empty line after the selection (turns ¶ mode on)"
+                >
+                  ↵ empty line
+                </button>
+              </>
+            )}
             {!sessionMode && !consultMode && (
               <button
                 onClick={handleDeleteSection}
@@ -466,13 +496,6 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
             )}
             {!sessionMode && !consultMode && currentText.text_type === 'secondary' && (
               <>
-                <button
-                  onClick={handleInsertBreak}
-                  className="text-xs px-2 py-1 rounded flex items-center gap-1 text-slate-500 hover:bg-indigo-100 hover:text-indigo-700 dark:hover:bg-indigo-900/40 dark:hover:text-indigo-300"
-                  title="Insert a line break after the selection (undo from the Edits panel)"
-                >
-                  <CornerDownLeft size={12} /> Line break
-                </button>
                 <button
                   onClick={() => { setError(null); setMode('insert-text'); }}
                   className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${

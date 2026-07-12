@@ -244,7 +244,7 @@ def _owning_transclude_op(conn, text_id: int, syl_id: str):
 
 
 def _resolve_insertion_anchor(conn, text_id: int, syl_id: str, base_pos: dict,
-                              anchor_op_id=None):
+                              anchor_op_id=None, mid_run_ok=True):
     """Resolve where an INSERT-type op (transclude / line break) placed "before this
     composed token" goes: ``(anchor_syl_id, before_op_id)``.
 
@@ -255,7 +255,12 @@ def _resolve_insertion_anchor(conn, text_id: int, syl_id: str, base_pos: dict,
     at the same anchor, if any). ``anchor_op_id`` names the OCCURRENCE when the same
     source is transcluded several times (same uuids in the stream — only the emitting
     op disambiguates). Unlike ``_resolve_to_base_anchor`` this never turns an
-    insertion into an edit of base content."""
+    insertion into an edit of base content.
+
+    ``mid_run_ok=False`` refuses the "otherwise right AFTER O" fallback with a 400:
+    a caller like ``insert_break`` would SILENTLY relocate a mid-run insertion to the
+    run's end — surprising for a line break the user placed mid-run (display breaks,
+    which key on the source syllable, are the mid-run tool)."""
     if syl_id in base_pos:
         return syl_id, None
     row = conn.execute(
@@ -283,6 +288,10 @@ def _resolve_insertion_anchor(conn, text_id: int, syl_id: str, base_pos: dict,
         raise HTTPException(400, "Insertion anchor must be a token of this text")
     if ids and syl_id == ids[0]:
         return op["anchor_syl_id"], op["id"]  # before run O
+    if not mid_run_ok:
+        raise HTTPException(
+            400, "Cannot insert inside transcluded content — use a display line "
+                 "break (¶ mode), which works everywhere")
     # After run O: before the next op at the same anchor, if any.
     if op["anchor_syl_id"] is None:
         nxt = conn.execute(
@@ -432,7 +441,7 @@ def insert_break(conn, text_id: int, before_syl_id, anchor_op_id=None) -> None:
         base = base_tokens(conn, sec["parent_text_id"])
         base_pos = {s["id"]: i for i, s in enumerate(base)}
         anchor, before_op_id = _resolve_insertion_anchor(
-            conn, text_id, before_syl_id, base_pos, anchor_op_id)
+            conn, text_id, before_syl_id, base_pos, anchor_op_id, mid_run_ok=False)
     instance_id = _secondary_instance_id(text_id)
     next_idx = [conn.execute(
         "SELECT COALESCE(MAX(idx), 0) AS m FROM syllables WHERE text_id = ?", (text_id,)

@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS markers (
 );
 CREATE INDEX IF NOT EXISTS idx_markers_text ON markers(text_id);
 
+-- Display-only line-break overrides (the ¶ mode): `count` newlines render after the
+-- token `syl_id` while the mode is on, overriding the automatic verse/sapche/real-
+-- newline behavior at that position. 0 = suppress. The text data itself never changes.
+CREATE TABLE IF NOT EXISTS display_breaks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    syl_id   TEXT NOT NULL,
+    count    INTEGER NOT NULL CHECK (count IN (0, 1, 2)),
+    UNIQUE(text_id, syl_id)
+);
+CREATE INDEX IF NOT EXISTS idx_display_breaks_text ON display_breaks(text_id);
+
 CREATE TABLE IF NOT EXISTS tree_nodes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id     INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
@@ -331,6 +343,48 @@ CREATE TABLE IF NOT EXISTS reading_positions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, text_id)
 );
+
+-- ─── Translation layer (Phase T1) ──────────────────────────────────────────────
+-- Target languages for translations. Seeded by init_db; extendable via the API.
+CREATE TABLE IF NOT EXISTS languages (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+-- The unit of translation: a "chunk" — the stretch between two empty lines (or
+-- segment boundaries) of a booklet's stream, persisted as a SOURCE-syllable range
+-- anchored at the text that OWNS those syllables (its origin). Like spans, this
+-- makes translations ripple: any booklet whose composed stream includes the range
+-- (via transclusion/parent links) sees the chunk's translations live.
+CREATE TABLE IF NOT EXISTS translation_chunks (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    origin_text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+    start_syl_id   TEXT NOT NULL,
+    end_syl_id     TEXT NOT NULL,
+    kind           TEXT NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'title')),
+    -- Title level for heading chunks (sapche/title): 1..n, NULL = not a heading.
+    -- Language-independent (structural) — feeds TOC + PDF heading styles.
+    level          INTEGER,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(origin_text_id, start_syl_id, end_syl_id)
+);
+CREATE INDEX IF NOT EXISTS idx_translation_chunks_text ON translation_chunks(origin_text_id);
+
+-- ONE canonical translation per chunk × language ("translate once, ripple
+-- everywhere"). `translated_from` = the language the translator worked from
+-- (NULL = the Tibetan). Booklet-level overrides and upstream suggestions are
+-- Phase T2 tables.
+CREATE TABLE IF NOT EXISTS translations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id        INTEGER NOT NULL REFERENCES translation_chunks(id) ON DELETE CASCADE,
+    lang            TEXT NOT NULL REFERENCES languages(code),
+    body            TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'final')),
+    translated_from TEXT,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chunk_id, lang)
+);
+CREATE INDEX IF NOT EXISTS idx_translations_chunk ON translations(chunk_id);
 """
 
 
@@ -374,6 +428,8 @@ _COLUMN_MIGRATIONS = {
     # (its own segment) instead of inline. Node-linked passages are standalone too.
     "passages": [("attach_prev", "INTEGER NOT NULL DEFAULT 0"),
                  ("own_segment", "INTEGER NOT NULL DEFAULT 0")],
+    # level: title level for heading chunks (sapche/title), NULL = not a heading.
+    "translation_chunks": [("level", "INTEGER")],
     "text_portions": [
         ("color", "TEXT"),
         # Base "listen to this passage" audio timing, set by main-text SRT
@@ -761,6 +817,11 @@ def init_db():
         _drop_status_columns(conn)
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
+        # Seed the four working languages (idempotent; more are added via the API).
+        conn.executemany(
+            "INSERT OR IGNORE INTO languages (code, name) VALUES (?, ?)",
+            [("en", "English"), ("fr", "Français"), ("de", "Deutsch"), ("pt", "Português")],
+        )
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)

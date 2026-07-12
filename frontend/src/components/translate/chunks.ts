@@ -1,0 +1,132 @@
+import type { EditorToken } from '../../api/client';
+import type { Span } from '../../store/useTagStore';
+import { tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from '../workspace/segments';
+
+/**
+ * A DERIVED CHUNK — the translator's unit: the stretch between two empty lines
+ * and/or segment boundaries of the booklet's stream. Semantically complete; a
+ * translator may reorder sentences inside it but never across it.
+ */
+export interface DerivedChunk {
+  key: string;
+  /** Anchors = first/last substantial token (the canonical chunk range). */
+  startSylId: string;
+  endSylId: string;
+  /** Display text with the ¶-mode line breaks applied (one per break point). */
+  text: string;
+  /** Every token id in the chunk (matching server chunks by overlap). */
+  sylIds: string[];
+  /** Raw offset of the chunk's very first token. The first chunk of a segment
+   *  starts exactly at the segment's offset, so tree-node clicks (which target
+   *  `[data-link-key="<segment start>"]`) land on it. */
+  startOffset: number;
+  /** Content type — the tag class of the chunk ('mantra' | 'small' | 'sapche' |
+   *  'title' | 'verse' | 'prose' | 'plain'). Chunks are type-homogeneous: a tag
+   *  change starts a new chunk. */
+  tagType: string;
+  /** The classifying tag's color (pill tint), null for 'plain'. */
+  tagColor: string | null;
+}
+
+/** Content-type priority: the FIRST of these covering a substantial token wins
+ *  (a mantra seed inside a verse run classifies as mantra, etc.). */
+const TYPE_PRIORITY = ['mantra', 'small', 'sapche', 'title', 'verse', 'prose'];
+
+/** Split the composed stream into translation chunks. Boundaries: segment markers,
+ *  EMPTY lines — an explicit "empty line" break override (count 2) or two
+ *  consecutive real newline tokens — and CONTENT-TYPE changes (small → verse etc.,
+ *  see TYPE_PRIORITY), so every chunk is type-homogeneous. Single line breaks
+ *  (verse/sapche/mantra rules, count-1 overrides) stay INSIDE a chunk. */
+export function deriveChunks(
+  tokens: EditorToken[],
+  markerOffsets: Set<number>,
+  spans: Span[],
+  overrides: Map<string, number>,
+  groups: { verse: boolean; sapche: boolean; mantra: boolean },
+): DerivedChunk[] {
+  const regular = spans.filter(s => s.tag.tag_kind === 'regular');
+  const sylSpace = new Map<string, number | 'host'>();
+  for (const t of tokens) {
+    sylSpace.set(t.id, t.source === 'transclusion' && t.src_text_id != null ? t.src_text_id : 'host');
+  }
+  const spaceOf = (id: string) => sylSpace.get(id) ?? 'host';
+  const spanSpaceOf = (a: { start_syl_id: string | null }) =>
+    (a.start_syl_id && sylSpace.get(a.start_syl_id)) || 'host';
+  const suppress = groups.verse ? shortVerseGroupEnders(tokens) : new Set<string>();
+  const starts = groups.sapche
+    ? sapcheRunStartIds(tokens.filter(t => t.text !== ''), regular, spaceOf, spanSpaceOf)
+    : new Set<string>();
+
+  const annsFor = (t: EditorToken) => regular.filter(a =>
+    a.start_offset <= t.start_offset && a.end_offset >= t.end_offset
+    && spanSpaceOf(a) === spaceOf(t.id));
+  // Content type of a substantial token: highest-priority covering tag, or 'plain'.
+  const typeOf = (t: EditorToken): { name: string; color: string | null } => {
+    const anns = annsFor(t);
+    for (const name of TYPE_PRIORITY) {
+      const hit = anns.find(a => a.tag.name.trim().toLowerCase() === name);
+      if (hit) return { name, color: hit.tag.color };
+    }
+    return { name: 'plain', color: null };
+  };
+
+  const effective = (i: number): number => {
+    const t = tokens[i];
+    const nxt = tokens.slice(i + 1).find(x => x.text !== '');
+    const brk = tokenBreak(t.text, t.end_offset, annsFor(t), {
+      ...groups,
+      suppressVerse: suppress.has(t.id),
+      nextStartsSapche: nxt != null && starts.has(nxt.id),
+    });
+    return overrides.get(t.id) ?? brk.auto;
+  };
+
+  const chunks: DerivedChunk[] = [];
+  let cur: EditorToken[] = [];
+  let curText = '';
+  let curType: { name: string; color: string | null } | null = null;
+
+  const flush = () => {
+    const substantial = cur.filter(t => t.text.trim() !== '');
+    if (substantial.length > 0) {
+      const first = substantial[0], last = substantial[substantial.length - 1];
+      chunks.push({
+        key: `${first.id}-${last.id}`,
+        startSylId: first.id,
+        endSylId: last.id,
+        text: curText.replace(/\n{2,}/g, '\n').trim(),
+        sylIds: cur.map(t => t.id),
+        startOffset: cur[0].start_offset,
+        tagType: curType?.name ?? 'plain',
+        tagColor: curType?.color ?? null,
+      });
+    }
+    cur = [];
+    curText = '';
+    curType = null;
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    // Segment boundary (marker) BEFORE this token.
+    if (cur.length > 0 && markerOffsets.has(t.start_offset)) flush();
+    // Content-type change BEFORE this token: chunks are type-homogeneous, so a
+    // substantial token of a different type starts a new chunk. Whitespace and
+    // newline tokens are neutral — they ride with the current chunk.
+    if (t.text.trim() !== '') {
+      const ty = typeOf(t);
+      if (curType != null && ty.name !== curType.name) flush();
+      if (curType == null) curType = ty;
+    }
+    const count = effective(i);
+    const isReal = t.text.includes('\n');
+    cur.push(t);
+    curText += (isReal ? '' : t.text) + (count >= 1 ? '\n' : '');
+    // Empty line AFTER this token: explicit count-2 override, or a real newline
+    // pair (a blank line in the raw text).
+    const nxt = tokens[i + 1];
+    if (count >= 2 || (isReal && nxt != null && nxt.text.includes('\n'))) flush();
+  }
+  flush();
+  return chunks;
+}

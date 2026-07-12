@@ -32,5 +32,8 @@ export function scrollToLinkPartner(key: number, sourceEl: HTMLElement | null): 
   const all = document.querySelectorAll<HTMLElement>(`[data-link-key="${key}"]`);
   const partner = Array.from(all).find(el => el !== sourceEl);
   if (!partner) return;
-  partner.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Instant, not smooth: Chromium silently drops smooth scrollIntoView over large
+  // distances in nested scroll containers (seen in the Translate chunk list) —
+  // reliability beats the animation for a navigation jump.
+  partner.scrollIntoView({ behavior: 'auto', block: 'start' });
 }

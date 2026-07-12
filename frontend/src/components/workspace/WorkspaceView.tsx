@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -6,15 +6,24 @@ import { useSuggestionStore } from '../../store/useSuggestionStore';
 import { useNoteStore } from '../../store/useNoteStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { usePassageStore } from '../../store/usePassageStore';
-import { useUIStore } from '../../store/useUIStore';
+import { useUIStore, type LineBreakGroup } from '../../store/useUIStore';
+import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import { SplitPane } from './SplitPane';
 import { TreePane } from './TreePane';
 import { TaggerPane } from './TaggerPane';
 import { Sidebar } from './Sidebar';
 import { LinkOverlay } from './LinkOverlay';
-import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2, WrapText, Pilcrow } from 'lucide-react';
+import { Pencil, BookOpen, Search, ChevronUp, ChevronDown, X, Maximize2, Minimize2, Link2, Pilcrow, Settings2 } from 'lucide-react';
 import { TaggerSearchContext, findMatches } from './TaggerSearchContext';
 import { scrollTaggerToOffset } from './scrollTaggerToOffset';
+
+// The display-only line-break groups offered in the ¶ settings popup. Adding a
+// group = one row here + a key in LineBreakGroup + its rule in tokenDisplayText.
+const LINE_BREAK_GROUP_OPTIONS: { key: LineBreakGroup; label: string; hint: string }[] = [
+  { key: 'verse',  label: 'Verse',  hint: 'break after each space inside verse-tagged runs' },
+  { key: 'sapche', label: 'Sapche', hint: 'break after each sapche-tagged run' },
+  { key: 'mantra', label: 'Mantra', hint: 'break after each mantra-tagged run' },
+];
 
 export const WorkspaceView: React.FC = () => {
   const { currentText } = useTextStore();
@@ -24,6 +33,7 @@ export const WorkspaceView: React.FC = () => {
   const { fetchNotes, fetchCategories } = useNoteStore();
   const { fetchNodes, saveStatus, error: treeError } = useTreeNodeStore();
   const { fetchPassages } = usePassageStore();
+  const fetchBreaks = useDisplayBreakStore(s => s.fetchBreaks);
   const editMode = useUIStore(s => s.editMode);
   const setEditMode = useUIStore(s => s.setEditMode);
   const searchQuery = useUIStore(s => s.searchQuery);
@@ -36,10 +46,11 @@ export const WorkspaceView: React.FC = () => {
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const passageNotice = useUIStore(s => s.passageNotice);
-  const verseVertical = useUIStore(s => s.verseVerticalMode);
-  const toggleVerseVertical = useUIStore(s => s.toggleVerseVerticalMode);
-  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
-  const toggleSapcheNewlines = useUIStore(s => s.toggleSapcheNewlineMode);
+  const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
+  const toggleLineBreaks = useUIStore(s => s.toggleLineBreaks);
+  const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
+  const setLineBreakGroup = useUIStore(s => s.setLineBreakGroup);
+  const [breakSettingsOpen, setBreakSettingsOpen] = useState(false);
 
   // While "place a passage" is armed, Escape cancels it.
   useEffect(() => {
@@ -95,7 +106,8 @@ export const WorkspaceView: React.FC = () => {
     fetchCategories(id);
     fetchNodes(id);
     fetchPassages(id);
-  }, [currentText, fetchTags, fetchSpans, fetchMarkers, fetchSuggestions, fetchNotes, fetchCategories, fetchNodes, fetchPassages]);
+    fetchBreaks(id);
+  }, [currentText, fetchTags, fetchSpans, fetchMarkers, fetchSuggestions, fetchNotes, fetchCategories, fetchNodes, fetchPassages, fetchBreaks]);
 
   if (!currentText) {
     return (
@@ -245,36 +257,61 @@ export const WorkspaceView: React.FC = () => {
               <BookOpen size={12} /> Consult
             </button>
           </div>
-          <button
-            type="button"
-            onClick={toggleVerseVertical}
-            className={`p-1.5 rounded-md transition-colors ${
-              verseVertical
-                ? 'bg-lapis text-cream-hi'
-                : 'text-bronze hover:text-lapis hover:bg-cream'
-            }`}
-            style={{ border: '1px solid var(--cline)' }}
-            title={verseVertical
-              ? 'Verse vertical mode ON — spaces in verse-tagged passages render as line breaks'
-              : 'Verse vertical mode — lay out verse-tagged passages vertically'}
-          >
-            <WrapText size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={toggleSapcheNewlines}
-            className={`p-1.5 rounded-md transition-colors ${
-              sapcheNewlines
-                ? 'bg-lapis text-cream-hi'
-                : 'text-bronze hover:text-lapis hover:bg-cream'
-            }`}
-            style={{ border: '1px solid var(--cline)' }}
-            title={sapcheNewlines
-              ? 'Sapche line breaks ON — a line break renders after each sapche-tagged run'
-              : 'Sapche line breaks — end the line after each sapche-tagged run'}
-          >
-            <Pilcrow size={14} />
-          </button>
+          <div className="relative flex items-center gap-1">
+            <button
+              type="button"
+              onClick={toggleLineBreaks}
+              className={`p-1.5 rounded-md transition-colors ${
+                lineBreaksOn
+                  ? 'bg-lapis text-cream-hi'
+                  : 'text-bronze hover:text-lapis hover:bg-cream'
+              }`}
+              style={{ border: '1px solid var(--cline)' }}
+              title={lineBreaksOn
+                ? 'Line breaks ON — display-only line breaks for the enabled groups'
+                : 'Line breaks — render display-only line breaks (verse, sapche…)'}
+            >
+              <Pilcrow size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setBreakSettingsOpen(o => !o)}
+              className="p-1.5 rounded-md text-bronze hover:text-lapis hover:bg-cream transition-colors"
+              style={{ border: '1px solid var(--cline)' }}
+              title="Line-break settings — choose which groups apply"
+            >
+              <Settings2 size={14} />
+            </button>
+            {breakSettingsOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setBreakSettingsOpen(false)} />
+                <div
+                  className="absolute right-0 top-full mt-1 z-50 bg-cream-hi rounded-xl shadow-xl p-3 w-64"
+                  style={{ border: '1px solid var(--cline)' }}
+                >
+                  <div className="text-xs font-medium text-lapis mb-2">Line-break groups</div>
+                  {LINE_BREAK_GROUP_OPTIONS.map(opt => (
+                    <label
+                      key={opt.key}
+                      className="flex items-start gap-2 py-1 cursor-pointer text-xs text-ink"
+                      title={opt.hint}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 accent-[var(--lapis,#2b4a8b)]"
+                        checked={lineBreakGroups[opt.key]}
+                        onChange={e => setLineBreakGroup(opt.key, e.target.checked)}
+                      />
+                      <span>
+                        <span className="font-medium">{opt.label}</span>
+                        <span className="block text-ink-soft">{opt.hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button
             type="button"
             onClick={toggleFullscreen}

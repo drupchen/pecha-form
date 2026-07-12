@@ -4,14 +4,15 @@ import { useTextStore } from '../../store/useTextStore';
 import { useTreeNodeStore, buildNestedTree, type NestedTreeNode } from '../../store/useTreeNodeStore';
 import { useUIStore } from '../../store/useUIStore';
 import { TreeNodeCard } from './TreeNodeCard';
+import { TreeConsultContext } from './treeConsult';
 import { AddNodeButton } from './AddNodeButton';
 import { SiblingInsertSlot } from './SiblingInsertSlot';
 
-export const TreePane: React.FC = () => {
+export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = false }) => {
   const { currentText } = useTextStore();
   const { nodes, loading } = useTreeNodeStore();
   const sessionMode = useUIStore(s => s.sessionMode);
-  const consultMode = useUIStore(s => s.editMode === 'consult');
+  const consultMode = useUIStore(s => s.editMode === 'consult') || forceConsult;
   const selectedTreeNodeId = useUIStore(s => s.selectedTreeNodeId);
   const setLastHoveredTreeNodeId = useUIStore(s => s.setLastHoveredTreeNodeId);
   const collapsedTreeNodeIds = useUIStore(s => s.collapsedTreeNodeIds);
@@ -58,6 +59,7 @@ export const TreePane: React.FC = () => {
   if (!currentText) return null;
 
   return (
+    <TreeConsultContext.Provider value={forceConsult}>
     <div className="h-full w-full flex flex-col overflow-hidden bg-cream-hi">
       {!fullscreen && (
         <div
@@ -66,7 +68,9 @@ export const TreePane: React.FC = () => {
         >
           <h3 className="font-display text-lg text-lapis">Tree</h3>
           <span className="text-[10px] text-bronze">
-            Tab to indent · Shift+Tab to outdent · click any title to rename
+            {consultMode
+              ? 'read-only — click a section to jump there'
+              : 'Tab to indent · Shift+Tab to outdent · click any title to rename'}
           </span>
         </div>
       )}
@@ -130,5 +134,6 @@ export const TreePane: React.FC = () => {
         </div>
       </div>
     </div>
+    </TreeConsultContext.Provider>
   );
 };

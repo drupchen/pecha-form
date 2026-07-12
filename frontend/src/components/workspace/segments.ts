@@ -94,28 +94,69 @@ export function computeSegments(
   return segments;
 }
 
-/** Display-only newline synthesis (the body renders `whitespace-pre-wrap`): verse
- *  mode appends a line break after any space inside a "verse"-tagged token — the
- *  space usually rides inside a PUNCT token like '༔ ' or '། ', which is why the old
- *  `nature === 'SPACE'` gate never fired on real Tibetan verse. Sapche mode appends
- *  one after the LAST token of a "sapche"-tagged span (annotation boundaries sit on
- *  syllable edges, so that token's end offset equals the span's). Tokens already
- *  containing '\n' are left alone. */
-export function tokenDisplayText(
+/** Resolve a token's AUTOMATIC line-break behavior in ¶ mode (the body renders
+ *  `whitespace-pre-wrap`). `isReal` marks a real newline token of the text data —
+ *  its break is the token itself, so the renderer moves the '\n' into the break
+ *  element (suppressible display-side). Synthesized breaks: verse mode breaks after
+ *  any space inside a "verse"-tagged token — the space usually rides inside a PUNCT
+ *  token like '༔ ' or '། ', which is why a `nature === 'SPACE'` gate never fired on
+ *  real Tibetan verse; sapche mode breaks after the LAST token of a "sapche"-tagged
+ *  span (annotation boundaries sit on syllable edges, so that token's end offset
+ *  equals the span's), and BEFORE a sapche run that is not at its card's start —
+ *  expressed as a break after the PREVIOUS token (`nextStartsSapche`), so the same
+ *  ↵ icon/override machinery applies. A per-position user override (display_breaks)
+ *  replaces `auto` with an explicit count. */
+export interface TokenBreakOpts {
+  verse: boolean;
+  sapche: boolean;
+  mantra: boolean;
+  /** Verse-seed suppression: this token ends a ≤2-syllable group. */
+  suppressVerse?: boolean;
+  /** The NEXT token begins a sapche run — break before it (i.e. after this one). */
+  nextStartsSapche?: boolean;
+}
+
+export function tokenBreak(
   text: string,
   endOffset: number,
   anns: { tag: { name: string }; end_offset: number }[],
-  verseVertical: boolean,
-  sapcheNewlines: boolean,
-  suppressVerseBreak = false,
-): string {
-  if (text.includes('\n')) return text;
+  opts: TokenBreakOpts,
+): { auto: 0 | 1; isReal: boolean } {
+  if (text.includes('\n')) return { auto: 1, isReal: true };
   const named = (n: string) => (a: { tag: { name: string } }) =>
     a.tag.name.trim().toLowerCase() === n;
-  let out = text;
-  if (verseVertical && !suppressVerseBreak && /\s/.test(text) && anns.some(named('verse'))) out += '\n';
-  if (sapcheNewlines && anns.some(a => named('sapche')(a) && a.end_offset === endOffset)
-      && !out.endsWith('\n')) out += '\n';
+  if (opts.verse && !opts.suppressVerse && /\s/.test(text) && anns.some(named('verse'))) {
+    return { auto: 1, isReal: false };
+  }
+  if (opts.sapche
+      && (opts.nextStartsSapche || anns.some(a => named('sapche')(a) && a.end_offset === endOffset))) {
+    return { auto: 1, isReal: false };
+  }
+  if (opts.mantra && anns.some(a => named('mantra')(a) && a.end_offset === endOffset)) {
+    return { auto: 1, isReal: false };
+  }
+  return { auto: 0, isReal: false };
+}
+
+/** Ids of tokens that BEGIN a "sapche"-tagged run (the span starts exactly at the
+ *  token's start offset). The token before such a run gets an automatic break so a
+ *  mid-card sapche heading starts its own line; a run already at the card's first
+ *  token has no previous token and naturally gets none. */
+export function sapcheRunStartIds(
+  tokens: { id: string; start_offset: number; end_offset: number }[],
+  anns: { tag: { name: string }; start_offset: number; end_offset: number }[],
+  spaceOf: (tokenId: string) => number | 'host',
+  spanSpaceOf: (a: any) => number | 'host',
+): Set<string> {
+  const sapche = anns.filter(a => a.tag.name.trim().toLowerCase() === 'sapche');
+  const out = new Set<string>();
+  if (!sapche.length) return out;
+  for (const t of tokens) {
+    if (sapche.some(a => a.start_offset === t.start_offset && a.end_offset >= t.end_offset
+        && spanSpaceOf(a) === spaceOf(t.id))) {
+      out.add(t.id);
+    }
+  }
   return out;
 }
 
@@ -139,6 +180,71 @@ export function shortVerseGroupEnders(
     }
   }
   return out;
+}
+
+/** Would a manual break after `sylId` sit ADJACENT to an existing newline? Guard for
+ *  the "↵ line / ↵ empty line" gesture: two stacked single breaks would silently make
+ *  a blank line — blank lines must come only from the explicit "empty line" option.
+ *  Computed over the FULL composed stream with the same context the render sites use
+ *  (annotation spaces, verse-seed suppression, sapche run starts). `spans` must be
+ *  the REGULAR spans only. */
+export function hasAdjacentNewline(
+  tokens: { id: string; text: string; nature: string; start_offset: number; end_offset: number; source?: string; src_text_id?: number | null }[],
+  spans: { tag: { name: string }; start_offset: number; end_offset: number; start_syl_id: string | null }[],
+  overrides: Map<string, number>,
+  groups: { verse: boolean; sapche: boolean; mantra: boolean },
+  sylId: string,
+): boolean {
+  const idx = tokens.findIndex(t => t.id === sylId);
+  if (idx < 0) return false;
+  const sylSpace = new Map<string, number | 'host'>();
+  for (const t of tokens) {
+    sylSpace.set(t.id, t.source === 'transclusion' && t.src_text_id != null ? t.src_text_id : 'host');
+  }
+  const spaceOf = (id: string) => sylSpace.get(id) ?? 'host';
+  const spanSpaceOf = (a: { start_syl_id: string | null }) =>
+    (a.start_syl_id && sylSpace.get(a.start_syl_id)) || 'host';
+  const suppress = groups.verse ? shortVerseGroupEnders(tokens) : new Set<string>();
+  const starts = groups.sapche
+    ? sapcheRunStartIds(tokens.filter(t => t.text !== ''), spans, spaceOf, spanSpaceOf)
+    : new Set<string>();
+  const effective = (i: number): number => {
+    const t = tokens[i];
+    const tSpace = spaceOf(t.id);
+    const anns = spans.filter(a => a.start_offset <= t.start_offset
+      && a.end_offset >= t.end_offset && spanSpaceOf(a) === tSpace);
+    const nxt = tokens.slice(i + 1).find(x => x.text !== '');
+    const brk = tokenBreak(t.text, t.end_offset, anns, {
+      ...groups,
+      suppressVerse: suppress.has(t.id),
+      nextStartsSapche: nxt != null && starts.has(nxt.id),
+    });
+    return overrides.get(t.id) ?? brk.auto;
+  };
+  // Forward: the first rendered thing after the target's break must not be a newline.
+  for (let i = idx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    const count = effective(i);
+    if (t.text === '') {            // renders nothing itself
+      if (count >= 1) return true;  // …but its break would follow immediately
+      continue;
+    }
+    if (t.text.includes('\n')) {
+      if (count >= 1) return true;  // the real newline renders
+      continue;                     // suppressed real newline renders ''
+    }
+    break;                          // visible text intervenes
+  }
+  // Backward: only matters when the target renders no visible text of its own.
+  const target = tokens[idx];
+  if (target.text === '' || target.text.includes('\n')) {
+    for (let i = idx - 1; i >= 0; i--) {
+      if (effective(i) >= 1) return true;
+      const t = tokens[i];
+      if (t.text !== '' && !t.text.includes('\n')) break;
+    }
+  }
+  return false;
 }
 
 /** Walk up from `node` to the nearest element carrying `data-syl-id` (a token span). */

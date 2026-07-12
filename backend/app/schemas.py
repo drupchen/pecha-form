@@ -504,6 +504,17 @@ class NoteOut(BaseModel):
     passage_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+# ─── Display-only line-break overrides (the ¶ mode) ─────────────────────────────
+
+class DisplayBreakIn(BaseModel):
+    # Newlines rendered after the anchor token while ¶ mode is on: 0 = suppress the
+    # automatic break there, 1 = one line, 2 = an empty line. Display-only.
+    count: int
+
+class DisplayBreakOut(BaseModel):
+    syl_id: str
+    count: int
+
 # ─── Reading position (last-viewed segment per user & text) ─────────────────────
 
 class ReadingPositionIn(BaseModel):

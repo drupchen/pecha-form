@@ -46,6 +46,57 @@
   cursor: text;
 }
 
+/*
+ * ¶ line-break mode: each break point renders a clickable ↵ element that also
+ * carries the actual newline characters (the body is whitespace-pre-wrap), so the
+ * glyph sits at the end of the line it terminates. Kept out of selections — the
+ * newlines are display-only, not text content the tagger should ever capture.
+ */
+.break-icon {
+  color: #A28348; /* bronze */
+  opacity: 0.55;
+  font-size: 0.6em;
+  cursor: pointer;
+  user-select: none;
+  padding: 0 1px;
+}
+.break-icon:hover {
+  color: #2B4A8B; /* lapis */
+  opacity: 1;
+}
+/* A suppressed break (count 0): dimmed & struck, still clickable to restore. */
+.break-icon--off {
+  opacity: 0.3;
+  text-decoration: line-through;
+}
+
+/*
+ * Translation bodies (translator bench + later the paginated page). A note —
+ * `span.fn[data-note]` — becomes a per-page FOOTNOTE at pagination; here it shows
+ * as a superscript ° with a dotted underline, note text on hover (title attr).
+ */
+.fn {
+  border-bottom: 1px dotted #A28348;
+  cursor: help;
+}
+.fn::after {
+  content: '°';
+  font-size: 0.7em;
+  vertical-align: super;
+  color: #A28348;
+}
+/* ProseMirror editing area: paragraphs flow tight, like the static rendering. */
+.chunk-editor p {
+  margin: 0 0 0.35em;
+}
+.chunk-editor p:last-child {
+  margin-bottom: 0;
+}
+.chunk-editor .ProseMirror {
+  outline: none;
+  min-height: 60px;
+}
+
 /* Cross-pane link click feedback — applied transiently when scrolling a partner element into view */
 @keyframes link-pulse {
   0%   { box-shadow: 0 0 0 0   rgba(99, 102, 241, 0.55); }

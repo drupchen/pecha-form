@@ -1,5 +1,10 @@
 import { create } from 'zustand';
 
+/** Keys of the display-only line-break groups. To add one: extend this union, add a
+ *  rule in `tokenBreak` (segments.ts), and a row in WorkspaceView's
+ *  LINE_BREAK_GROUP_OPTIONS. */
+export type LineBreakGroup = 'verse' | 'sapche' | 'mantra';
+
 /**
  * Cross-cutting UI state. Currently just the global "session mode" toggle —
  * when true, the workspace hides regular annotations and operates on the
@@ -9,16 +14,16 @@ interface UIState {
   sessionMode: boolean;
   setSessionMode: (v: boolean) => void;
   toggleSessionMode: () => void;
-  /** Verse vertical mode — when on, spaces inside spans tagged "verse" render as
-   *  line breaks, laying the verse out vertically (one line per phrase). Manual
-   *  stanza breaks are hosted "\n" edit ops on secondary texts. */
-  verseVerticalMode: boolean;
-  toggleVerseVerticalMode: () => void;
-  /** Sapche line breaks — when on, a line break renders after the last syllable of
-   *  every span tagged "sapche", so each inline sapche heading ends its line.
-   *  Display-only, like verse vertical mode. */
-  sapcheNewlineMode: boolean;
-  toggleSapcheNewlineMode: () => void;
+  /** Display-only line breaks, master switch. When on, the groups enabled in
+   *  `lineBreakGroups` synthesize line breaks at render time (nothing persisted):
+   *  verse — after each space inside a "verse"-tagged run (one line per phrase,
+   *  seed syllables excepted); sapche — after each "sapche"-tagged run. */
+  lineBreaksOn: boolean;
+  toggleLineBreaks: () => void;
+  /** Which break groups apply while `lineBreaksOn`. Choices are remembered while
+   *  the master switch is off. */
+  lineBreakGroups: Record<LineBreakGroup, boolean>;
+  setLineBreakGroup: (g: LineBreakGroup, on: boolean) => void;
   /** Workspace focus mode — hides all top chrome (app header, the Workspace
    *  bar, and the Tree/Tagger pane titles) to maximize working area. */
   workspaceFullscreen: boolean;
@@ -90,10 +95,12 @@ export const useUIStore = create<UIState>((set) => ({
   sessionMode: false,
   setSessionMode: (v) => set({ sessionMode: v }),
   toggleSessionMode: () => set((s) => ({ sessionMode: !s.sessionMode })),
-  verseVerticalMode: false,
-  toggleVerseVerticalMode: () => set((s) => ({ verseVerticalMode: !s.verseVerticalMode })),
-  sapcheNewlineMode: false,
-  toggleSapcheNewlineMode: () => set((s) => ({ sapcheNewlineMode: !s.sapcheNewlineMode })),
+  lineBreaksOn: false,
+  toggleLineBreaks: () => set((s) => ({ lineBreaksOn: !s.lineBreaksOn })),
+  lineBreakGroups: { verse: true, sapche: true, mantra: true },
+  setLineBreakGroup: (g, on) => set((s) => ({
+    lineBreakGroups: { ...s.lineBreakGroups, [g]: on },
+  })),
   workspaceFullscreen: false,
   setWorkspaceFullscreen: (v) => set({ workspaceFullscreen: v }),
   toggleWorkspaceFullscreen: () => set((s) => ({ workspaceFullscreen: !s.workspaceFullscreen })),

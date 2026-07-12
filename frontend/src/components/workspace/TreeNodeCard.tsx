@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronRight, ChevronDown, MoreVertical, Trash2, Edit2,
@@ -11,6 +11,7 @@ import { useMarkerStore } from '../../store/useMarkerStore';
 import { useLinkStore, scrollToLinkPartner } from '../../store/useLinkStore';
 import { useUIStore } from '../../store/useUIStore';
 import { SiblingInsertSlot } from './SiblingInsertSlot';
+import { TreeConsultContext } from './treeConsult';
 
 // Per-indent-level accent palette. Each depth picks the next color; past the
 // last entry we loop. Tailwind 300-shade hues — bright enough to distinguish
@@ -65,7 +66,7 @@ export const TreeNodeCard: React.FC<Props> = ({
   const setHovered = useLinkStore(s => s.setHovered);
   const hoveredKey = useLinkStore(s => s.hoveredKey);
   const sessionMode = useUIStore(s => s.sessionMode);
-  const consultMode = useUIStore(s => s.editMode === 'consult');
+  const consultMode = useUIStore(s => s.editMode === 'consult') || useContext(TreeConsultContext);
   const readOnly = sessionMode || consultMode;
   const { updateNode, moveNode, deleteNode, createNode } = useTreeNodeStore();
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);

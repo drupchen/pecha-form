@@ -2,7 +2,9 @@ import React, { useContext, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, Link2, GitBranchPlus, Trash2, X } from 'lucide-react';
 import type { Segment } from './segments';
-import { readTokenSelection, tokenDisplayText, shortVerseGroupEnders } from './segments';
+import { readTokenSelection, tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from './segments';
+import { BreakPopover, type BreakTarget } from './BreakPopover';
+import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore, type Span, type Tag } from '../../store/useTagStore';
 import { HoverTagPopover } from './HoverTagPopover';
@@ -80,8 +82,13 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
-  const verseVertical = useUIStore(s => s.verseVerticalMode);
-  const sapcheNewlines = useUIStore(s => s.sapcheNewlineMode);
+  const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
+  const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
+  const verseVertical = lineBreaksOn && lineBreakGroups.verse;
+  const sapcheNewlines = lineBreaksOn && lineBreakGroups.sapche;
+  const mantraNewlines = lineBreaksOn && lineBreakGroups.mantra;
+  const breakOverrides = useDisplayBreakStore(s => s.breaks);
+  const [breakTarget, setBreakTarget] = useState<BreakTarget | null>(null);
   const taggerFontSize = useUIStore(s => s.taggerFontSize);
   const searchMatchIndex = useUIStore(s => s.searchMatchIndex);
   const allSearchMatches = useContext(TaggerSearchContext);
@@ -331,10 +338,56 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
     const passageSpans = allSpansFull.filter(a => a.tag.tag_kind === 'regular');
     // Verse breaks are suppressed after seed/invocation groups (≤2 syllables).
     const verseSuppress = verseVertical ? shortVerseGroupEnders(tokens) : new Set<string>();
+
+    // The clickable ↵ element at a break point. It carries the ACTUAL newlines (the
+    // body is whitespace-pre-wrap), so editing the break edits the layout in place.
+    // No data-syl-id — readTokenSelection ignores it.
+    const breakEl = (key: string, sylId: string, auto: 0 | 1, count: number) => (
+      <span
+        key={key}
+        className={`break-icon${count === 0 ? ' break-icon--off' : ''}`}
+        title={count === 0 ? 'Suppressed line break — click to edit' : 'Line break — click to edit'}
+        onClick={(e) => {
+          e.stopPropagation();
+          setBreakTarget({
+            sylId, auto, count,
+            anchor: (e.currentTarget as HTMLElement).getBoundingClientRect(),
+          });
+        }}
+      >
+        {'↵' + '\n'.repeat(count)}
+      </span>
+    );
+    // Resolve one token's break in ¶ mode: automatic rule + user override.
+    const breakFor = (id: string, text: string, endOffset: number, anns: { tag: { name: string }; end_offset: number }[], suppressed: boolean, nextStartsSapche = false) => {
+      const brk = tokenBreak(text, endOffset, anns, {
+        verse: verseVertical, sapche: sapcheNewlines, mantra: mantraNewlines,
+        suppressVerse: suppressed, nextStartsSapche,
+      });
+      const override = lineBreaksOn ? breakOverrides.get(id) : undefined;
+      const show = lineBreaksOn && (brk.auto > 0 || override !== undefined);
+      return { ...brk, show, count: override ?? brk.auto };
+    };
+    // A mid-card sapche run starts on its own line: the token BEFORE a run starter
+    // gets an automatic break (same icon/override machinery as every other break).
+    const tokenSpaceOf = (id: string) => sylSpace.get(id) ?? 'host';
+    const sapcheStarts = sapcheNewlines
+      ? sapcheRunStartIds(
+          tokens.filter(t => t.text !== ''), visibleAnnotations as any,
+          tokenSpaceOf, spanSpace as any)
+      : new Set<string>();
     const renderPassage = (p: Passage) => {
       const syls = p.members.flatMap(m => m.syllables);
       const runSuppress = verseVertical
         ? shortVerseGroupEnders(syls.map(s => ({ id: s.syl_id, text: s.text, nature: s.nature })))
+        : new Set<string>();
+      const pSapcheStarts = sapcheNewlines
+        ? sapcheRunStartIds(
+            syls.flatMap(s => {
+              const o = srcOffsets.get(s.syl_id);
+              return o ? [{ id: s.syl_id, start_offset: o[0], end_offset: o[1] }] : [];
+            }),
+            passageSpans as any, tokenSpaceOf, spanSpace as any)
         : new Set<string>();
       out.push(
         <span
@@ -361,19 +414,22 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';
-            const renderText = tokenDisplayText(
-              s.text, reo, anns, verseVertical, sapcheNewlines, runSuppress.has(s.syl_id));
+            const nxtSyl = syls.slice(si + 1).find(x => x.text !== '');
+            const brk = breakFor(s.syl_id, s.text, reo, anns, runSuppress.has(s.syl_id),
+                                 nxtSyl != null && pSapcheStarts.has(nxtSyl.syl_id));
             return (
-              <span
-                key={`pt-${p.id}-${si}`}
-                data-syl-id={s.syl_id}
-                data-passage-id={p.id}
-                {...(ro >= 0 ? { 'data-ro': ro, 'data-reo': reo } : {})}
-                style={style}
-                title={note ? note.body : undefined}
-              >
-                {renderText}
-              </span>
+              <React.Fragment key={`pt-${p.id}-${si}`}>
+                <span
+                  data-syl-id={s.syl_id}
+                  data-passage-id={p.id}
+                  {...(ro >= 0 ? { 'data-ro': ro, 'data-reo': reo } : {})}
+                  style={style}
+                  title={note ? note.body : undefined}
+                >
+                  {brk.isReal && brk.show ? '' : s.text}
+                </span>
+                {brk.show && breakEl(`pt-br-${p.id}-${si}`, s.syl_id, brk.auto, brk.count)}
+              </React.Fragment>
             );
           })}
         </span>,
@@ -541,10 +597,13 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
         ? () => setHoverPopover(null)
         : undefined;
       if (editableAnns.length > 0 && !consultMode) classes.push('cursor-pointer');
-      // Display-only line breaks: verse vertical mode (after each space inside a
-      // verse-tagged run) and sapche mode (after each sapche-tagged run).
-      const renderText = tokenDisplayText(
-        t.text, t.end_offset, anns, verseVertical, sapcheNewlines, verseSuppress.has(t.id));
+      // Display-only line breaks (¶ mode): the break point renders as a clickable ↵
+      // element carrying the actual newlines; a real '\n' token moves its newline
+      // into that element so it becomes suppressible/doublable like the others.
+      const nextTok = tokens.slice(ti + 1).find(x => x.text !== '');
+      const brk = breakFor(t.id, t.text, t.end_offset, anns, verseSuppress.has(t.id),
+                           nextTok != null && sapcheStarts.has(nextTok.id));
+      const renderText = brk.isReal && brk.show ? '' : t.text;
       out.push(
         <span
           key={`t-${t.idx}`}
@@ -562,11 +621,12 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
           {renderText}
         </span>,
       );
+      if (brk.show) out.push(breakEl(`t-br-${t.idx}`, t.id, brk.auto, brk.count));
     }
     passagesByAnchor.atEnd.forEach(renderPassage);
     renderHairlinesAt(segment.end);
     return out;
-  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, sapcheNewlines, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
+  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, sapcheNewlines, mantraNewlines, lineBreaksOn, breakOverrides, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
 
   const handleMouseUp = () => {
     // In session mode, the pane-level handler in TaggerPane takes over so it
@@ -824,6 +884,14 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
           trailingPassages={passagesByAnchor.atEnd}
           passageSplit={passageSplit}
           onClose={clearSelection}
+        />
+      )}
+
+      {breakTarget && currentText && (
+        <BreakPopover
+          textId={currentText.id}
+          target={breakTarget}
+          onClose={() => setBreakTarget(null)}
         />
       )}
 
