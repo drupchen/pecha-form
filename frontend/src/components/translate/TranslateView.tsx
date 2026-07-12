@@ -152,20 +152,75 @@ export const TranslateView: React.FC = () => {
     );
   };
 
-  // Server chunks matched to derived units: exact range first, else overlap
-  // (partial inclusion still shows the FULL canonical chunk + its translations).
-  const matchFor = useMemo(() => {
+  /** Display rows. THE TIBETAN IS THE HARD REFERENCE: every stream syllable
+   *  appears exactly once. A canonical chunk COARSER than the local chunking
+   *  (e.g. imported sheet segments spanning several stanzas) MERGES the
+   *  consecutive units it covers into ONE row — the translation attaches once,
+   *  never duplicated across overlapping units. `partial` stays true only when
+   *  the canonical range genuinely extends beyond this row's units. */
+  type DisplayRow = {
+    key: string; units: DerivedChunk[];
+    match: TranslationChunk | null; partial: boolean;
+  };
+  const displayRows = useMemo<DisplayRow[]>(() => {
+    const pos = new Map(streamIds.map((id, i) => [id, i] as const));
     const byRange = new Map<string, TranslationChunk>();
     for (const c of serverChunks) byRange.set(rangeKey(c.start_syl_id, c.end_syl_id), c);
-    return (u: DerivedChunk): { chunk: TranslationChunk | null; partial: boolean } => {
-      if (!u.startSylId) return { chunk: null, partial: false };
+    const intervals = serverChunks
+      .map(c => {
+        const s = pos.get(c.start_syl_id), e = pos.get(c.end_syl_id);
+        return s != null && e != null && e >= s ? { c, s, e } : null;
+      })
+      .filter((x): x is { c: TranslationChunk; s: number; e: number } => x != null)
+      .sort((a, b) => a.s - b.s);
+    const rows: DisplayRow[] = [];
+    let i = 0;
+    while (i < chunks.length) {
+      const u = chunks[i];
+      if (u.titleLayout || !u.startSylId) {
+        rows.push({ key: u.key, units: [u], match: null, partial: false });
+        i++;
+        continue;
+      }
       const exact = byRange.get(rangeKey(u.startSylId, u.endSylId));
-      if (exact) return { chunk: exact, partial: false };
-      const ids = new Set(u.sylIds);
-      const overlapping = serverChunks.find(c => ids.has(c.start_syl_id) || ids.has(c.end_syl_id));
-      return overlapping ? { chunk: overlapping, partial: true } : { chunk: null, partial: false };
-    };
-  }, [serverChunks]);
+      if (exact) {
+        rows.push({ key: u.key, units: [u], match: exact, partial: false });
+        i++;
+        continue;
+      }
+      const uS = pos.get(u.startSylId), uE = pos.get(u.endSylId);
+      const cover = uS != null && uE != null
+        ? intervals.find(iv => iv.s <= uE && iv.e >= uS)
+        : undefined;
+      if (!cover) {
+        // Out-of-stream canonical (cross-booklet partial): endpoint-based lookup.
+        const ids = new Set(u.sylIds);
+        const overlapping = serverChunks.find(c => ids.has(c.start_syl_id) || ids.has(c.end_syl_id));
+        rows.push({ key: u.key, units: [u], match: overlapping ?? null, partial: !!overlapping });
+        i++;
+        continue;
+      }
+      // Merge every consecutive unit the canonical covers.
+      const units = [u];
+      let j = i + 1;
+      while (j < chunks.length) {
+        const v = chunks[j];
+        if (v.titleLayout || !v.startSylId) break;
+        const vS = pos.get(v.startSylId);
+        if (vS == null || vS > cover.e) break;
+        units.push(v);
+        j++;
+      }
+      const gS = pos.get(units[0].startSylId)!;
+      const gE = pos.get(units[units.length - 1].endSylId)!;
+      rows.push({
+        key: units[0].key, units, match: cover.c,
+        partial: cover.s < gS || cover.e > gE,
+      });
+      i = j;
+    }
+    return rows;
+  }, [chunks, serverChunks, streamIds]);
 
   const translationOf = (chunk: TranslationChunk | null, lang: string) =>
     chunk?.translations.find(t => t.lang === lang);
@@ -193,15 +248,14 @@ export const TranslateView: React.FC = () => {
   // Notification counts for the strip.
   const counts = useMemo(() => {
     let updates = 0, stale = 0, partials = 0;
-    for (const u of chunks) {
-      const { chunk: match, partial } = matchFor(u);
-      if (partial) partials++;
-      if (updateAvailable(match, targetLang)) updates++;
-      if (staleOverride(match, targetLang)) stale++;
+    for (const row of displayRows) {
+      if (row.partial) partials++;
+      if (updateAvailable(row.match, targetLang)) updates++;
+      if (staleOverride(row.match, targetLang)) stale++;
     }
     return { updates, stale, partials, pending: suggestions.length };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chunks, matchFor, overrides, seen, suggestions, targetLang]);
+  }, [displayRows, overrides, seen, suggestions, targetLang]);
 
   if (!currentText) {
     return (
@@ -422,7 +476,7 @@ export const TranslateView: React.FC = () => {
           </span>
         )}
         {saveError && <span className="text-vermilion truncate max-w-md" title={saveError}>{saveError}</span>}
-        <span className="text-ink-soft">{chunks.length} chunks</span>
+        <span className="text-ink-soft">{displayRows.length} rows · {chunks.length} chunks</span>
       </div>
 
       {/* Armed-move banner */}
@@ -468,7 +522,8 @@ export const TranslateView: React.FC = () => {
             />
           )}
           <div className="max-w-6xl mx-auto flex flex-col gap-3">
-            {chunks.map((u, i) => {
+            {displayRows.map((row, i) => {
+              const u = row.units[0];
               // ── Synthetic TITLE chunk (scramble layer) ──
               if (u.titleLayout) {
                 const l = u.titleLayout;
@@ -529,17 +584,20 @@ export const TranslateView: React.FC = () => {
               }
 
               // ── Regular chunk row ──
-              const { chunk: match, partial } = matchFor(u);
+              const match = row.match;
+              const partial = row.partial;
               const existing = translationOf(match, targetLang);
               const ov = overrideFor(match?.id, targetLang);
               const pending = pendingFor(match?.id, targetLang);
               const effectiveBody = ov?.body ?? existing?.body ?? '';
               const hasUpdate = updateAvailable(match, targetLang);
               const isStale = staleOverride(match, targetLang);
-              const canonSyl = {
-                start: match && partial ? match.start_syl_id : u.startSylId,
-                end: match && partial ? match.end_syl_id : u.endSylId,
-              };
+              // The canonical range always wins for writes — a merged/partial row's
+              // translation belongs to the FULL unit, not our slice of it.
+              const canonSyl = match
+                ? { start: match.start_syl_id, end: match.end_syl_id }
+                : { start: u.startSylId, end: row.units[row.units.length - 1].endSylId };
+              const rowTokens = row.units.flatMap(x => x.tokens);
               return (
                 <React.Fragment key={u.key}>
                   {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`)}
@@ -584,7 +642,15 @@ export const TranslateView: React.FC = () => {
                             })}
                           </span>
                         )}
-                        {[...new Set(u.tokens.map(t => movedBy.get(t.id)).filter((x): x is number => x != null))]
+                        {row.units.length > 1 && (
+                          <span
+                            className="px-1.5 rounded-full bg-lapis/10 text-lapis"
+                            title="One translation unit covering several Tibetan chunks (the shared translation is a single unit)"
+                          >
+                            1 translation · {row.units.length} chunks
+                          </span>
+                        )}
+                        {[...new Set(rowTokens.map(t => movedBy.get(t.id)).filter((x): x is number => x != null))]
                           .map(layoutId => (
                             <span
                               key={`mv-${layoutId}`}
@@ -628,7 +694,15 @@ export const TranslateView: React.FC = () => {
                       </div>
                       {partial && match
                         ? canonicalTibetan(match)
-                        : sourceContent(u, match)}
+                        : sourceLang === 'bo' && row.units.length > 1
+                          ? (
+                            <div className="flex flex-col gap-2">
+                              {row.units.map(unit => (
+                                <React.Fragment key={unit.key}>{tibetanTokens(unit)}</React.Fragment>
+                              ))}
+                            </div>
+                          )
+                          : sourceContent(u, match)}
                       {extraLangs.size > 0 && (
                         <div className="mt-2 flex flex-col gap-1.5">
                           {[...extraLangs].map(code => {
