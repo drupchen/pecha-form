@@ -72,56 +72,64 @@
 
 /* ── Line roles (mapped to the reference docx named styles) ── */
 .bk-line { break-inside: avoid; }
+/* A recto unit is an unbreakable pair (phonetics + its translation stay together). */
+.bk-pair { break-inside: avoid; }
 
-/* Tibetan body = `བོད་ཡིག` (Chogyal 16); title = `ཁ་བྱང་།` (Chogyal 24, centred). */
+/* Tibetan (verso) body = `བོད་ཡིག` (Chogyal 16); title = `ཁ་བྱང་།` (Chogyal 24, centred). */
 .bk-tibetan {
   font-family: var(--font-tibetan);
   font-size: var(--tibetan-pt);
   line-height: var(--leading);
   white-space: pre-wrap;
 }
-.bk-role-title .bk-tibetan { font-size: calc(var(--tibetan-pt) * 1.5); text-align: center; }
+.bk-role-title .bk-tibetan,
+.bk-role-sapche .bk-tibetan { font-size: calc(var(--tibetan-pt) * 1.4); text-align: center; }
 
-/* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic). */
+/* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic), indented under the verse. */
 .bk-phonetics {
   font-family: var(--font-phonetics);
   font-size: var(--phonetics-pt);
   font-weight: 600;
   font-style: italic;
   line-height: 1.25;
-  color: #333;
+  color: #222;
+  margin-left: 8mm;
 }
 
-/* Translation = `Translation` (Gentium Basic 11, ~2.85pt after). */
+/* Translation = `Translation` (Gentium Basic 11), indented deeper — a hanging indent so
+   wrapped lines stay in from the phonetics. */
 .bk-translation {
   font-family: var(--font-translation);
   font-size: var(--translation-pt);
   line-height: var(--leading);
-  margin: 0 0 2.85pt 0;
+  margin: 0 0 2.85pt 13mm;
 }
 
-/* Mantras = `Mantras` (Gentium Basic 11, bold+italic) — the romanized mantra. */
+/* Mantras = `Mantras` (Gentium Basic 11, bold+italic) — the romanised mantra, standalone. */
 .bk-role-mantra .bk-phonetics {
   font-family: var(--font-translation);
   font-weight: 700; font-style: italic;
   font-size: var(--translation-pt);
   color: #1a1a1a;
 }
-.bk-role-mantra .bk-translation { font-weight: 700; font-style: italic; }
 
-/* Small letters = `Small Letters` (Libertinus Serif Display 9, bold+italic). */
-.bk-role-small .bk-phonetics,
+/* Small letters / homage / instructions — translation-only prose at the margin, no
+   phonetics (they are not recited). The reference renders these as regular Gentium at
+   the left margin, not indented. */
+.bk-role-small .bk-phonetics { display: none; }
 .bk-role-small .bk-translation {
-  font-family: var(--font-small);
-  font-size: 9pt; font-weight: 600; font-style: italic; color: #333;
+  font-family: var(--font-translation);
+  font-size: var(--translation-pt);
+  font-style: normal;
+  margin-left: 0;
 }
 
-/* Section heading = `Sections` (Libertinus Serif Display 15, bold+italic). */
-.bk-role-sapche .bk-translation,
-.bk-role-title .bk-translation {
+/* Section heading = `Sections` (Libertinus Serif Display 15, bold+italic), at the margin. */
+.bk-section {
   font-family: var(--font-small);
   font-size: 15pt; font-weight: 600; font-style: italic;
-  margin-top: 19.2pt; margin-bottom: 7.8pt;
+  line-height: 1.2;
+  margin: 19.2pt 0 7.8pt 0;
 }
 
 /* The empty-line gap between chunks — the balancing lever (height set inline). */

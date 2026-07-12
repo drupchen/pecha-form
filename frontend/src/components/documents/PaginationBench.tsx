@@ -66,23 +66,40 @@ const Verso: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => 
   </div>
 );
 
-const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => (
-  <div className={`bk-line bk-role-${l.role}`}>
-    {l.phonetics && <div className="bk-phonetics">{l.phonetics}</div>}
-    {l.translation != null && (
-      <div className="bk-translation" style={adj.wrapMm ? { marginRight: `-${adj.wrapMm}mm` } : undefined}>
-        <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
-        {adj.onWrap && (
-          <span className="bk-wrapctl">
-            <button type="button" title="Narrower" onClick={() => adj.onWrap!(-1)}>−</button>
-            <button type="button" title="Wider (into the outer margin)" onClick={() => adj.onWrap!(1)}>+</button>
-          </span>
-        )}
-      </div>
-    )}
-    {l.emptyAfter && <Gap adj={adj} />}
-  </div>
-);
+/* The recto unit, by role:
+ *  - section (title/sapche): the translated heading only (Libertinus, large);
+ *  - mantra: the romanised mantra only (the phonetics), standalone bold-italic;
+ *  - verse/prose/small: an INTERLINEAR PAIR — phonetics then its indented translation,
+ *    kept together (the whole `.bk-line` has break-inside: avoid). */
+const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => {
+  const isSection = l.role === 'title' || l.role === 'sapche';
+  const isMantra = l.role === 'mantra';
+  return (
+    <div className={`bk-line bk-pair bk-role-${l.role}`}>
+      {isSection ? (
+        l.translation != null && (
+          <div className="bk-section" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
+        )
+      ) : (
+        <>
+          {l.phonetics && <div className="bk-phonetics">{l.phonetics}</div>}
+          {!isMantra && l.translation != null && (
+            <div className="bk-translation" style={adj.wrapMm ? { marginRight: `-${adj.wrapMm}mm` } : undefined}>
+              <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
+              {adj.onWrap && (
+                <span className="bk-wrapctl">
+                  <button type="button" title="Narrower" onClick={() => adj.onWrap!(-1)}>−</button>
+                  <button type="button" title="Wider (into the outer margin)" onClick={() => adj.onWrap!(1)}>+</button>
+                </span>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {l.emptyAfter && <Gap adj={adj} />}
+    </div>
+  );
+};
 
 /**
  * Pagination bench (Phase D2). Compiles a document's text pages into the SHARED line

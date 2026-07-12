@@ -22,8 +22,8 @@ export interface DocLine {
   endSylId: string;
   tokens: { id: string; render: string }[];   // Tibetan render (with its line breaks)
   phonetics: string;           // matched phonetics for this line (selected language)
-  /** Translation block of this line's chunk — set only on the chunk's LAST line, so
-   *  on the recto it renders after the chunk's phonetics as one block. */
+  /** This line's OWN translation (the chunk's i-th `<p>`), so the recto renders each
+   *  phonetics line immediately followed by its translation (interlinear pairs). */
   translation: string | null;
   /** True on the last line of a chunk: a blank line follows (a balancing gap). */
   emptyAfter: boolean;
@@ -94,12 +94,33 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
     for (const id of ch.sylIds) chunkKeyOfSyl.set(id, ch.key);
   }
 
-  const out: DocLine[] = [];
+  // INTERLINEAR pairs: a chunk's translation body is one <p> per line, 1:1 with the
+  // chunk's phonetics lines. Split it and give each line its OWN translation line
+  // (extra <p>s append to the last line; missing → none), so the recto renders each
+  // phonetics line immediately followed by its translation.
   const lineChunkKeys = lines.map((l) => chunkKeyOfSyl.get(l.startSylId) ?? null);
+  const linesByChunk = new Map<string, number[]>();
+  lineChunkKeys.forEach((ck, i) => {
+    if (ck == null) return;
+    const arr = linesByChunk.get(ck) ?? [];
+    arr.push(i);
+    linesByChunk.set(ck, arr);
+  });
+  const translationByLine = new Map<number, string>();
+  for (const [ck, idxs] of linesByChunk) {
+    const parts = splitParagraphs(transFor(chunkByKey.get(ck)!));
+    idxs.forEach((lineIdx, k) => {
+      const piece = k === idxs.length - 1 && parts.length > idxs.length
+        ? parts.slice(k).join(' ')
+        : (parts[k] ?? '');
+      if (piece) translationByLine.set(lineIdx, piece);
+    });
+  }
+
+  const out: DocLine[] = [];
   lines.forEach((l, i) => {
     const ck = lineChunkKeys[i];
-    const nextCk = lineChunkKeys[i + 1] ?? null;
-    const lastOfChunk = ck != null && ck !== nextCk;
+    const lastOfChunk = ck != null && ck !== (lineChunkKeys[i + 1] ?? null);
     out.push({
       itemId: item.id,
       textId,
@@ -109,11 +130,21 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
       endSylId: l.endSylId,
       tokens: l.tokens,
       phonetics: phonFor(l),
-      translation: lastOfChunk && ck != null ? transFor(chunkByKey.get(ck)!) : null,
+      translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
     });
   });
   return out;
+}
+
+/** Split a translation body into its per-line `<p>` inner-HTML pieces. */
+function splitParagraphs(html: string): string[] {
+  if (!html) return [];
+  const m = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi);
+  if (!m) return html.trim() ? [html.trim()] : [];
+  return m
+    .map((p) => p.replace(/^<p\b[^>]*>/i, '').replace(/<\/p>\s*$/i, '').trim())
+    .filter(Boolean);
 }
 
 /** Compile the whole document's text pages (in order) for one language edition. */
