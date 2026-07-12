@@ -188,3 +188,4 @@ frontend/dist/
 !frontend/src/lib/**
 # Vite dev-server cache.
 frontend/.vite/
+orca.yaml
