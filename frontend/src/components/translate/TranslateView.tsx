@@ -113,17 +113,44 @@ export const TranslateView: React.FC = () => {
   // The translator's units: scramble MOVES rearrange the token stream first, the
   // stream chunks naturally, then synthetic TITLE chunks are spliced in. `movedBy`
   // (syl → layout id) marks moved-in tokens and drives the per-chunk undo pills.
-  const { chunks, movedBy, streamIds } = useMemo(() => {
-    if (!tokens.length) return { chunks: [], movedBy: new Map<string, number>(), streamIds: [] as string[] };
+  const { chunks, movedBy, streamIds, renderById } = useMemo(() => {
+    if (!tokens.length) {
+      return { chunks: [], movedBy: new Map<string, number>(), streamIds: [] as string[],
+               renderById: new Map<string, string>() };
+    }
     const markerOffsets = new Set(markers.map(m => m.position));
     const { tokens: rearranged, movedBy } = applyMoves(tokens, layouts);
     const derived = deriveChunks(rearranged, markerOffsets, spans, breakOverrides, lineBreakGroups, movedBy);
+    // Per-token render strings (incl. the synthesized verse/sapche/mantra line
+    // breaks) — reused to display CANONICAL chunk ranges (partial matches) with
+    // the same layout as derived units.
+    const renderById = new Map<string, string>();
+    for (const c of derived) for (const t of c.tokens) renderById.set(t.id, t.render);
     return {
       chunks: insertTitleChunks(derived, layouts),
       movedBy,
       streamIds: rearranged.map(t => t.id),
+      renderById,
     };
   }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts]);
+
+  /** A canonical chunk's Tibetan rendered from the LOCAL stream with the same
+   *  line-break rules as derived units — server text is a plain join. Falls back
+   *  to the server text when the range isn't fully in this stream. */
+  const canonicalTibetan = (match: TranslationChunk): React.ReactNode => {
+    const si = streamIds.indexOf(match.start_syl_id);
+    const ei = streamIds.indexOf(match.end_syl_id);
+    if (si < 0 || ei < 0 || ei < si) {
+      return <div className="tibetan-text whitespace-pre-wrap">{match.text}</div>;
+    }
+    return (
+      <div className="tibetan-text whitespace-pre-wrap">
+        {streamIds.slice(si, ei + 1).map((id, i) => (
+          <span key={i} data-syl-id={id}>{renderById.get(id) ?? ''}</span>
+        ))}
+      </div>
+    );
+  };
 
   // Server chunks matched to derived units: exact range first, else overlap
   // (partial inclusion still shows the FULL canonical chunk + its translations).
@@ -600,7 +627,7 @@ export const TranslateView: React.FC = () => {
                         )}
                       </div>
                       {partial && match
-                        ? <div className="tibetan-text whitespace-pre-wrap">{match.text}</div>
+                        ? canonicalTibetan(match)
                         : sourceContent(u, match)}
                       {extraLangs.size > 0 && (
                         <div className="mt-2 flex flex-col gap-1.5">
