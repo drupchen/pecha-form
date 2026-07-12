@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends, Body
 from typing import List, Any, Dict
 import os
+import sqlite3
 from typing import Optional
 
 from ..db import get_db
@@ -131,10 +132,14 @@ def _snap_refs_after_bake(conn, text_id: int, old_ordered_ids: list[str]) -> Non
     Rules: range starts snap FORWARD and ends snap BACKWARD along the old order
     (rows whose range has nothing surviving are left untouched — the dangling-skip
     behavior remains the graceful floor); "before this syllable" anchors snap forward
-    or become NULL (= end of text); markers snap forward or are deleted (a boundary
-    after the last syllable is meaningless); reading positions snap forward, else
-    backward; tree segment links snap forward or stay dangling."""
-    new_ids = {s["id"] for s in load_syllables(conn, text_id)}
+    or become NULL (= end of text); MARKERS and display-breaks whose anchor died are
+    DELETED (a boundary/break whose syllable was rewritten should die, not wander to
+    the next survivor — a wandered boundary silently mis-splits descendants); reading
+    positions snap forward, else backward; tree segment links snap forward or stay
+    dangling. Snapped ranges that reverse in the NEW order are left dangling."""
+    new_ordered = [s["id"] for s in load_syllables(conn, text_id)]
+    new_ids = set(new_ordered)
+    new_pos = {sid: i for i, sid in enumerate(new_ordered)}
     deleted = [sid for sid in old_ordered_ids if sid not in new_ids]
     if not deleted:
         return
@@ -164,13 +169,18 @@ def _snap_refs_after_bake(conn, text_id: int, old_ordered_ids: list[str]) -> Non
     def q(ids):
         return ",".join("?" * len(ids))
 
-    # Ranges: (table, start_col, end_col, extra WHERE)
+    # Ranges: (table, start_col, end_col, extra WHERE). Includes the translation
+    # layer (T1–T3) so translations/phonetics/moves anchored on deleted syllables
+    # snap with everything else rather than silently orphaning.
     for table, s_col, e_col, extra in (
         ("derivation_ops", "src_start_syl_id", "src_end_syl_id", "op_kind = 'transclude'"),
         ("passage_members", "src_start_syl_id", "src_end_syl_id", "1=1"),
         ("spans", "start_syl_id", "end_syl_id", "1=1"),
         ("notes", "start_syl_id", "end_syl_id", "1=1"),
         ("suggestions", "start_syl_id", "end_syl_id", "1=1"),
+        ("translation_chunks", "start_syl_id", "end_syl_id", "1=1"),
+        ("phonetics", "start_syl_id", "end_syl_id", "1=1"),
+        ("chunk_layouts", "src_start_syl_id", "src_end_syl_id", "kind = 'move'"),
     ):
         rows = conn.execute(
             f"SELECT rowid AS rid, {s_col} AS s, {e_col} AS e FROM {table} "
@@ -184,15 +194,24 @@ def _snap_refs_after_bake(conn, text_id: int, old_ordered_ids: list[str]) -> Non
             # crossed or vanished) — the row stays dangling and is skipped on read.
             if new_s is None or new_e is None:
                 continue
-            if new_s in pos and new_e in pos and pos[new_s] > pos[new_e]:
+            # Reversed in the NEW order (a snapped pair can invert even when the
+            # old order was consistent) — leave dangling, skipped on read.
+            if new_s in new_pos and new_e in new_pos and new_pos[new_s] > new_pos[new_e]:
                 continue
-            conn.execute(
-                f"UPDATE {table} SET {s_col} = ?, {e_col} = ? WHERE rowid = ?",
-                (new_s, new_e, r["rid"]),
-            )
+            try:
+                conn.execute(
+                    f"UPDATE {table} SET {s_col} = ?, {e_col} = ? WHERE rowid = ?",
+                    (new_s, new_e, r["rid"]),
+                )
+            except sqlite3.IntegrityError:
+                # UNIQUE collision (translation_chunks/phonetics share
+                # (origin, start, end[, kind])) — leave the row dangling rather
+                # than merge two distinct anchors into one.
+                pass
 
     # "Before this syllable" anchors: forward, else NULL (= end of text).
-    for table, col in (("derivation_ops", "anchor_syl_id"), ("passages", "anchor_syl_id")):
+    for table, col in (("derivation_ops", "anchor_syl_id"), ("passages", "anchor_syl_id"),
+                       ("chunk_layouts", "anchor_syl_id")):
         rows = conn.execute(
             f"SELECT rowid AS rid, {col} AS a FROM {table} WHERE {col} IN ({q(deleted)})",
             deleted,
@@ -201,19 +220,13 @@ def _snap_refs_after_bake(conn, text_id: int, old_ordered_ids: list[str]) -> Non
             conn.execute(f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
                          (snap_fwd(r["a"]), r["rid"]))
 
-    # Markers: a segment boundary BEFORE syl_id — forward; delete when nothing
-    # follows or the snapped boundary already exists (UNIQUE(text_id, syl_id)).
-    for r in conn.execute(
-            f"SELECT rowid AS rid, text_id AS tid, syl_id AS a FROM markers "
-            f"WHERE syl_id IN ({q(deleted)})", deleted).fetchall():
-        tgt = snap_fwd(r["a"])
-        clash = tgt is not None and conn.execute(
-            "SELECT 1 FROM markers WHERE text_id = ? AND syl_id = ?",
-            (r["tid"], tgt)).fetchone()
-        if tgt is None or clash:
-            conn.execute("DELETE FROM markers WHERE rowid = ?", (r["rid"],))
-        else:
-            conn.execute("UPDATE markers SET syl_id = ? WHERE rowid = ?", (tgt, r["rid"]))
+    # Markers: a segment boundary whose anchor syllable was deleted is DELETED, not
+    # snapped forward — the segmentation there was rewritten, so a boundary wandering
+    # to the next survivor would silently mis-split this text and its descendants
+    # (the copied-marker-on-a-child bug). Same for display breaks: a break has no
+    # home once its syllable is gone.
+    conn.execute(f"DELETE FROM markers WHERE syl_id IN ({q(deleted)})", deleted)
+    conn.execute(f"DELETE FROM display_breaks WHERE syl_id IN ({q(deleted)})", deleted)
 
     # Reading positions: forward, else backward.
     for r in conn.execute(
@@ -560,14 +573,16 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
     )
     new_id = cursor.lastrowid
 
-    # Inherit the parent's markers/notes/passages + TOC, anchored to the same token
-    # uuids the child composes from (identity remap over the parent's exposed
-    # sequence). SPANS are NOT copied: the child inherits ancestor tags LIVE on read
-    # (spans._span_source_texts), so later tag changes on the parent mirror here.
+    # Inherit the parent's notes/passages + TOC, anchored to the same token uuids the
+    # child composes from (identity remap over the parent's exposed sequence). SPANS
+    # and MARKERS are NOT copied: the child inherits ancestor tags AND segment
+    # boundaries LIVE on read (app/inherit.source_texts), so later tag/segmentation
+    # changes on the parent mirror here. (Phases 2–3 extend this to notes/passages/tree.)
     from ..derivation import base_tokens
     src_tokens = base_tokens(conn, id)
     remap = {t["id"]: t["id"] for t in src_tokens}
-    _copy_annotations(conn, id, new_id, remap, src_tokens, copy_tree=True, copy_spans=False)
+    _copy_annotations(conn, id, new_id, remap, src_tokens,
+                      copy_tree=True, copy_spans=False, copy_markers=False)
 
     conn.commit()
     row = dict(cursor.execute("SELECT * FROM texts WHERE id = ?", (new_id,)).fetchone())
@@ -582,7 +597,8 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
 
 
 def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: list,
-                      *, copy_tree: bool = False, copy_spans: bool = True) -> None:
+                      *, copy_tree: bool = False, copy_spans: bool = True,
+                      copy_markers: bool = True) -> None:
     """Copy the source's syllable-anchored annotations onto ``new_id``, re-anchoring every
     id through ``remap`` (source_syl_id -> new_syl_id). Anchors absent from ``remap`` (an
     out-of-range syllable for /extract, or one baked away by /clone) are dropped, and a
@@ -656,15 +672,18 @@ def _copy_annotations(conn, src_id: int, new_id: int, remap: dict, src_syls: lis
         )
 
     # --- Markers: single-boundary; skip the NULL end-of-text sentinel and out-of-range.
-    for mk in conn.execute(
-        "SELECT syl_id FROM markers WHERE text_id = ?", (src_id,),
-    ).fetchall():
-        nid = remap.get(mk["syl_id"])
-        if nid is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO markers (text_id, syl_id) VALUES (?, ?)",
-                (new_id, nid),
-            )
+    # A DERIVE inherits boundaries live (copy_markers=False, like copy_spans); only an
+    # independent copy (extract/clone) snapshots them.
+    if copy_markers:
+        for mk in conn.execute(
+            "SELECT syl_id FROM markers WHERE text_id = ?", (src_id,),
+        ).fetchall():
+            nid = remap.get(mk["syl_id"])
+            if nid is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO markers (text_id, syl_id) VALUES (?, ?)",
+                    (new_id, nid),
+                )
 
     # --- Notes: range fully in-range; recreate category by name; copy session links.
     cat_remap: dict = {}

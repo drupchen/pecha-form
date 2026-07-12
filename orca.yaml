@@ -1,0 +1,9 @@
+env:
+  # --- Claude Code / Anthropic Ecosystem ---
+  ANTHROPIC_BASE_URL: "http://localhost:8787/v1"
+  ENABLE_TOOL_SEARCH: "true"
+
+  # --- Gemini / Google Ecosystem ---
+  GEMINI_BASE_URL: "http://localhost:8787/v1"
+  GOOGLE_GENAI_BASE_URL: "http://localhost:8787/v1"
+  GOOGLE_GEMINI_BASE_URL: "http://localhost:8787/v1"

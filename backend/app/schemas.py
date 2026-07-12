@@ -264,6 +264,9 @@ class MarkerOut(BaseModel):
     # Part 6: the syllable that starts at the boundary, so the client can replay
     # (undo) a separator by syllable id rather than by offset.
     syl_id: Optional[str] = None
+    # True when this boundary is INHERITED from a source text (parent/transclusion)
+    # — read-only here; edit it on its owning text. See app/inherit.py.
+    inherited: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 class MarkerCreate(BaseModel):

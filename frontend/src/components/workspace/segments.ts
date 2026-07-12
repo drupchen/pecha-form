@@ -56,12 +56,15 @@ export function computeSegments(
     );
     const overlappingSuggestions = suggestions.filter(s => {
       if (s.start_offset === s.end_offset) {
-        // Pure insertion at offset p: belongs to the segment that "owns" p on its
-        // right edge — i.e. strictly inside, or at the right boundary. This
-        // prevents an insertion that sits on a marker from rendering twice
-        // (once in segment N at its end, once in segment N+1 at its start).
-        // Offset 0 is anchored to the first segment.
-        return (s.start_offset > start || start === 0) && s.start_offset <= end;
+        // Pure insertion at offset p: LEFT-closed ownership — the segment that
+        // STARTS at or before p owns it (p in [start, end)). An insertion at a
+        // boundary thus renders at the START of the following segment (where the
+        // user placed it), not the tail of the previous card — the reason a
+        // suggestion added at a segment start appeared to vanish. Still single-
+        // render: [start, end) intervals partition the text. End-of-text
+        // insertions go to the last segment.
+        const p = s.start_offset;
+        return (p >= start && p < end) || (p === rawText.length && end === rawText.length);
       }
       return s.start_offset <= end && s.end_offset >= start;
     });
@@ -69,9 +72,12 @@ export function computeSegments(
       n => n.start_offset < end && n.end_offset > start,
     );
     // Tokens whose skeleton start sits inside this segment. Inserted tokens
-    // (zero-width) follow the same "owns p on its right edge" rule as insertions.
+    // (zero-width) follow the same LEFT-closed rule as insertions.
     const segTokens = tokens.filter(t => {
-      if (t.inserted) return (t.start_offset > start || start === 0) && t.start_offset <= end;
+      if (t.inserted) {
+        const p = t.start_offset;
+        return (p >= start && p < end) || (p === rawText.length && end === rawText.length);
+      }
       return t.start_offset >= start && t.start_offset < end;
     });
 

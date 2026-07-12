@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 
 from ..db import get_db
+from ..inherit import source_texts
 from ..schemas import MarkerOut, MarkerCreate
 from ..syllable_anchors import anchor_for_point, offset_for_syl_start, _syl_offset_maps
 
@@ -18,24 +19,35 @@ def _position_for(syl_id, id2start, total_len):
 
 @router.get("/texts/{text_id}/markers", response_model=List[MarkerOut])
 def list_markers(text_id: int):
+    """Segment boundaries applicable to this text: its OWN markers plus those
+    INHERITED from the source chain (parent + transclusion sources), resolved onto
+    this text's composed stream. A source boundary applies wherever its anchor
+    syllable appears here — so re-segmenting a primary ripples into every secondary
+    live (the child no longer carries a frozen copy). Deduped by anchor: the child's
+    own boundary at a position shadows an inherited one (and stays editable)."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM markers WHERE text_id = ?", (text_id,))
     id2start, id2end = _syl_offset_maps(conn, text_id)
     total_len = max(id2end.values(), default=0)
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        # A marker whose (non-sentinel) anchor no longer resolves — its syllable was
-        # baked away by apply-corrections — is dangling: skip it rather than render a
-        # stray separator at the end of the text.
-        if d.get("syl_id") is not None and d["syl_id"] not in id2start:
-            continue
-        d["position"] = _position_for(d.get("syl_id"), id2start, total_len)
-        rows.append(d)
+    by_key: dict = {}
+    for origin in [text_id] + source_texts(cursor, text_id):
+        inherited = origin != text_id
+        for r in cursor.execute("SELECT * FROM markers WHERE text_id = ?", (origin,)).fetchall():
+            syl = r["syl_id"]
+            # Applies only if the anchor resolves in THIS stream (a dead/foreign
+            # anchor is skipped — the graceful dangling floor).
+            if syl is not None and syl not in id2start:
+                continue
+            key = syl if syl is not None else "__end__"
+            if key in by_key and not by_key[key]["inherited"]:
+                continue  # the child's own boundary already claims this position
+            by_key[key] = {
+                "id": r["id"], "text_id": text_id, "syl_id": syl,
+                "position": _position_for(syl, id2start, total_len),
+                "inherited": inherited,
+            }
     conn.close()
-    rows.sort(key=lambda d: d["position"])
-    return rows
+    return sorted(by_key.values(), key=lambda d: d["position"])
 
 
 @router.post("/texts/{text_id}/markers", response_model=MarkerOut)

@@ -8,6 +8,9 @@ export interface Marker {
   position: number;
   // Part 6: syllable that starts the new segment (source of truth for the boundary).
   syl_id: string | null;
+  // True when INHERITED from a source text (parent/transclusion) — read-only here;
+  // edit segmentation on the owning text and it ripples. See backend app/inherit.py.
+  inherited?: boolean;
 }
 
 interface MarkerState {

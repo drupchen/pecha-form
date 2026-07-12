@@ -825,9 +825,10 @@ def test_bake_snaps_transclusion_endpoints():
 
 
 def test_bake_snaps_anchors_spans_and_markers():
-    """Anchors/spans/markers pointing at baked-away syllables snap instead of
-    dangling: op anchors move to the next survivor, spans shrink, markers move
-    (or drop at end-of-text)."""
+    """Anchors/spans pointing at baked-away syllables snap instead of dangling:
+    op anchors move to the next survivor, spans shrink. Markers are the exception
+    — a boundary whose anchor died is DELETED, not snapped (a wandered boundary
+    silently mis-splits this text and its descendants)."""
     from app.routers.texts import _apply_corrections_core
     from app.routers.tags import create_tag
     from app.routers.spans import create_span, list_spans
@@ -863,9 +864,9 @@ def test_bake_snaps_anchors_spans_and_markers():
     toks = compose_secondary(conn, child)
     break_i = next(i for i, t in enumerate(toks) if t["text"] == "\n")
     assert toks[break_i + 1]["id"] == syls[3]["id"]
-    # Marker snapped to syls[3].
-    assert conn.execute("SELECT 1 FROM markers WHERE text_id = ? AND syl_id = ?",
-                        (p, syls[3]["id"])).fetchone()
+    # Marker anchored on a deleted syllable is DELETED (not snapped forward).
+    assert conn.execute("SELECT COUNT(*) FROM markers WHERE text_id = ?",
+                        (p,)).fetchone()[0] == 0
     # Span shrunk to [syls[3], syls[3]] instead of dying.
     row = conn.execute("SELECT * FROM spans WHERE text_id = ?", (p,)).fetchone()
     assert row["start_syl_id"] == syls[3]["id"] and row["end_syl_id"] == syls[3]["id"]

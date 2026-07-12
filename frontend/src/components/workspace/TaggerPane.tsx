@@ -463,8 +463,12 @@ export const TaggerPane: React.FC = () => {
                 {markerHere && (
                   <div className="flex items-center justify-center gap-1 my-1.5 group">
                     <span className="h-px flex-1 bg-vermilion-lo opacity-60" />
-                    <span className="text-[10px] uppercase tracking-wider text-vermilion-deep">separator</span>
-                    {!consultMode && (
+                    <span className="text-[10px] uppercase tracking-wider text-vermilion-deep">
+                      separator{markerHere.inherited ? ' · inherited' : ''}
+                    </span>
+                    {/* An INHERITED boundary is read-only here — edit segmentation on
+                        the text that owns it (the primary) and it ripples. */}
+                    {!consultMode && !markerHere.inherited && (
                       <button
                         onClick={() => deleteMarker(markerHere.id)}
                         className="opacity-0 group-hover:opacity-100 text-vermilion hover:text-vermilion-deep p-0.5"

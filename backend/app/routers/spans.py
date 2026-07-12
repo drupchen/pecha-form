@@ -37,29 +37,9 @@ def _serialize_span(d: dict, id2start: dict, id2end: dict, inherited: bool = Fal
     }
 
 
-def _span_source_texts(cursor, text_id: int, _seen=None) -> list[int]:
-    """Every text whose spans can resolve on this text's composed stream: the parent
-    chain plus transclusion sources, recursively (a grandparent's transcluded source
-    flows through too). Cycle-guarded; self excluded; stable order."""
-    _seen = set() if _seen is None else _seen
-    if text_id in _seen:
-        return []
-    _seen.add(text_id)
-    out: list[int] = []
-    row = cursor.execute(
-        "SELECT parent_text_id FROM texts WHERE id = ?", (text_id,)).fetchone()
-    if row and row["parent_text_id"] and row["parent_text_id"] not in _seen:
-        out.append(row["parent_text_id"])
-        out.extend(_span_source_texts(cursor, row["parent_text_id"], _seen))
-    for r in cursor.execute(
-            "SELECT DISTINCT src_text_id FROM derivation_ops "
-            "WHERE text_id = ? AND op_kind = 'transclude' AND src_text_id IS NOT NULL "
-            "ORDER BY src_text_id", (text_id,)).fetchall():
-        src = r["src_text_id"]
-        if src not in _seen:
-            out.append(src)
-            out.extend(_span_source_texts(cursor, src, _seen))
-    return out
+# The source chain lives in app.inherit now (shared by markers/notes/passages/tree).
+# Kept here under the old name for existing callers.
+from ..inherit import source_texts as _span_source_texts  # noqa: E402,F401
 
 
 @router.get("/texts/{text_id}/spans", response_model=List[SpanOut])
