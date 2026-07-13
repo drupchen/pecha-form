@@ -104,32 +104,49 @@ const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => 
 
 interface TocRow { title: string; page: number }
 
+/** The centred title block (Tibetan title + translated main title / italic subtitle),
+ *  shared by the booklet cover and each text's internal title page. `seal` shows the
+ *  ༀ ornament (cover only). */
+const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> = ({ titleLines, seal }) => {
+  // The translated title's parts: the first is the main title, the rest the subtitle.
+  const trans = titleLines.map((t) => t.translation).filter((x): x is string => !!x);
+  return (
+    <div className="bk-titlepage">
+      {seal && <div className="bk-seal">ༀ</div>}
+      {titleLines.map((t, i) => (
+        <div key={i} className="bk-tibetan bk-title-tib">
+          {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
+        </div>
+      ))}
+      {trans[0] && (
+        <div className="bk-title-main"
+             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
+      )}
+      {trans.slice(1).map((p, i) => (
+        <div key={`sub${i}`} className="bk-title-sub"
+             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
+      ))}
+    </div>
+  );
+};
+
+/** A text's internal title page — a single furniture-styled page heading the text
+ *  (for the 2nd+ text in a multi-text booklet; the first text's title is on the cover). */
+const InternalTitlePage: React.FC<{ titleLines: DocLine[] }> = ({ titleLines }) => (
+  <div className="booklet-spread">
+    <div className="booklet-page furniture">
+      <div className="booklet-content"><TitleContent titleLines={titleLines} /></div>
+    </div>
+  </div>
+);
+
 /** A single furniture page (cover/title, copyright, toc, blank/backcover, image). */
 const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
 }> = ({ item, titleLines, body, toc }) => {
   let content: React.ReactNode = null;
   if (item.kind === 'cover') {
-    // The translated title's parts: the first is the main title, the rest the subtitle.
-    const trans = titleLines.map((t) => t.translation).filter((x): x is string => !!x);
-    content = (
-      <div className="bk-titlepage">
-        <div className="bk-seal">ༀ</div>
-        {titleLines.map((t, i) => (
-          <div key={i} className="bk-tibetan bk-title-tib">
-            {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
-          </div>
-        ))}
-        {trans[0] && (
-          <div className="bk-title-main"
-               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
-        )}
-        {trans.slice(1).map((p, i) => (
-          <div key={`sub${i}`} className="bk-title-sub"
-               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
-        ))}
-      </div>
-    );
+    content = <TitleContent titleLines={titleLines} seal />;
   } else if (item.kind === 'copyright') {
     content = body
       ? <div className="bk-copyright" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
@@ -233,9 +250,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   const spreads = useMemo(() => {
     if (!lines.length) return [] as { start: number; end: number }[];
-    const starts = [0, ...Array.from(breakSet).sort((a, b) => a - b)];
+    // Each text always starts a fresh spread (so its internal title page sits cleanly
+    // before its first body page — no two texts share a spread).
+    const forced = new Set<number>(breakSet);
+    for (let i = 1; i < lines.length; i++) if (lines[i].itemId !== lines[i - 1].itemId) forced.add(i);
+    const starts = [0, ...Array.from(forced).sort((a, b) => a - b)];
     return starts.map((s, i) => ({ start: s, end: i + 1 < starts.length ? starts[i + 1] : lines.length }));
-  }, [breakSet, lines.length]);
+  }, [breakSet, lines]);
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
 
@@ -343,7 +364,47 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   const vars = useMemo(() => (config ? rootVars(config) : {}), [config]);
 
-  // Fixed-height virtualization: each spread is one page tall (+ a 24px gutter).
+  // ── Furniture pages (front/back matter) + auto-TOC with page numbers ──
+  const textItems = (doc?.items ?? []).filter((it) => it.kind === 'text' && it.text_id != null);
+  const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
+  const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
+  const firstTextItemId = firstTextPos !== Infinity
+    ? textItems.find((i) => i.position === firstTextPos)!.id : null;
+  const frontMatter = (doc?.items ?? [])
+    .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
+    .sort((a, b) => a.position - b.position);
+  const backMatter = (doc?.items ?? [])
+    .filter((it) => it.kind !== 'text' && it.position > lastTextPos)
+    .sort((a, b) => a.position - b.position);
+
+  const itemStartLine = useMemo(() => {
+    const m = new Map<number, number>();
+    lines.forEach((l, i) => { if (!m.has(l.itemId)) m.set(l.itemId, i); });
+    return m;
+  }, [lines]);
+
+  // Body page-units: the flowed spreads, each 2nd+ text preceded by its internal
+  // title page (a single furniture-styled page). Both unit kinds are one page tall,
+  // so the virtualizer treats them uniformly and folios count them alike.
+  type PageUnit =
+    | { kind: 'spread'; s: { start: number; end: number } }
+    | { kind: 'title'; item: DocumentItem; titleLines: DocLine[] };
+  const bodyUnits = useMemo<PageUnit[]>(() => {
+    const units: PageUnit[] = [];
+    for (const s of spreads) {
+      const startItemId = lines[s.start]?.itemId;
+      const startsText = startItemId != null && itemStartLine.get(startItemId) === s.start;
+      if (startsText && startItemId !== firstTextItemId) {
+        const item = textItems.find((i) => i.id === startItemId);
+        const tl = titleByItem.get(startItemId) ?? [];
+        if (item && tl.length) units.push({ kind: 'title', item, titleLines: tl });
+      }
+      units.push({ kind: 'spread', s });
+    }
+    return units;
+  }, [spreads, lines, itemStartLine, titleByItem, textItems, firstTextItemId]);
+
+  // Fixed-height virtualization: each page-unit is one page tall (+ a 24px gutter).
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(800);
@@ -358,37 +419,31 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   }, [doc]);
   const spreadHpx = config ? config.page_height_mm * MM_PX + 24 : 800;
   const vFirst = Math.max(0, Math.floor(scrollTop / spreadHpx) - 1);
-  const vLast = Math.min(spreads.length, Math.ceil((scrollTop + viewH) / spreadHpx) + 1);
+  const vLast = Math.min(bodyUnits.length, Math.ceil((scrollTop + viewH) / spreadHpx) + 1);
 
-  // ── Furniture pages (front/back matter) + auto-TOC with page numbers ──
-  const textItems = (doc?.items ?? []).filter((it) => it.kind === 'text' && it.text_id != null);
-  const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
-  const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
-  const frontMatter = (doc?.items ?? [])
-    .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
-    .sort((a, b) => a.position - b.position);
-  const backMatter = (doc?.items ?? [])
-    .filter((it) => it.kind !== 'text' && it.position > lastTextPos)
-    .sort((a, b) => a.position - b.position);
-
-  const itemStartLine = useMemo(() => {
-    const m = new Map<number, number>();
-    lines.forEach((l, i) => { if (!m.has(l.itemId)) m.set(l.itemId, i); });
+  // Recto folio for a body-unit index = its 1-based position (each unit is one page).
+  const spreadUnitIdx = useMemo(() => {
+    const m = new Map<number, number>();  // spread.start line index → body-unit index
+    bodyUnits.forEach((u, i) => { if (u.kind === 'spread') m.set(u.s.start, i); });
     return m;
-  }, [lines]);
+  }, [bodyUnits]);
   const folioOfLine = (idx: number) => {
-    for (let s = 0; s < spreads.length; s++) if (spreads[s].start <= idx && idx < spreads[s].end) return s + 1;
+    for (const u of bodyUnits) {
+      if (u.kind === 'spread' && u.s.start <= idx && idx < u.s.end) return (spreadUnitIdx.get(u.s.start) ?? 0) + 1;
+    }
     return 1;
   };
   const stripHtml = (h: string) => h.replace(/<[^>]+>/g, '').trim();
   const tocRows: TocRow[] = textItems.map((it) => {
     const tl = titleByItem.get(it.id) ?? [];
     const title = tl[0]?.translation ? stripHtml(sanitizeTranslationHtml(tl[0].translation)) : (it.text_title || '');
+    // Prefer the text's internal title-page folio; else its first body page.
+    const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
     const startLine = itemStartLine.get(it.id);
-    return { title, page: startLine != null ? folioOfLine(startLine) : 1 };
+    const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
+    return { title, page };
   });
-  const mainTitleLines = firstTextPos !== Infinity
-    ? (titleByItem.get(textItems.find((i) => i.position === firstTextPos)!.id) ?? []) : [];
+  const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
   const furnitureBody = (item: DocumentItem) =>
     furniture.find((f) => f.item_id === item.id && f.lang === lang)?.body ?? null;
 
@@ -465,21 +520,25 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         {frontMatter.length > 0 && (
           <div className="flex flex-col items-center gap-6 pt-6">{frontMatter.map(renderFurniture)}</div>
         )}
-        <div style={{ height: spreads.length * spreadHpx, position: 'relative', marginTop: 24 }}>
-          {spreads.slice(vFirst, vLast).map((s, k) => {
+        <div style={{ height: bodyUnits.length * spreadHpx, position: 'relative', marginTop: 24 }}>
+          {bodyUnits.slice(vFirst, vLast).map((u, k) => {
             const si = vFirst + k;
             return (
               <div key={si} style={{ position: 'absolute', top: si * spreadHpx + 24, left: 0, right: 0,
                                      display: 'flex', justifyContent: 'center' }}>
-                <div className="booklet-spread">
-                  <div className="booklet-page verso">
-                    <div className="booklet-content">{renderPageLines(s, Verso)}</div>
+                {u.kind === 'title' ? (
+                  <InternalTitlePage titleLines={u.titleLines} />
+                ) : (
+                  <div className="booklet-spread">
+                    <div className="booklet-page verso">
+                      <div className="booklet-content">{renderPageLines(u.s, Verso)}</div>
+                    </div>
+                    <div className="booklet-page recto">
+                      <div className="booklet-content">{renderPageLines(u.s, Recto)}</div>
+                      <div className="booklet-folio">{si + 1}</div>
+                    </div>
                   </div>
-                  <div className="booklet-page recto">
-                    <div className="booklet-content">{renderPageLines(s, Recto)}</div>
-                    <div className="booklet-folio">{si + 1}</div>
-                  </div>
-                </div>
+                )}
               </div>
             );
           })}
