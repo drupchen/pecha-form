@@ -606,7 +606,7 @@ class TocEntry(BaseModel):
 
 # ─── Pagination layout (Phase D2) ───────────────────────────────────────────────
 
-DocumentLayoutKind = Literal['page_break', 'line_space', 'line_nospace', 'wrap_extend']
+DocumentLayoutKind = Literal['page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline']
 
 class DocumentLayoutRow(BaseModel):
     id: int

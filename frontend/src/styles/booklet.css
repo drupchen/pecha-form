@@ -183,13 +183,20 @@
   border: 1px solid var(--cline, #ddd); border-radius: 3px; cursor: pointer;
 }
 
-/* Per-line-boundary break control (click to force / lift a page break). Hidden
- * until the line is hovered so the page reads cleanly. */
-.bk-linewrap:hover > .bk-breakctl { opacity: 1; }
-.bk-breakctl {
+/* Per-line-boundary break controls (force/lift a plain page break, or a mid-content
+ * hairline split). Hidden until the line is hovered so the page reads cleanly. */
+.bk-breakctl-group {
   position: absolute;
-  left: -14px;
+  left: -16px;
   top: -6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.bk-linewrap:hover > .bk-breakctl-group { opacity: 1; }
+.bk-breakctl {
   width: 14px;
   height: 12px;
   display: flex;
@@ -199,11 +206,17 @@
   background: #fff;
   border: 1px solid var(--cline, #ddd);
   border-radius: 3px;
-  opacity: 0;
-  transition: opacity 0.12s;
   cursor: pointer;
 }
 .bk-breakctl:hover { background: var(--cream, #f4efe3); }
+.bk-hairctl { color: var(--jade, #3a7d5f); }
+.bk-hairctl-on { background: var(--jade, #3a7d5f); color: #fff; }
+
+/* The mid-content hairline continuation rule (matches the reference booklets). */
+.bk-hairline {
+  border-top: 0.4pt solid #888;
+  margin: 1.2mm 13mm 1.2mm 8mm;
+}
 
 /* Measurement container: off-screen, same widths as the real pages. */
 .booklet-measure {

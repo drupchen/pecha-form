@@ -341,7 +341,7 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
 
 // ── D2 pagination layout: shared page breaks + per-line balancing, on the document ──
 
-export type DocumentLayoutKind = 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend';
+export type DocumentLayoutKind = 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline';
 
 export interface DocumentLayoutRow {
   id: number;

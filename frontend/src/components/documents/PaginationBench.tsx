@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus } from 'lucide-react';
 import {
   getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
@@ -251,6 +251,19 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     return idx;
   }, [rows, lines]);
 
+  // Line-indices whose page break is a deliberate mid-content "hairline split" — a
+  // break placed where a pair/paragraph would otherwise stay together, drawn with a
+  // thin rule (matching the reference booklets) so the reader sees the content runs on.
+  const hairlineSet = useMemo(() => {
+    const idx = new Set<number>();
+    for (const r of rows) {
+      if (r.kind !== 'hairline') continue;
+      const i = lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
+      if (i > 0) idx.add(i);
+    }
+    return idx;
+  }, [rows, lines]);
+
   const spreads = useMemo(() => {
     if (!lines.length) return [] as { start: number; end: number }[];
     // Each text always starts a fresh spread (so its internal title page sits cleanly
@@ -314,11 +327,30 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const l = lines[i];
     if (breakSet.has(i)) {
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
+      // A lifted break drops any hairline marking too.
+      if (hairlineSet.has(i))
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
     } else {
       await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
     }
     const lay = await getDocumentLayout(documentId);
     setRows(lay.rows);
+  };
+
+  /** Toggle a hairline (mid-content) break at line `i`: a page break drawn with a thin
+   *  continuation rule. Setting it forces a break there too; clearing it leaves the
+   *  break as an ordinary one. */
+  const toggleHairline = async (i: number) => {
+    if (i <= 0 || i >= lines.length) return;
+    const l = lines[i];
+    if (hairlineSet.has(i)) {
+      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
+    } else {
+      if (!breakSet.has(i))
+        await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
+      await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline', value: 1 });
+    }
+    setRows((await getDocumentLayout(documentId)).rows);
   };
 
   // ── Per-line balancing (empty-line spacing, remove, wrap-extend) ──
@@ -460,26 +492,49 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     return <div className="flex-1 flex items-center justify-center text-ink-soft">Loading booklet…</div>;
   }
 
-  const renderPageLines = (s: { start: number; end: number }, Comp: React.FC<{ l: DocLine; adj?: LineAdj }>) =>
-    lines.slice(s.start, s.end).map((l, k) => {
+  const renderPageLines = (s: { start: number; end: number }, Comp: React.FC<{ l: DocLine; adj?: LineAdj }>) => {
+    const isRecto = Comp === Recto;
+    const els = lines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
       return (
         <div key={l.key} className="bk-linewrap" style={{ position: 'relative' }}>
-          {/* A boundary control between this line and the previous — click to break. */}
+          {/* Boundary controls between this line and the previous — plain page break
+              (scissors) or a mid-content hairline split (rule). */}
           {k > 0 && (
-            <button
-              type="button"
-              onClick={() => void toggleBreak(globalIdx)}
-              className="bk-breakctl"
-              title={breakSet.has(globalIdx) ? 'Lift page break' : 'Break page here'}
-            >
-              <Scissors size={9} />
-            </button>
+            <span className="bk-breakctl-group">
+              <button
+                type="button"
+                onClick={() => void toggleBreak(globalIdx)}
+                className="bk-breakctl"
+                title={breakSet.has(globalIdx) ? 'Lift page break' : 'Break page here'}
+              >
+                <Scissors size={9} />
+              </button>
+              <button
+                type="button"
+                onClick={() => void toggleHairline(globalIdx)}
+                className={`bk-breakctl bk-hairctl${hairlineSet.has(globalIdx) ? ' bk-hairctl-on' : ''}`}
+                title={hairlineSet.has(globalIdx) ? 'Lift hairline split' : 'Hairline split here (break mid-content)'}
+              >
+                <Minus size={9} />
+              </button>
+            </span>
           )}
           <Comp l={l} adj={adjFor(l, true)} />
         </div>
       );
     });
+    // The reference's thin continuation rule: at the top if this page begins with a
+    // hairline split (continued from the previous page); at the bottom if the next page
+    // does (content runs on). Only on the recto text column.
+    return (
+      <>
+        {isRecto && hairlineSet.has(s.start) && <div className="bk-hairline" />}
+        {els}
+        {isRecto && hairlineSet.has(s.end) && <div className="bk-hairline" />}
+      </>
+    );
+  };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden booklet-root" style={vars}>
