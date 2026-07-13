@@ -241,20 +241,31 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   // Fixed-height virtualization: each page-unit is one page tall (+ a 24px gutter).
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(800);
-  useEffect(() => {
+  // Distance from the scroll content's top to the virtualized body div. The body sits
+  // below the front-matter furniture, so its coordinate origin (where the absolutely
+  // positioned spreads are anchored) is offset from the container's raw scrollTop. Measure
+  // it so the visible window is computed in body-local coordinates — otherwise the slice is
+  // shifted ~frontMatterHeight/spreadHpx spreads and the spread in view gets unmounted.
+  const [bodyOffsetTop, setBodyOffsetTop] = useState(0);
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const update = () => setViewH(el.clientHeight);
+    const update = () => {
+      setViewH(el.clientHeight);
+      if (bodyRef.current) setBodyOffsetTop(bodyRef.current.offsetTop);
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [doc]);
+  }, [doc, frontMatter.length, backMatter.length, config, styleCss]);
   const spreadHpx = config ? config.page_height_mm * MM_PX + 24 : 800;
-  const vFirst = Math.max(0, Math.floor(scrollTop / spreadHpx) - 1);
-  const vLast = Math.min(bodyUnits.length, Math.ceil((scrollTop + viewH) / spreadHpx) + 1);
+  const local = Math.max(0, scrollTop - bodyOffsetTop);
+  const vFirst = Math.max(0, Math.floor(local / spreadHpx) - 1);
+  const vLast = Math.min(bodyUnits.length, Math.ceil((local + viewH) / spreadHpx) + 1);
 
   const renderFurniture = (item: DocumentItem) => (
     <FurniturePage key={`f${item.id}`} item={item}
@@ -379,11 +390,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           virtualized body spreads, then back-matter furniture. */}
       <div className="flex-1 flex overflow-hidden">
       <div ref={scrollRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-           className="flex-1 overflow-auto" style={{ background: 'var(--cream)' }}>
+           className="flex-1 overflow-auto" style={{ background: 'var(--cream)', position: 'relative' }}>
         {frontMatter.length > 0 && (
           <div className="flex flex-col items-center gap-6 pt-6">{frontMatter.map(renderFurniture)}</div>
         )}
-        <div style={{ height: bodyUnits.length * spreadHpx, position: 'relative', marginTop: 24 }}>
+        <div ref={bodyRef} style={{ height: bodyUnits.length * spreadHpx, position: 'relative', marginTop: 24 }}>
           {bodyUnits.slice(vFirst, vLast).map((u, k) => {
             const si = vFirst + k;
             return (
