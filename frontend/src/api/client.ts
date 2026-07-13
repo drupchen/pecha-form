@@ -348,6 +348,21 @@ export async function uploadOrgFont(
 export const deleteOrgFont = (fontId: number) =>
   fetch(`${API_BASE}/org-fonts/${fontId}`, { method: 'DELETE' });
 
+// docx style templates
+export const styleTemplateUrl = (target: 'org' | 'document', documentId?: number, orgId = 1) =>
+  `${API_BASE}/style-template.docx?target=${target}&org_id=${orgId}` +
+  (documentId != null ? `&document_id=${documentId}` : '');
+export async function importStyleTemplate(
+  file: File, target: 'org' | 'document', documentId?: number, orgId = 1,
+): Promise<{ applied: string[]; count: number }> {
+  const fd = new FormData();
+  fd.append('file', file); fd.append('target', target); fd.append('org_id', String(orgId));
+  if (documentId != null) fd.append('document_id', String(documentId));
+  const res = await fetch(`${API_BASE}/style-template/import`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export interface DocumentSummary {
   id: number;
   title: string;

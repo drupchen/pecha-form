@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Upload, RotateCcw } from 'lucide-react';
+import { X, Upload, RotateCcw, FileDown, FileUp } from 'lucide-react';
 import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
-  putDocStyle, deleteDocStyle, uploadOrgFont, type OrgFont,
+  putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
+  type OrgFont,
 } from '../../api/client';
 import { ROLE_DEFS, BUNDLED_FONTS, type StyleProps } from './bookletStyles';
 
@@ -24,6 +25,7 @@ export const StyleDesigner: React.FC<{
   const [fonts, setFonts] = useState<OrgFont[]>([]);
   const [fam, setFam] = useState('');
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
 
   useEffect(() => {
     void Promise.all([getOrgStyles(), getDocStyles(documentId), getOrgFonts()])
@@ -76,6 +78,20 @@ export const StyleDesigner: React.FC<{
     finally { setBusy(false); }
   };
 
+  const scopeTarget = scope === 'org' ? 'org' : 'document';
+  const doImportTemplate = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true); setMsg('Importing…');
+    try {
+      const r = await importStyleTemplate(file, scopeTarget, scope === 'doc' ? documentId : undefined);
+      const [o, d] = await Promise.all([getOrgStyles(), getDocStyles(documentId)]);
+      setOrg(o as StyleMap); setDoc(d as StyleMap);
+      onChange();
+      setMsg(`Imported ${r.count} roles: ${r.applied.join(', ')}`);
+    } catch (e) { setMsg(`Import failed: ${(e as Error).message}`.slice(0, 160)); }
+    finally { setBusy(false); }
+  };
+
   const sel = "px-1 py-0.5 rounded bg-white text-xs";
   const border = { border: '1px solid var(--cline)' } as const;
 
@@ -97,6 +113,23 @@ export const StyleDesigner: React.FC<{
         {scope === 'org'
           ? 'Organization template — applies to every booklet unless a document overrides it.'
           : 'Per-document override — wins over the organization template. Blank = inherit.'}
+      </div>
+
+      {/* docx style template import/export */}
+      <div className="px-3 py-2 flex flex-col gap-1.5 text-xs" style={{ borderBottom: '1px solid var(--cline)' }}>
+        <div className="flex items-center gap-2">
+          <a href={styleTemplateUrl(scopeTarget, scope === 'doc' ? documentId : undefined)}
+             className="px-2 py-1 rounded-md inline-flex items-center gap-1 text-lapis hover:bg-cream" style={border}
+             title="Download a .docx whose named styles are the convention — edit and re-import">
+            <FileDown size={12} /> template
+          </a>
+          <label className={`px-2 py-1 rounded-md inline-flex items-center gap-1 cursor-pointer text-lapis hover:bg-cream ${busy ? 'opacity-40 pointer-events-none' : ''}`} style={border}>
+            <FileUp size={12} /> import docx → {scope === 'org' ? 'org' : 'document'}
+            <input type="file" accept=".docx" className="hidden"
+                   onChange={e => { void doImportTemplate(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
+        </div>
+        {msg && <div className="text-[10px] text-ink-soft">{msg}</div>}
       </div>
 
       {/* Font upload */}
