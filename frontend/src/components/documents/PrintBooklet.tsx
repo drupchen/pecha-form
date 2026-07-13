@@ -65,9 +65,10 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
     return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>Loading booklet…</div>;
   }
 
-  const { bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines } =
+  const { bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines, navOutline } =
     deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang);
   const vars = rootVars(config);
+  const outlineJson = JSON.stringify(navOutline);
 
   const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) =>
     lines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} />);
@@ -91,6 +92,10 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
          data-booklet-ready={ready ? 'true' : 'false'}>
       {/* Concrete @page size (CSS variables aren't allowed in @page). */}
       <style>{`@page { size: ${config.page_width_mm}mm ${config.page_height_mm}mm; margin: 0; }`}</style>
+      {/* The PDF navigation outline (bookmarks): the export endpoint reads this blob
+          from the rendered DOM and injects it into the PDF. */}
+      <script id="booklet-outline" type="application/json"
+              dangerouslySetInnerHTML={{ __html: outlineJson }} />
 
       {frontMatter.map((it) => <FurniturePageSheet key={`f${it.id}`} item={it} />)}
 

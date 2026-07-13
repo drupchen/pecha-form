@@ -15,6 +15,7 @@ from starlette.background import BackgroundTask
 from ..db import get_db
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -502,12 +503,69 @@ def export_pdf(document_id: int, lang: str = "en"):
         _safe_unlink(out_path)
         raise HTTPException(500, "PDF render produced no output.")
 
+    # Add the PDF navigation outline (bookmarks) — best-effort; a failure just yields a
+    # booklet without bookmarks rather than no PDF.
+    try:
+        outline = _fetch_outline(chrome, url)
+        if outline:
+            _inject_outline(out_path, outline)
+    except Exception:
+        pass
+
     safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
     filename = f"{safe}-{lang}.pdf"
     return FileResponse(
         out_path, media_type="application/pdf", filename=filename,
         background=BackgroundTask(_safe_unlink, out_path),
     )
+
+
+def _fetch_outline(chrome: str, url: str) -> list:
+    """Render the print page a second time with --dump-dom and read the navigation
+    outline the page emits as a `<script id="booklet-outline">` JSON blob."""
+    out = subprocess.run(
+        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+         "--virtual-time-budget=25000", "--dump-dom", url],
+        capture_output=True, timeout=120)
+    html = out.stdout.decode("utf-8", "replace")
+    m = re.search(r'<script id="booklet-outline"[^>]*>(.*?)</script>', html, re.S)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1) or "[]")
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def _inject_outline(path: str, outline: list) -> None:
+    """Write a nested bookmark outline into the PDF at `path` (page indices are 0-based
+    physical pages emitted by the print page)."""
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter()
+    writer.append(PdfReader(path))
+    n = len(writer.pages)
+    if not n:
+        return
+
+    def add(nodes: list, parent) -> None:
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            pi = node.get("pageIndex", 0)
+            try:
+                pi = max(0, min(n - 1, int(pi)))
+            except (TypeError, ValueError):
+                pi = 0
+            title = (node.get("title") or " ").strip() or " "
+            item = writer.add_outline_item(title, pi, parent=parent)
+            kids = node.get("children")
+            if isinstance(kids, list) and kids:
+                add(kids, item)
+
+    add(outline, None)
+    with open(path, "wb") as f:
+        writer.write(f)
 
 
 def _safe_unlink(path: str) -> None:

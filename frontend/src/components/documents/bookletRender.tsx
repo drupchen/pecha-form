@@ -221,6 +221,10 @@ export type PageUnit =
   | { kind: 'spread'; s: { start: number; end: number } }
   | { kind: 'title'; item: DocumentItem; titleLines: DocLine[] };
 
+/** A node in the PDF navigation outline (bookmarks): plain-text title, the 0-based
+ *  PHYSICAL page index it points at, and nested children (a text's sapche sections). */
+export interface NavNode { title: string; pageIndex: number; children: NavNode[] }
+
 export interface DerivedBooklet {
   breakSet: Set<number>;
   hairlineSet: Set<number>;
@@ -232,6 +236,8 @@ export interface DerivedBooklet {
   mainTitleLines: DocLine[];
   /** Recto folio (1-based) of the body-unit holding line `idx`. */
   folioOfLine: (idx: number) => number;
+  /** The full navigation hierarchy (per text → its sapche sections) for PDF bookmarks. */
+  navOutline: NavNode[];
 }
 
 /** Flatten a translation body to a single inline HTML run: sanitize, drop block tags
@@ -243,6 +249,27 @@ const inlineHtml = (h: string) =>
     .replace(/<br\s*\/?>/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+/** Plain-text projection (entities decoded, tags stripped) — for PDF bookmark labels. */
+const plainTextOf = (h: string): string => {
+  if (!h) return '';
+  if (!/[<>&]/.test(h)) return h.replace(/\s+/g, ' ').trim();
+  return new DOMParser().parseFromString(h, 'text/html').body.textContent
+    ?.replace(/\s+/g, ' ').trim() ?? '';
+};
+
+/** Build a nested outline from flat sapche entries, nesting by their depth `level`. */
+function nestByLevel(items: { title: string; pageIndex: number; level: number }[]): NavNode[] {
+  const roots: NavNode[] = [];
+  const stack: { node: NavNode; level: number }[] = [];
+  for (const it of items) {
+    const node: NavNode = { title: it.title, pageIndex: it.pageIndex, children: [] };
+    while (stack.length && stack[stack.length - 1].level >= it.level) stack.pop();
+    (stack.length ? stack[stack.length - 1].node.children : roots).push(node);
+    stack.push({ node, level: it.level });
+  }
+  return roots;
+}
 
 /** Pure composition of a document's page structure from its items, stored layout rows,
  *  compiled line stream and lifted per-text titles. Deterministic → the bench and the
@@ -333,7 +360,42 @@ export function deriveBooklet(
   });
   const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
 
-  return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines, folioOfLine };
+  // ── PDF navigation outline (bookmarks) ──
+  // Physical page index (0-based) of each body-unit's base page: front matter = F pages,
+  // each spread = 2 (verso, recto), each title unit = 1. A section heading sits on the
+  // spread's RECTO, so its bookmark points at unitBase+1.
+  const F = frontMatter.length;
+  const unitBase: number[] = [];
+  { let p = F; for (const u of bodyUnits) { unitBase.push(p); p += u.kind === 'spread' ? 2 : 1; } }
+  const rectoPageOfLine = (idx: number) => {
+    for (let j = 0; j < bodyUnits.length; j++) {
+      const u = bodyUnits[j];
+      if (u.kind === 'spread' && u.s.start <= idx && idx < u.s.end) return unitBase[j] + 1;
+    }
+    return F;
+  };
+  const navOutline: NavNode[] = orderedTexts.map((it) => {
+    const custom = furniture && lang != null ? furnitureBodyOf(furniture, it, lang) : null;
+    let titleSrc: string;
+    if (custom && custom.trim()) titleSrc = custom;
+    else {
+      const tl = titleByItem.get(it.id) ?? [];
+      titleSrc = (tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation) || it.text_title || '';
+    }
+    const titleUnitIdx = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
+    const startLine = itemStartLine.get(it.id);
+    const pageIndex = titleUnitIdx >= 0 ? unitBase[titleUnitIdx]
+      : (startLine != null ? rectoPageOfLine(startLine) : F);
+    const sections: { title: string; pageIndex: number; level: number }[] = [];
+    lines.forEach((l, i) => {
+      if (l.itemId !== it.id || l.role !== 'sapche' || !l.translation) return;
+      sections.push({ title: plainTextOf(l.translation), pageIndex: rectoPageOfLine(i), level: l.level ?? 0 });
+    });
+    return { title: plainTextOf(titleSrc), pageIndex, children: nestByLevel(sections) };
+  });
+
+  return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,
+           mainTitleLines, folioOfLine, navOutline };
 }
 
 /** The per-language authored body of a furniture item (copyright text etc.). */
