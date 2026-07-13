@@ -525,7 +525,7 @@ CREATE TABLE IF NOT EXISTS document_layout (
     item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
     anchor_syl_id TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN
-                     ('page_break','line_space','line_nospace','wrap_extend')),
+                     ('page_break','line_space','line_nospace','wrap_extend','hairline')),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -644,6 +644,38 @@ def _add_missing_columns(conn) -> None:
         for name, decl in columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
+def _rebuild_document_layout_kinds(conn) -> None:
+    """Widen `document_layout.kind`'s CHECK to include 'hairline' (the mid-content
+    hairline split). SQLite can't alter a CHECK in place, so rebuild the table when an
+    older one predates the kind. No-op on fresh DBs (SCHEMA already lists it)."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
+    ).fetchone()
+    if not row or "'hairline'" in row["sql"]:
+        return
+    conn.execute("""
+        CREATE TABLE document_layout_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
+            anchor_syl_id TEXT NOT NULL,
+            kind         TEXT NOT NULL CHECK (kind IN
+                             ('page_break','line_space','line_nospace','wrap_extend','hairline')),
+            char_offset  INTEGER,
+            value        REAL,
+            lang         TEXT,
+            UNIQUE(document_id, item_id, anchor_syl_id, kind, lang)
+        )""")
+    conn.execute("""
+        INSERT INTO document_layout_new
+            (id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang)
+        SELECT id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang
+        FROM document_layout""")
+    conn.execute("DROP TABLE document_layout")
+    conn.execute("ALTER TABLE document_layout_new RENAME TO document_layout")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_id)")
 
 
 def _rebuild_phonetics_lang(conn) -> None:
@@ -1027,6 +1059,7 @@ def init_db():
         _drop_status_columns(conn)
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
+        _rebuild_document_layout_kinds(conn)
         _rebuild_phonetics_lang(conn)
         # Seed the four working languages (idempotent; more are added via the API).
         conn.executemany(

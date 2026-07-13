@@ -30,6 +30,10 @@ export interface DocLine {
   /** Sapche outline nesting depth (0 = top-level) when this line heads a tree node,
    *  so section headings size by depth; null otherwise. */
   level: number | null;
+  /** Title lines only: the title chunk's translation split into its `<p>` pieces, so
+   *  the cover / internal title page can show the first as the main title and the rest
+   *  as the subtitle. Set on every title line (they share their chunk's paragraphs). */
+  paragraphs?: string[];
 }
 
 const rk = (a: string, b: string) => `${a}-${b}`;
@@ -146,6 +150,10 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
   lines.forEach((l, i) => {
     const ck = lineChunkKeys[i];
     const lastOfChunk = ck != null && ck !== (lineChunkKeys[i + 1] ?? null);
+    // For a title line, preserve the whole title chunk's `<p>` structure (main title
+    // vs subtitle) — the per-line translation join above flattens it.
+    const paragraphs = l.tagType === 'title' && ck != null
+      ? splitParagraphs(transFor(chunkByKey.get(ck)!)) : undefined;
     out.push({
       itemId: item.id,
       textId,
@@ -158,6 +166,7 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
       translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
       level: depthBySyl.get(l.startSylId) ?? null,
+      ...(paragraphs && paragraphs.length ? { paragraphs } : {}),
     });
   });
   return out;

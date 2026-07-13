@@ -112,7 +112,10 @@ interface TocRow { title: string; page: number }
  *  ༀ ornament (cover only). */
 const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> = ({ titleLines, seal }) => {
   // The translated title's parts: the first is the main title, the rest the subtitle.
-  const trans = titleLines.map((t) => t.translation).filter((x): x is string => !!x);
+  // Prefer the title chunk's `<p>` structure (carried on any title line); fall back to
+  // one entry per title line.
+  const trans = (titleLines.find((t) => t.paragraphs?.length)?.paragraphs)
+    ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
   return (
     <div className="bk-titlepage">
       {seal && <div className="bk-seal">ༀ</div>}
@@ -471,7 +474,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const stripHtml = (h: string) => h.replace(/<[^>]+>/g, '').trim();
   const tocRows: TocRow[] = textItems.map((it) => {
     const tl = titleByItem.get(it.id) ?? [];
-    const title = tl[0]?.translation ? stripHtml(sanitizeTranslationHtml(tl[0].translation)) : (it.text_title || '');
+    // The main-title paragraph (or the joined first line) for the entry.
+    const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
+    const title = main ? stripHtml(sanitizeTranslationHtml(main)) : (it.text_title || '');
     // Prefer the text's internal title-page folio; else its first body page.
     const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
     const startLine = itemStartLine.get(it.id);
