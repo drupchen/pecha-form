@@ -289,8 +289,11 @@ export interface DocumentItem {
   text_title: string | null;
   caption: string | null;
   body: string | null;
-  /** image_page items only: whether an image has been uploaded. */
+  /** image-carrying furniture (cover/copyright/image_page/backcover): whether an image
+   *  has been uploaded, and its display size in mm (null = natural). */
   has_image?: boolean;
+  image_width_mm?: number | null;
+  image_height_mm?: number | null;
 }
 
 /** The served-image URL for an image_page item (append a cache-buster when it changes). */
@@ -306,6 +309,17 @@ export async function uploadItemImage(itemId: number, file: File): Promise<void>
 
 export async function deleteItemImage(itemId: number): Promise<void> {
   const res = await fetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+/** Set an image's display size in mm (null clears a dimension → natural). */
+export async function setItemImageSize(
+  itemId: number, widthMm: number | null, heightMm: number | null,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/document-items/${itemId}/image/size`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
+  });
   if (!res.ok) throw new Error(await res.text());
 }
 

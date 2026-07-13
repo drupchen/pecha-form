@@ -567,9 +567,16 @@ class DocumentItemOut(BaseModel):
     text_title: Optional[str] = None
     caption: Optional[str] = None
     body: Optional[str] = None
-    # image_page items only: whether an image has been uploaded (Phase D3).
+    # image-carrying furniture (cover/copyright/image_page/backcover): whether an image
+    # has been uploaded, and its display size in mm (null = natural).
     has_image: bool = False
+    image_width_mm: Optional[float] = None
+    image_height_mm: Optional[float] = None
     model_config = ConfigDict(from_attributes=True)
+
+class ImageSizeIn(BaseModel):
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
 
 class DocumentOut(BaseModel):
     id: int

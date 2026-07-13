@@ -26,7 +26,7 @@ from ..schemas import (
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
     DocumentLayoutConfigIn, DocumentLayoutOut,
-    DocumentFurnitureRow, DocumentFurnitureIn,
+    DocumentFurnitureRow, DocumentFurnitureIn, ImageSizeIn,
 )
 from .translations import _sanitize_body
 from .tree_nodes import get_nested_tree
@@ -58,13 +58,18 @@ def _item_out(conn, row) -> DocumentItemOut:
         t = conn.execute("SELECT title FROM texts WHERE id = ?", (row["text_id"],)).fetchone()
         title = t["title"] if t else None
     has_image = False
-    if row["kind"] in ("image_page", "backcover"):
-        has_image = conn.execute(
-            "SELECT 1 FROM document_images WHERE item_id = ?", (row["id"],)).fetchone() is not None
+    w_mm = h_mm = None
+    if row["kind"] in IMAGE_KINDS:
+        img = conn.execute(
+            "SELECT width_mm, height_mm FROM document_images WHERE item_id = ?", (row["id"],)).fetchone()
+        if img is not None:
+            has_image = True
+            w_mm, h_mm = img["width_mm"], img["height_mm"]
     return DocumentItemOut(
         id=row["id"], document_id=row["document_id"], position=row["position"],
         kind=row["kind"], text_id=row["text_id"], text_title=title,
-        caption=row["caption"], body=row["body"], has_image=has_image)
+        caption=row["caption"], body=row["body"], has_image=has_image,
+        image_width_mm=w_mm, image_height_mm=h_mm)
 
 
 def _items(conn, document_id: int) -> List[DocumentItemOut]:
@@ -581,6 +586,9 @@ def _safe_unlink(path: str) -> None:
 
 ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# Furniture kinds that can carry an imported (resizable) image — the cover seal, the
+# copyright/second-cover emblem, the back cover, and standalone image pages.
+IMAGE_KINDS = ("cover", "copyright", "image_page", "backcover")
 
 
 @router.put("/document-items/{item_id}/image")
@@ -599,7 +607,7 @@ async def upload_item_image(item_id: int, file: UploadFile = File(...)):
             "SELECT document_id, kind FROM document_items WHERE id = ?", (item_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Item not found")
-        if row["kind"] not in ("image_page", "backcover"):
+        if row["kind"] not in IMAGE_KINDS:
             raise HTTPException(400, "Item does not support an image")
         conn.execute(
             "INSERT INTO document_images (item_id, document_id, mime, data) VALUES (?, ?, ?, ?) "
@@ -638,5 +646,24 @@ def delete_item_image(item_id: int):
             _touch(conn, row["document_id"])
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.put("/document-items/{item_id}/image/size")
+def set_item_image_size(item_id: int, payload: ImageSizeIn):
+    """Set the image's display size (mm); null clears a dimension (→ natural)."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT document_id FROM document_images WHERE item_id = ?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "No image for this item")
+        conn.execute(
+            "UPDATE document_images SET width_mm = ?, height_mm = ? WHERE item_id = ?",
+            (payload.width_mm, payload.height_mm, item_id))
+        _touch(conn, row["document_id"])
+        conn.commit()
+        return {"ok": True, "width_mm": payload.width_mm, "height_mm": payload.height_mm}
     finally:
         conn.close()

@@ -7,7 +7,7 @@ import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout,
-  uploadItemImage, deleteItemImage, itemImageUrl,
+  uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize,
   type Language, type DocumentItemKind, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
@@ -16,8 +16,8 @@ import { deriveBooklet, type NavNode } from './bookletRender';
 
 /** Furniture kinds that carry per-language authored text and/or an image. */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
-/** Furniture kinds that can hold an uploaded image. */
-const IMAGE_FURNITURE: DocumentItemKind[] = ['image_page', 'backcover'];
+/** Furniture kinds that can hold an uploaded (resizable) image. */
+const IMAGE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -158,6 +158,15 @@ export const DocumentsView: React.FC = () => {
       setImgBust(v => v + 1);
     } catch { /* ignore */ }
     finally { setImgBusy(false); }
+  };
+  const sizeTimer = useRef<number>(0);
+  const onResizeImage = (itemId: number, widthMm: number | null, heightMm: number | null) => {
+    if (!current) return;
+    window.clearTimeout(sizeTimer.current);
+    sizeTimer.current = window.setTimeout(async () => {
+      try { await setItemImageSize(itemId, widthMm, heightMm); await open(current.id); }
+      catch { /* ignore */ }
+    }, 400);
   };
 
   // Secondary texts first (the booklet intent), then the rest; primaries allowed.
@@ -382,6 +391,22 @@ export const DocumentsView: React.FC = () => {
                                         style={{ border: '1px solid var(--cline)' }}>
                                   <Trash2 size={12} /> Remove
                                 </button>
+                              )}
+                              {it.has_image && (
+                                <div className="flex items-center gap-1 text-[10px] text-ink-soft mt-0.5"
+                                     title="Display size in mm; leave height blank to keep the aspect ratio">
+                                  <span>size</span>
+                                  <input type="number" min={0} step={1} defaultValue={it.image_width_mm ?? ''}
+                                         placeholder="w" className="w-11 px-1 py-0.5 rounded bg-white"
+                                         style={{ border: '1px solid var(--cline)' }}
+                                         onChange={e => onResizeImage(it.id, e.target.value === '' ? null : Number(e.target.value), it.image_height_mm ?? null)} />
+                                  <span>×</span>
+                                  <input type="number" min={0} step={1} defaultValue={it.image_height_mm ?? ''}
+                                         placeholder="h" className="w-11 px-1 py-0.5 rounded bg-white"
+                                         style={{ border: '1px solid var(--cline)' }}
+                                         onChange={e => onResizeImage(it.id, it.image_width_mm ?? null, e.target.value === '' ? null : Number(e.target.value))} />
+                                  <span>mm</span>
+                                </div>
                               )}
                             </div>
                           </div>

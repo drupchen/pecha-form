@@ -552,6 +552,8 @@ CREATE TABLE IF NOT EXISTS document_images (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     mime        TEXT NOT NULL,
     data        BLOB NOT NULL,
+    width_mm    REAL,             -- display size; NULL = natural (object-fit: contain)
+    height_mm   REAL,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -606,6 +608,11 @@ CREATE TABLE IF NOT EXISTS style_samples (
 # Additive column migrations for pre-existing tables. Each is applied only if
 # the column is missing, so existing rows and data are untouched.
 _COLUMN_MIGRATIONS = {
+    # Image display size (Phase D3 resize) — added to the pre-existing document_images table.
+    "document_images": [
+        ("width_mm", "REAL"),
+        ("height_mm", "REAL"),
+    ],
     "texts": [
         ("instance_id", "TEXT"),
         ("teaching_id", "TEXT"),

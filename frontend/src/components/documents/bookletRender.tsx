@@ -161,9 +161,11 @@ export interface TocRow {
 }
 
 /** The centred title block (Tibetan title + translated main title / italic subtitle),
- *  shared by the booklet cover and each text's internal title page. `seal` shows the
- *  ༀ ornament (cover only). */
-export const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> = ({ titleLines, seal }) => {
+ *  shared by the booklet cover and each text's internal title page. `seal` shows the ༀ
+ *  ornament (cover only); `image` (a seal/logo) renders in its place when supplied. */
+export const TitleContent: React.FC<{
+  titleLines: DocLine[]; seal?: boolean; image?: React.ReactNode;
+}> = ({ titleLines, seal, image }) => {
   // The translated title's parts: the first is the main title, the rest the subtitle.
   // Prefer the title chunk's `<p>` structure (carried on any title line); fall back to
   // one entry per title line.
@@ -171,7 +173,8 @@ export const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> =
     ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
   return (
     <div className="bk-titlepage">
-      {seal && <div className="bk-seal">ༀ</div>}
+      {image}
+      {seal && !image && <div className="bk-seal">ༀ</div>}
       {titleLines.map((t, i) => (
         <div key={i} className="bk-tibetan bk-title-tib">
           {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
@@ -195,11 +198,30 @@ export const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> =
 export const FurnitureContent: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
 }> = ({ item, titleLines, body, toc }) => {
-  if (item.kind === 'cover') return <TitleContent titleLines={titleLines} seal />;
+  // The imported image, sized from the stored width/height (mm); null = natural.
+  const sized = item.image_width_mm != null || item.image_height_mm != null;
+  const imgStyle: React.CSSProperties = {
+    width: item.image_width_mm ? `${item.image_width_mm}mm` : undefined,
+    height: item.image_height_mm ? `${item.image_height_mm}mm` : undefined,
+  };
+  const bkImage = <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
+                       src={itemImageUrl(item.id)} style={imgStyle} alt="" />;
+
+  if (item.kind === 'cover') {
+    // The seal is a real imported image when present (else the ༀ glyph), above the title.
+    return <TitleContent titleLines={titleLines} seal image={item.has_image ? bkImage : undefined} />;
+  }
   if (item.kind === 'copyright') {
-    return body
-      ? <div className="bk-copyright" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
-      : <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
+    // The copyright ("second cover") emblem above the copyright text.
+    if (!item.has_image && !body) {
+      return <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
+    }
+    return (
+      <div className="bk-copyright">
+        {item.has_image && bkImage}
+        {body && <div dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />}
+      </div>
+    );
   }
   if (item.kind === 'toc') {
     return (
@@ -222,7 +244,7 @@ export const FurnitureContent: React.FC<{
     return item.has_image
       ? (
         <div className="bk-imagepage">
-          <img className="bk-image" src={itemImageUrl(item.id)} alt="" />
+          {bkImage}
           {body && (
             <div className="bk-image-caption"
                  dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
@@ -236,7 +258,7 @@ export const FurnitureContent: React.FC<{
     if (!item.has_image && !body) return null;
     return (
       <div className="bk-backcover">
-        {item.has_image && <img className="bk-image" src={itemImageUrl(item.id)} alt="" />}
+        {item.has_image && bkImage}
         {body && <div className="bk-copyright"
                       dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />}
       </div>

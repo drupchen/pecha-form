@@ -89,12 +89,18 @@
 .bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
 .bk-imagepage { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 4mm; }
-.bk-image { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+/* An explicit mm width/height (inline style) always wins. `.bk-image-nat` (no size set)
+ * gives a sensible default: image pages fill the page, decorations (cover seal, copyright
+ * emblem, back cover) show at a modest size. */
+.bk-image { max-width: 100%; height: auto; object-fit: contain; display: block; margin: 0 auto; }
+.bk-imagepage .bk-image.bk-image-nat { width: 100%; max-height: 100%; }
+.bk-titlepage .bk-image.bk-image-nat,
+.bk-copyright .bk-image.bk-image-nat,
+.bk-backcover .bk-image.bk-image-nat { max-width: 55mm; max-height: 45mm; }
 .bk-image-caption { font-family: var(--font-translation); font-size: 9.5pt; font-style: italic;
   color: #444; text-align: center; }
 .bk-backcover { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 6mm; }
-.bk-backcover .bk-image { max-height: 55%; }
 
 /* ── Print / PDF page (Phase D3) ─────────────────────────────────────────────
  * The print route stacks physical pages sequentially. On screen it previews as
