@@ -43,7 +43,7 @@ export interface DerivedChunk {
  *  `small` outranks `mantra` so a run tagged BOTH (small Sanskrit in small letters)
  *  classifies as `small` — an editable, non-recited translation unit the translator
  *  types in bold, not a phoneticised mantra. A pure mantra run (no small) stays mantra.
- *  (The `[mantra][small][mantra]` connector case is re-merged below in `mergeMantraGaps`.) */
+ *  (A `[mantra][small][mantra]` connector stays one line via the inline-minor rule below.) */
 export const TYPE_PRIORITY = ['small', 'mantra', 'sapche', 'title', 'verse', 'prose'];
 
 /** Types rendered SMALL in the Tibetan (small letters, sapche topic runs). They are
@@ -56,18 +56,26 @@ const MINOR = new Set(['small', 'sapche']);
  *  derivation: each active move excises its source range and splices it in front
  *  of the anchor token (null anchor = end of stream). The rearranged stream then
  *  chunks naturally (the moved fragment forms its own type-homogeneous chunk).
- *  Returns the new stream plus a map syl_id → layout id for "moved here" badges. */
+ *  Returns the new stream plus `movedBy` (moved token → layout id, for the "moved
+ *  here"/"moved in" TARGET badges) and `movedFromBy` (the origin-adjacent token →
+ *  layout id, for the "moved from here" ORIGIN badge — so origins and targets are
+ *  distinguishable). */
 export function applyMoves(
   tokens: EditorToken[],
   layouts: ChunkLayout[],
-): { tokens: EditorToken[]; movedBy: Map<string, number> } {
+): { tokens: EditorToken[]; movedBy: Map<string, number>; movedFromBy: Map<string, number> } {
   const movedBy = new Map<string, number>();
+  const movedFromBy = new Map<string, number>();
   let stream = tokens;
   for (const l of layouts) {
     if (l.kind !== 'move' || l.disabled || !l.src_start_syl_id || !l.src_end_syl_id) continue;
     const si = stream.findIndex(t => t.id === l.src_start_syl_id);
     const ei = stream.findIndex(t => t.id === l.src_end_syl_id);
     if (si < 0 || ei < 0 || ei < si) continue;
+    // Anchor the origin badge to the token adjacent to the excised fragment (the
+    // remainder of the segment it came from, for a partial move).
+    const originAnchor = stream[si - 1]?.id ?? stream[ei + 1]?.id;
+    if (originAnchor) movedFromBy.set(originAnchor, l.id);
     const frag = stream.slice(si, ei + 1);
     const rest = [...stream.slice(0, si), ...stream.slice(ei + 1)];
     let at = l.anchor_syl_id ? rest.findIndex(t => t.id === l.anchor_syl_id) : rest.length;
@@ -75,7 +83,7 @@ export function applyMoves(
     stream = [...rest.slice(0, at), ...frag, ...rest.slice(at)];
     frag.forEach(t => movedBy.set(t.id, l.id));
   }
-  return { tokens: stream, movedBy };
+  return { tokens: stream, movedBy, movedFromBy };
 }
 
 /** Insert the scramble layer's synthetic TITLE chunks: each appears before the
@@ -166,6 +174,11 @@ export function deriveChunks(
   let curText = '';
   let curRenders: { id: string; render: string; small?: boolean }[] = [];
   let curType: { name: string; color: string | null } | null = null;
+  // The move (scramble) layout id of the current chunk's tokens. A moved fragment is a
+  // deliberately relocated SEGMENT, so its edges are hard chunk boundaries — it never gets
+  // absorbed into a neighbour by the inline-minor rule (which would drop it, e.g., into a
+  // mantra and out of translation scope).
+  let curMovedId: number | undefined;
 
   const flush = () => {
     const substantial = cur.filter(t => t.text.trim() !== '');
@@ -193,6 +206,7 @@ export function deriveChunks(
     curText = '';
     curRenders = [];
     curType = null;
+    curMovedId = undefined;
   };
 
   // Whether a line break occurred since the last substantial token — used to tell an
@@ -208,13 +222,18 @@ export function deriveChunks(
     // of splitting the translation segment. Its break intact → it still stands alone.
     let tokenSmall = false;
     if (t.text.trim() !== '') {
+      const curMoved = movedBy?.get(t.id);
+      // A moved-fragment edge always splits (before any type/inline-minor logic), so a
+      // relocated small/sapche segment keeps its own chunk instead of being merged into
+      // the neighbour it was dropped next to.
+      if (curType != null && curMoved !== curMovedId) { flush(); sawBreak = false; }
       const ty = typeOf(t);
       if (curType != null && ty.name !== curType.name) {
         const minorInline = (MINOR.has(ty.name) || MINOR.has(curType.name)) && !sawBreak;
         if (!minorInline) flush();
         else if (MINOR.has(curType.name) && !MINOR.has(ty.name)) curType = ty; // real type wins
       }
-      if (curType == null) curType = ty;
+      if (curType == null) { curType = ty; curMovedId = curMoved; }
       tokenSmall = MINOR.has(ty.name);
       sawBreak = false;
     }

@@ -41,6 +41,7 @@ export const WorkspaceView: React.FC = () => {
   const searchMatchIndex = useUIStore(s => s.searchMatchIndex);
   const setSearchMatchIndex = useUIStore(s => s.setSearchMatchIndex);
   const fullscreen = useUIStore(s => s.workspaceFullscreen);
+  const refreshNonce = useUIStore(s => s.refreshNonce);
   const toggleFullscreen = useUIStore(s => s.toggleWorkspaceFullscreen);
   const setFullscreen = useUIStore(s => s.setWorkspaceFullscreen);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
@@ -107,7 +108,7 @@ export const WorkspaceView: React.FC = () => {
     fetchNodes(id);
     fetchPassages(id);
     fetchBreaks(id);
-  }, [currentText, fetchTags, fetchSpans, fetchMarkers, fetchSuggestions, fetchNotes, fetchCategories, fetchNodes, fetchPassages, fetchBreaks]);
+  }, [currentText, refreshNonce, fetchTags, fetchSpans, fetchMarkers, fetchSuggestions, fetchNotes, fetchCategories, fetchNodes, fetchPassages, fetchBreaks]);
 
   if (!currentText) {
     return (

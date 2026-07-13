@@ -1,8 +1,9 @@
 import React from 'react';
-import { Layout, FileText, Undo2, Languages, Volume2, Library } from 'lucide-react';
+import { Layout, FileText, Undo2, Languages, Volume2, Library, RefreshCw } from 'lucide-react';
 import type { Route } from '../App';
 import { useUndoStore } from '../store/useUndoStore';
 import { useTextStore } from '../store/useTextStore';
+import { useUIStore } from '../store/useUIStore';
 
 interface HeaderProps {
   currentRoute: Route;
@@ -26,6 +27,7 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
   const undo = useUndoStore(s => s.undo);
   const canUndo = historyLen > 0;
   const hasText = useTextStore(s => s.currentText != null);
+  const bumpRefresh = useUIStore(s => s.bumpRefresh);
   return (
     <header
       className="shrink-0 border-b text-mist-100"
@@ -51,6 +53,16 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
         </div>
 
         <nav className="flex items-center gap-1">
+          {hasText && (
+            <button
+              onClick={() => bumpRefresh()}
+              className="px-2 py-1.5 rounded-md flex items-center gap-1 text-sm font-medium text-mist-200 hover:text-gold hover:bg-white/5 transition-colors"
+              title="Refresh — pull the latest lower-layer changes into this view"
+            >
+              <RefreshCw size={16} />
+              Refresh
+            </button>
+          )}
           <button
             onClick={() => { if (canUndo) void undo(); }}
             disabled={!canUndo}

@@ -63,6 +63,7 @@ export const TranslateView: React.FC = () => {
   const breakOverrides = useDisplayBreakStore(s => s.breaks);
   const fetchBreaks = useDisplayBreakStore(s => s.fetchBreaks);
   const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
+  const refreshNonce = useUIStore(s => s.refreshNonce);
   const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
   const treeNodes = useTreeNodeStore(s => s.nodes);
   const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
@@ -174,21 +175,23 @@ export const TranslateView: React.FC = () => {
     fetchChunks(id);
     fetchCollab(id);
     setArmedMove(null);
-  }, [currentText, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchLanguages, fetchChunks, fetchCollab]);
+  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchLanguages, fetchChunks, fetchCollab]);
 
   // The translator's units: scramble MOVES rearrange the token stream first, the
   // stream chunks naturally, then synthetic TITLE chunks are spliced in. `movedBy`
   // (syl → layout id) marks moved-in tokens and drives the per-chunk undo pills.
-  const { chunks, movedBy, streamIds } = useMemo(() => {
+  const { chunks, movedBy, movedFromBy, streamIds } = useMemo(() => {
     if (!tokens.length) {
-      return { chunks: [], movedBy: new Map<string, number>(), streamIds: [] as string[] };
+      return { chunks: [], movedBy: new Map<string, number>(),
+               movedFromBy: new Map<string, number>(), streamIds: [] as string[] };
     }
     const markerOffsets = new Set(markers.map(m => m.position));
-    const { tokens: rearranged, movedBy } = applyMoves(tokens, layouts);
+    const { tokens: rearranged, movedBy, movedFromBy } = applyMoves(tokens, layouts);
     const derived = deriveChunks(rearranged, markerOffsets, spans, breakOverrides, lineBreakGroups, movedBy);
     return {
       chunks: insertTitleChunks(derived, layouts),
       movedBy,
+      movedFromBy,
       streamIds: rearranged.map(t => t.id),
     };
   }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts]);
@@ -712,6 +715,25 @@ export const TranslateView: React.FC = () => {
                               title="Syllables moved here for translation flow — their original place is elsewhere in the Tibetan"
                             >
                               {layoutId === u.movedLayoutId ? 'moved here' : 'moved in'}
+                              <button
+                                type="button"
+                                onClick={() => void removeLayout(layoutId)
+                                  .catch((e: any) => setSaveError(e.message))}
+                                className="underline underline-offset-2"
+                                title="Undo the move"
+                              >
+                                undo
+                              </button>
+                            </span>
+                          ))}
+                        {[...new Set(u.tokens.map(t => movedFromBy.get(t.id)).filter((x): x is number => x != null))]
+                          .map(layoutId => (
+                            <span
+                              key={`mvf-${layoutId}`}
+                              className="px-1.5 rounded-full bg-gold/20 text-amber-robe flex items-center gap-1"
+                              title="Part of this segment was moved elsewhere for translation flow"
+                            >
+                              moved from here
                               <button
                                 type="button"
                                 onClick={() => void removeLayout(layoutId)

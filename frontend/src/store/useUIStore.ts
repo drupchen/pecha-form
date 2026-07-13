@@ -44,6 +44,11 @@ interface UIState {
    *  the selection", or a backend rejection). Cleared when (dis)arming placement. */
   passageNotice: string | null;
   setPassageNotice: (v: string | null) => void;
+  /** Monotonic "refresh now" signal. Bumped by the Header Refresh button; every
+   *  text-scoped view lists it in its data-fetch effect deps so a bump re-pulls the
+   *  current text's live-inherited data into whatever view is open. */
+  refreshNonce: number;
+  bumpRefresh: () => void;
   /** Tagger-pane search query. Empty string disables search. */
   searchQuery: string;
   setSearchQuery: (q: string) => void;
@@ -111,6 +116,8 @@ export const useUIStore = create<UIState>((set) => ({
   setPendingPassageSource: (v) => set({ pendingPassageSource: v, passageNotice: null }),
   passageNotice: null,
   setPassageNotice: (v) => set({ passageNotice: v }),
+  refreshNonce: 0,
+  bumpRefresh: () => set((s) => ({ refreshNonce: s.refreshNonce + 1 })),
   searchQuery: '',
   setSearchQuery: (q) => set({ searchQuery: q, searchMatchIndex: 0 }),
   searchMatchIndex: 0,

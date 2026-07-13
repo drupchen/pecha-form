@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Mark, mergeAttributes } from '@tiptap/core';
+import { Fragment, Slice } from '@tiptap/pm/model';
 import { Bold, Italic, MessageSquarePlus } from 'lucide-react';
 import { sanitizeTranslationHtml } from './sanitize';
 
@@ -60,6 +61,44 @@ const InnerEditor: React.FC<{
     extensions: EXTENSIONS,
     content: sanitizeTranslationHtml(initial),
     autofocus: false,
+    editorProps: {
+      // A spreadsheet copy ships an HTML <table>; ProseMirror (no table extension) would
+      // flatten it onto one line. Turn each row into a paragraph while KEEPING the cell's
+      // inline bold/italic, so a multi-line paste preserves both newlines AND styling.
+      // One <p> per line = one translation line (paginator pairs the i-th <p> with the
+      // i-th Tibetan line). Non-table HTML is left alone (ProseMirror already keeps its
+      // blocks + marks).
+      transformPastedHTML(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const rows = Array.from(doc.querySelectorAll('tr'));
+        if (!rows.length) return html;
+        const cellHtml = (cell: Element) => {
+          const style = cell.getAttribute('style') || '';
+          const inner = cell.innerHTML;
+          const bold = /font-weight\s*:\s*(bold|[5-9]\d\d)/i.test(style);
+          const ital = /font-style\s*:\s*italic/i.test(style);
+          return bold || ital ? `<span style="${style}">${inner}</span>` : inner;
+        };
+        return rows.map((tr) => {
+          const cells = Array.from(tr.children).filter((c) => /^(td|th)$/i.test(c.tagName));
+          return `<p>${cells.map(cellHtml).join(' ')}</p>`;
+        }).join('');
+      },
+      // Plain-text-only paste (no HTML on the clipboard): split newlines into paragraphs.
+      handlePaste(view, event) {
+        if (event.clipboardData?.getData('text/html')?.trim()) return false; // HTML path handles it
+        const text = event.clipboardData?.getData('text/plain') ?? '';
+        const lines = text.replace(/\r\n?/g, '\n').split('\n');
+        while (lines.length > 1 && lines[lines.length - 1].trim() === '') lines.pop();
+        if (lines.length <= 1) return false;
+        const { paragraph } = view.state.schema.nodes;
+        const nodes = lines.map((l) =>
+          l ? paragraph.create(null, view.state.schema.text(l)) : paragraph.create());
+        const slice = new Slice(Fragment.fromArray(nodes), 1, 1);
+        view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
+        return true;
+      },
+    },
   });
 
   // Place the caret at the end WITHOUT scrolling: TipTap's built-in autofocus

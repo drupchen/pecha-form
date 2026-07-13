@@ -5,6 +5,7 @@ import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
 import { useEditorTokenStore } from '../../store/useEditorTokenStore';
 import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
+import { useUIStore } from '../../store/useUIStore';
 import { usePhoneticsStore, phonKey } from '../../store/usePhoneticsStore';
 import { deriveLines, type PhoneticLine } from './lines';
 import { generateBo, generateSkt, STYLE_LANGS, type BoStyle, type BoLang } from './generate';
@@ -49,6 +50,7 @@ export const PhoneticsView: React.FC = () => {
   const rows = usePhoneticsStore(s => s.rows);
   const fetchPhonetics = usePhoneticsStore(s => s.fetchPhonetics);
   const save = usePhoneticsStore(s => s.save);
+  const refreshNonce = useUIStore(s => s.refreshNonce);
 
   const [tab, setTab] = useState<'bo' | 'skt'>('bo');
   const [docLang, setDocLang] = useState<DocLang>('en');
@@ -65,14 +67,14 @@ export const PhoneticsView: React.FC = () => {
     fetchSpans(id);
     fetchMarkers(id);
     fetchBreaks(id);
-  }, [currentText, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks]);
+  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks]);
 
   // Phonetics are per-language: refetch and drop drafts on a document or language change.
   useEffect(() => {
     if (!currentText) return;
     fetchPhonetics(currentText.id, docLang);
     setDrafts(new Map());
-  }, [currentText, docLang, fetchPhonetics]);
+  }, [currentText, docLang, refreshNonce, fetchPhonetics]);
 
   const lines = useMemo<PhoneticLine[]>(() => {
     if (!tokens.length) return [];
