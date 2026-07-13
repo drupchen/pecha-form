@@ -73,9 +73,15 @@ export function resolveStyles(org: StyleMap, doc: StyleMap): Record<string, Styl
   return out;
 }
 
+/** A stored family value is a var()/stack (defaults) or a plain family name (a designer
+ *  choice) — plain names get quoted + a serif fallback. */
+export function formatFamily(v: string): string {
+  return /^var\(|,/.test(v) ? v : `'${v}', serif`;
+}
+
 function ruleFor(selector: string, p: StyleProps): string {
   const decls: string[] = [];
-  if (p.fontFamily) decls.push(`font-family: ${p.fontFamily}`);
+  if (p.fontFamily) decls.push(`font-family: ${formatFamily(p.fontFamily)}`);
   if (p.fontSize) decls.push(`font-size: ${p.fontSize}`);
   if (p.fontWeight != null) decls.push(`font-weight: ${p.fontWeight}`);
   if (p.italic != null) decls.push(`font-style: ${p.italic ? 'italic' : 'normal'}`);

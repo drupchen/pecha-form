@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus, FileDown } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus, FileDown, Type } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
@@ -11,6 +11,7 @@ import {
   deriveBooklet, furnitureBodyOf, type LineAdj,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
+import { StyleDesigner } from './StyleDesigner';
 import '../../styles/booklet.css';
 
 /**
@@ -34,8 +35,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [styleCss, setStyleCss] = useState('');
+  const [showStyles, setShowStyles] = useState(false);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
+  const reloadStyles = () => { void loadBookletStyleCss(documentId).then(setStyleCss); };
   const measureRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -318,6 +321,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
            title={`Export the ${lang.toUpperCase()} edition as a print-ready PDF`}>
           <FileDown size={12} /> PDF
         </a>
+        <button type="button" onClick={() => setShowStyles(v => !v)}
+                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${showStyles ? 'text-lapis' : 'text-ink-soft'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title="Edit booklet typography (org styles / per-document overrides)">
+          <Type size={12} /> styles
+        </button>
         <div className="flex-1" />
         <span className="text-ink-soft flex items-center gap-1">
           {(loading || seeding) && <RefreshCw size={12} className="animate-spin" />}
@@ -325,8 +334,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         </span>
       </div>
 
-      {/* Pages — front-matter furniture, then the virtualized body spreads, then
-          back-matter furniture. Each body spread is a fixed page height. */}
+      {/* Pages (+ optional style designer drawer). Front-matter furniture, then the
+          virtualized body spreads, then back-matter furniture. */}
+      <div className="flex-1 flex overflow-hidden">
       <div ref={scrollRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
            className="flex-1 overflow-auto" style={{ background: 'var(--cream)' }}>
         {frontMatter.length > 0 && (
@@ -363,6 +373,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
             No pages — add text pages (and furniture) in the Documents tab.
           </div>
         )}
+      </div>
+      {showStyles && (
+        <StyleDesigner documentId={documentId} onChange={reloadStyles}
+                       onClose={() => setShowStyles(false)} />
+      )}
       </div>
 
       {/* Measurement container — mounted only during a seed/re-flow pass. */}
