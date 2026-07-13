@@ -273,7 +273,11 @@ export const PhoneticsView: React.FC = () => {
                   {/* Tibetan line */}
                   <div className="w-2/5 shrink-0 tibetan-text whitespace-pre-wrap leading-relaxed">
                     {l.tokens.map((t, ti) => (
-                      <span key={`${l.key}-${ti}`} data-syl-id={t.id}>{t.render}</span>
+                      <span key={`${l.key}-${ti}`} data-syl-id={t.id}
+                            className={t.small ? (l.kind === 'skt' ? 'tib-small implicit-mantra' : 'tib-small') : undefined}
+                            title={t.small && l.kind === 'skt' ? 'Small connector between mantras — implicit mantras to fill in' : undefined}>
+                        {t.render}
+                      </span>
                     ))}
                   </div>
                   {/* Phonetics field */}

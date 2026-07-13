@@ -13,7 +13,29 @@ import { deriveChunks, applyMoves, insertTitleChunks, type DerivedChunk } from '
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
 import { sanitizeTranslationHtml } from './sanitize';
+import { splitParagraphs } from '../documents/compile';
 import type { TranslationChunk } from '../../api/client';
+
+/** Group a chunk's tokens into printed lines (a token whose render carries a
+ *  newline ends its line), so each line can be numbered — matching the Tibetan
+ *  line count the paginator pairs 1:1 with the translation's paragraphs. */
+type RenderToken = { id: string; render: string; small?: boolean };
+function tibetanLines(tokens: RenderToken[]): RenderToken[][] {
+  const lines: RenderToken[][] = [];
+  let cur: RenderToken[] = [];
+  for (const t of tokens) {
+    cur.push(t);
+    if (t.render.includes('\n')) { lines.push(cur); cur = []; }
+  }
+  // Trailing remainder: a real final line if it has visible text; a whitespace-only
+  // tail (e.g. a dangling tsheg) rides on the last line instead of a spurious row.
+  if (cur.length) {
+    const visible = cur.some(t => t.render.replace(/\n/g, '').trim() !== '');
+    if (visible || lines.length === 0) lines.push(cur);
+    else lines[lines.length - 1].push(...cur);
+  }
+  return lines;
+}
 
 /** Read-only rendering of a stored translation body (sanitized HTML subset). */
 const TranslationBody: React.FC<{ body: string; className?: string }> = ({ body, className }) => (
@@ -42,6 +64,8 @@ export const TranslateView: React.FC = () => {
   const fetchBreaks = useDisplayBreakStore(s => s.fetchBreaks);
   const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
   const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
+  const treeNodes = useTreeNodeStore(s => s.nodes);
+  const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
 
   const languages = useTranslationStore(s => s.languages);
   const serverChunks = useTranslationStore(s => s.chunks);
@@ -83,6 +107,48 @@ export const TranslateView: React.FC = () => {
     left: number; top: number; height: number; sylId: string; side: 'before' | 'after';
   } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // On-screen text size (Translate tab only) — Tibetan and translation resize
+  // independently and persist across reloads. Booklet output is untouched.
+  const [boSize, setBoSize] = useState(() => Number(localStorage.getItem('tr-size-bo')) || 1.25);
+  const [trSize, setTrSize] = useState(() => Number(localStorage.getItem('tr-size-tr')) || 0.875);
+  useEffect(() => { localStorage.setItem('tr-size-bo', String(boSize)); }, [boSize]);
+  useEffect(() => { localStorage.setItem('tr-size-tr', String(trSize)); }, [trSize]);
+  const clampSize = (n: number) => Math.max(0.75, Math.min(3, Math.round(n * 1000) / 1000));
+
+  // Sapche scroll-spy: as the chunk list scrolls, highlight (and scroll into view)
+  // the outline section that owns the chunk currently at the top of the viewport.
+  const linkedNodes = useMemo(
+    () => treeNodes.filter(n => n.segment_start != null)
+      .sort((a, b) => a.segment_start! - b.segment_start!),
+    [treeNodes],
+  );
+  const spyNodeId = useRef<number | null>(null);
+  const spyRaf = useRef<number | null>(null);
+  const onListScroll = () => {
+    if (spyRaf.current != null) return;
+    spyRaf.current = requestAnimationFrame(() => {
+      spyRaf.current = null;
+      const list = listRef.current;
+      if (!list || linkedNodes.length === 0) return;
+      const top = list.getBoundingClientRect().top;
+      const rows = list.querySelectorAll<HTMLElement>('[data-link-key]');
+      let curOffset: number | null = null;
+      for (const r of rows) {
+        if (r.getBoundingClientRect().top - top <= 8) curOffset = Number(r.dataset.linkKey);
+        else break;
+      }
+      if (curOffset == null && rows.length) curOffset = Number(rows[0].dataset.linkKey);
+      if (curOffset == null) return;
+      let node = null as (typeof linkedNodes)[number] | null;
+      for (const n of linkedNodes) { if (n.segment_start! <= curOffset) node = n; else break; }
+      if (!node || node.id === spyNodeId.current) return;
+      spyNodeId.current = node.id;
+      setSelectedTreeNodeId(node.id);
+      document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  };
 
   // Esc cancels an armed placement or a pending selection button.
   useEffect(() => {
@@ -262,31 +328,47 @@ export const TranslateView: React.FC = () => {
     }).catch((e: any) => setSaveError(e.message || 'Move failed'));
   };
 
-  const tibetanTokens = (u: DerivedChunk) => (
-    <div
-      className={`tibetan-text whitespace-pre-wrap ${u.tagType === 'mantra' ? 'opacity-40' : ''} ${
-        armedMove && movable(u) ? 'cursor-crosshair' : ''}`}
-      onMouseUp={!armedMove && movable(u) ? handleChunkMouseUp : undefined}
-      onMouseMove={armedMove && movable(u) ? handlePlacementMove : undefined}
-      onClick={armedMove && movable(u) ? handlePlacementClick : undefined}
-    >
-      {u.tokens.map((t, ti) => {
-        const mv = movedBy.get(t.id);
-        return (
-          <span
-            key={`${u.key}-${ti}`}
-            data-syl-id={t.id}
-            data-ro={ti}
-            data-reo={ti + 1}
-            className={mv != null ? 'moved-syl' : undefined}
-            title={mv != null ? 'Moved here for translation flow — its original place is elsewhere in the Tibetan' : undefined}
-          >
-            {t.render}
-          </span>
-        );
-      })}
-    </div>
-  );
+  const tibetanTokens = (u: DerivedChunk) => {
+    const lines = tibetanLines(u.tokens);
+    let ti = -1; // running token index across lines, preserved for move selection
+    return (
+      <div
+        className={`tibetan-text ${u.tagType === 'mantra' ? 'opacity-40' : ''} ${
+          armedMove && movable(u) ? 'cursor-crosshair' : ''}`}
+        onMouseUp={!armedMove && movable(u) ? handleChunkMouseUp : undefined}
+        onMouseMove={armedMove && movable(u) ? handlePlacementMove : undefined}
+        onClick={armedMove && movable(u) ? handlePlacementClick : undefined}
+      >
+        {lines.map((line, li) => (
+          <div key={`${u.key}-l${li}`} className="tibetan-line">
+            <span className="tibetan-line-no" contentEditable={false}>{li + 1}</span>
+            <span className="tibetan-line-text">
+              {line.map((t) => {
+                ti += 1;
+                const mv = movedBy.get(t.id);
+                return (
+                  <span
+                    key={`${u.key}-${ti}`}
+                    data-syl-id={t.id}
+                    data-ro={ti}
+                    data-reo={ti + 1}
+                    className={[mv != null ? 'moved-syl' : '',
+                                t.small ? (u.tagType === 'mantra' ? 'tib-small implicit-mantra' : 'tib-small') : '']
+                                .filter(Boolean).join(' ') || undefined}
+                    title={mv != null ? 'Moved here for translation flow — its original place is elsewhere in the Tibetan'
+                      : t.small && u.tagType === 'mantra' ? 'Small connector between mantras — implicit mantras to fill in' : undefined}
+                  >
+                    {/* Break is structural now (line div), so drop the render's trailing newline. */}
+                    {t.render.replace(/\n/g, '')}
+                  </span>
+                );
+              })}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   const sourceContent = (u: DerivedChunk, match: TranslationChunk | null): React.ReactNode => {
     if (sourceLang === 'bo') {
@@ -395,6 +477,21 @@ export const TranslateView: React.FC = () => {
             </button>
           ))}
         </div>
+        {/* On-screen size — Tibetan and translation resize independently. */}
+        {([
+          { label: 'བོ', title: 'Tibetan size', val: boSize, set: setBoSize },
+          { label: 'Aa', title: 'Translation size', val: trSize, set: setTrSize },
+        ] as const).map(s => (
+          <span key={s.title} className="flex items-center gap-0.5" title={s.title}>
+            <span className="text-ink-soft mr-0.5">{s.label}</span>
+            <button type="button" onClick={() => s.set(v => clampSize(v - 0.125))}
+                    className="px-1.5 py-0.5 rounded-md hover:bg-cream leading-none"
+                    style={{ border: '1px solid var(--cline)' }}>−</button>
+            <button type="button" onClick={() => s.set(v => clampSize(v + 0.125))}
+                    className="px-1.5 py-0.5 rounded-md hover:bg-cream leading-none"
+                    style={{ border: '1px solid var(--cline)' }}>+</button>
+          </span>
+        ))}
         <div className="flex-1" />
         {/* Notification strip: what needs the owner's attention in this booklet. */}
         {(counts.updates > 0 || counts.stale > 0 || counts.pending > 0 || counts.copies > 0) && (
@@ -459,7 +556,9 @@ export const TranslateView: React.FC = () => {
         >
           <TreePane forceConsult />
         </div>
-        <div ref={listRef} className="flex-1 overflow-y-auto px-5 py-4 relative">
+        <div ref={listRef} onScroll={onListScroll}
+             className="translate-list flex-1 overflow-y-auto px-5 py-4 relative"
+             style={{ ['--tr-size-bo' as any]: `${boSize}rem`, ['--tr-size-tr' as any]: `${trSize}rem` }}>
           {/* Insertion caret for in-chunk placement (hairline mechanism). */}
           {hairline && (
             <div
@@ -544,6 +643,12 @@ export const TranslateView: React.FC = () => {
               // Writes ALWAYS target the unit's own range — the Tibetan chunking is
               // the hard reference (a unit-exact chunk is created on first save).
               const canonSyl = { start: u.startSylId, end: u.endSylId };
+              // Line-count parity: pagination pairs each Tibetan line with the
+              // translation's i-th paragraph, so the two counts should match.
+              const boLines = tibetanLines(u.tokens).length;
+              const trLines = splitParagraphs(effectiveBody).length;
+              const showParity = u.tagType !== 'mantra';
+              const parityOk = boLines === trLines;
               return (
                 <React.Fragment key={u.key}>
                   {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`)}
@@ -555,6 +660,17 @@ export const TranslateView: React.FC = () => {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft flex-wrap">
                         <span className="font-mono">#{i + 1}</span>
+                        {showParity && (
+                          <span
+                            className={`px-1.5 rounded-full font-mono ${
+                              parityOk ? 'bg-cream text-ink-soft' : 'bg-vermilion/15 text-vermilion'}`}
+                            title={parityOk
+                              ? 'Tibetan lines and translation lines match — they pair 1:1 on the printed page'
+                              : 'Line-count mismatch — pagination pairs each Tibetan line with the translation’s line, so these should be equal'}
+                          >
+                            bo {boLines} · {targetLang} {trLines}
+                          </span>
+                        )}
                         <span
                           className="px-1.5 rounded-full font-medium"
                           style={u.tagColor

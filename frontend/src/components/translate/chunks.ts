@@ -27,8 +27,10 @@ export interface DerivedChunk {
   /** The classifying tag's color (pill tint), null for 'plain'. */
   tagColor: string | null;
   /** Per-token render strings (token text + synthesized line breaks) so the bench
-   *  can render the Tibetan as selectable syllable spans (data-syl-id). */
-  tokens: { id: string; render: string }[];
+   *  can render the Tibetan as selectable syllable spans (data-syl-id). `small` marks
+   *  a token that came from a small connector re-merged into a mantra line (`mergeChunks`),
+   *  so the editors can flag it (smaller + red) as an implicit-mantra cue. */
+  tokens: { id: string; render: string; small?: boolean }[];
   /** Set when this chunk's content was MOVED here by a scramble layout row —
    *  the translator sees it originally belonged elsewhere. */
   movedLayoutId?: number;
@@ -37,9 +39,18 @@ export interface DerivedChunk {
   titleLayout?: ChunkLayout;
 }
 
-/** Content-type priority: the FIRST of these covering a substantial token wins
- *  (a mantra seed inside a verse run classifies as mantra, etc.). */
-export const TYPE_PRIORITY = ['mantra', 'small', 'sapche', 'title', 'verse', 'prose'];
+/** Content-type priority: the FIRST of these covering a substantial token wins.
+ *  `small` outranks `mantra` so a run tagged BOTH (small Sanskrit in small letters)
+ *  classifies as `small` — an editable, non-recited translation unit the translator
+ *  types in bold, not a phoneticised mantra. A pure mantra run (no small) stays mantra.
+ *  (The `[mantra][small][mantra]` connector case is re-merged below in `mergeMantraGaps`.) */
+export const TYPE_PRIORITY = ['small', 'mantra', 'sapche', 'title', 'verse', 'prose'];
+
+/** Types rendered SMALL in the Tibetan (small letters, sapche topic runs). They are
+ *  transparent to chunking when inline — a break-inhibited minor run rides inside the
+ *  surrounding line instead of splitting it — and their tokens are flagged `small` so
+ *  the Translate/Phonetics editors render them smaller. Extend if others become small. */
+const MINOR = new Set(['small', 'sapche']);
 
 /** Apply the scramble layer's MOVE rows as token-stream surgery BEFORE chunk
  *  derivation: each active move excises its source range and splices it in front
@@ -153,7 +164,7 @@ export function deriveChunks(
   const chunks: DerivedChunk[] = [];
   let cur: EditorToken[] = [];
   let curText = '';
-  let curRenders: { id: string; render: string }[] = [];
+  let curRenders: { id: string; render: string; small?: boolean }[] = [];
   let curType: { name: string; color: string | null } | null = null;
 
   const flush = () => {
@@ -184,29 +195,41 @@ export function deriveChunks(
     curType = null;
   };
 
+  // Whether a line break occurred since the last substantial token — used to tell an
+  // INLINE minor run (its break inhibited) from one on its own line.
+  let sawBreak = false;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     // Segment boundary (marker) BEFORE this token.
-    if (cur.length > 0 && markerOffsets.has(t.start_offset)) flush();
-    // Content-type change BEFORE this token: chunks are type-homogeneous, so a
-    // substantial token of a different type starts a new chunk. Whitespace and
-    // newline tokens are neutral — they ride with the current chunk.
+    if (cur.length > 0 && markerOffsets.has(t.start_offset)) { flush(); sawBreak = false; }
+    // Content-type change BEFORE this token. Chunks are type-homogeneous EXCEPT that a
+    // `MINOR` run (small letters / sapche) rendered small in the Tibetan is transparent
+    // when INLINE (no break separates it): it rides inside the surrounding line instead
+    // of splitting the translation segment. Its break intact → it still stands alone.
+    let tokenSmall = false;
     if (t.text.trim() !== '') {
       const ty = typeOf(t);
-      if (curType != null && ty.name !== curType.name) flush();
+      if (curType != null && ty.name !== curType.name) {
+        const minorInline = (MINOR.has(ty.name) || MINOR.has(curType.name)) && !sawBreak;
+        if (!minorInline) flush();
+        else if (MINOR.has(curType.name) && !MINOR.has(ty.name)) curType = ty; // real type wins
+      }
       if (curType == null) curType = ty;
+      tokenSmall = MINOR.has(ty.name);
+      sawBreak = false;
     }
     const count = effective(i);
     const isReal = t.text.includes('\n');
     cur.push(t);
     const render = (isReal ? '' : t.text) + (count >= 1 ? '\n' : '');
     curText += render;
-    curRenders.push({ id: t.id, render });
+    curRenders.push(tokenSmall ? { id: t.id, render, small: true } : { id: t.id, render });
     // Empty line AFTER this token: explicit count-2 override, or a real newline
     // pair (a blank line in the raw text). In line mode, ANY break flushes.
     const nxt = tokens[i + 1];
     if ((lineLevel && count >= 1) || count >= 2
-        || (isReal && nxt != null && nxt.text.includes('\n'))) flush();
+        || (isReal && nxt != null && nxt.text.includes('\n'))) { flush(); sawBreak = false; }
+    else if (count >= 1) sawBreak = true;
   }
   flush();
   return chunks;

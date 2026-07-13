@@ -184,7 +184,7 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
  *  regex) so HTML entities in the text decode (`&#x27;` → `'`); a paragraph with inline
  *  markup keeps it (innerHTML), a plain one is returned as decoded text — either way the
  *  downstream `sanitizeTranslationHtml` renders it once, without re-encoding the `&`. */
-function splitParagraphs(html: string): string[] {
+export function splitParagraphs(html: string): string[] {
   if (!html) return [];
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const ps = Array.from(doc.body.querySelectorAll('p'));

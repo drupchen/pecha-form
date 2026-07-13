@@ -59,8 +59,16 @@ const InnerEditor: React.FC<{
   const editor = useEditor({
     extensions: EXTENSIONS,
     content: sanitizeTranslationHtml(initial),
-    autofocus: 'end',
+    autofocus: false,
   });
+
+  // Place the caret at the end WITHOUT scrolling: TipTap's built-in autofocus
+  // scrolls the freshly-mounted box into view, jumping the page on every click.
+  // ProseMirror's focus() already uses preventScroll on the DOM node, so with
+  // scrollIntoView:false the caret lands with no page movement.
+  useEffect(() => {
+    editor?.commands.focus('end', { scrollIntoView: false });
+  }, [editor]);
 
   // Commit when focus leaves the editor+toolbar+popover entirely. An EMPTY result
   // never commits: it is almost always an editor that mounted before the data

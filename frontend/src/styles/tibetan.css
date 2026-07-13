@@ -86,15 +86,78 @@
   color: #A28348;
 }
 /* ProseMirror editing area: paragraphs flow tight, like the static rendering. */
+.chunk-editor {
+  counter-reset: trln;
+}
 .chunk-editor p {
   margin: 0 0 0.35em;
+  counter-increment: trln;
+  position: relative;
+  padding-left: 1.8em;
 }
 .chunk-editor p:last-child {
   margin-bottom: 0;
 }
+/* Per-line number down the translation, restarting each unit. Numbers the live
+ * TipTap editor AND the static render (both carry .chunk-editor), so the count
+ * updates as paragraphs are added/removed and can be matched against the Tibetan. */
+.chunk-editor p::before {
+  content: counter(trln);
+  position: absolute;
+  left: 0;
+  width: 1.4em;
+  text-align: right;
+  color: #A28348; /* bronze — matches the break/gutter accents */
+  opacity: 0.5;
+  font-size: 0.7em;
+  line-height: inherit;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
 .chunk-editor .ProseMirror {
   outline: none;
   min-height: 60px;
+}
+
+/* Tibetan line-number gutter (Translate tab) — one number per printed line,
+ * restarting each unit, mirroring the translation numbering so both counts align. */
+.tibetan-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+.tibetan-line > .tibetan-line-no {
+  flex: 0 0 1.4em;
+  text-align: right;
+  color: #A28348;
+  opacity: 0.5;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+.tibetan-line > .tibetan-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+/* Tibetan rendered small (small letters, sapche runs) — a visual aid in the
+ * Translate/Phonetics editors. */
+.tib-small {
+  font-size: 0.72em;
+}
+/* A small connector inside a mantra line — also red, cueing implicit mantras to fill in. */
+.implicit-mantra {
+  color: #C1272D;
+}
+
+/* On-screen size steppers (Translate tab) — override the base sizes locally so the
+ * Tibetan and translation can be enlarged independently. Booklet output is unaffected. */
+.translate-list .tibetan-text {
+  font-size: var(--tr-size-bo, 1.25rem);
+}
+.translate-list .chunk-editor {
+  font-size: var(--tr-size-tr, 0.875rem);
 }
 
 /*
