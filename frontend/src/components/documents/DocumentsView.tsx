@@ -253,7 +253,10 @@ export const DocumentsView: React.FC = () => {
               <div className="text-xs text-ink-soft mb-2">Pages ({current.items.length})</div>
               <div className="flex flex-col gap-1">
                 {current.items.map((it, i) => {
-                  const editable = EDITABLE_FURNITURE.includes(it.kind);
+                  // Text items get an editable per-language TOC title; furniture items
+                  // get their per-language authored content.
+                  const isTextItem = it.kind === 'text';
+                  const editable = isTextItem || EDITABLE_FURNITURE.includes(it.kind);
                   return (
                   <div key={it.id}>
                     <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-white"
@@ -269,7 +272,7 @@ export const DocumentsView: React.FC = () => {
                         <button type="button"
                                 onClick={() => setEditingItem(editingItem === it.id ? null : it.id)}
                                 className={`p-0.5 hover:text-lapis ${editingItem === it.id ? 'text-lapis' : 'text-ink-soft'}`}
-                                title="Edit content (per language)">
+                                title={isTextItem ? 'Edit table-of-contents title (per language)' : 'Edit content (per language)'}>
                           <Pencil size={13} />
                         </button>
                       )}
@@ -290,7 +293,9 @@ export const DocumentsView: React.FC = () => {
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
                         <div className="text-[11px] text-ink-soft">
-                          {KIND_META[it.kind].label} content — per language (HTML: &lt;p&gt;, &lt;em&gt;, &lt;strong&gt;)
+                          {isTextItem
+                            ? 'Table-of-contents title — per language (blank = the text’s own title)'
+                            : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
                         </div>
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
@@ -301,8 +306,8 @@ export const DocumentsView: React.FC = () => {
                             <textarea
                               defaultValue={furnitureBody(it.id, code)}
                               onBlur={e => void saveFurniture(it.id, code, e.target.value)}
-                              rows={2}
-                              placeholder={it.kind === 'copyright' ? 'Copyright © …' : 'content…'}
+                              rows={isTextItem ? 1 : 2}
+                              placeholder={isTextItem ? 'e.g. Essence of Accomplishment' : (it.kind === 'copyright' ? 'Copyright © …' : 'content…')}
                               className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
                               style={{ border: '1px solid var(--cline)' }}
                             />

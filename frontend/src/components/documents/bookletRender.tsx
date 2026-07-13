@@ -242,6 +242,8 @@ export function deriveBooklet(
   rows: DocumentLayoutRow[],
   lines: DocLine[],
   titleByItem: Map<number, DocLine[]>,
+  furniture?: DocumentFurnitureRow[],
+  lang?: string,
 ): DerivedBooklet {
   const findIdx = (r: DocumentLayoutRow) =>
     lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
@@ -298,31 +300,27 @@ export function deriveBooklet(
     return 1;
   };
 
-  // TOC = the sapche SECTION outline (translated heading + folio, indented by depth),
-  // per text. Multi-text booklets get a bold text-title header before each text's
-  // sections; a single-text booklet lists its sections flush (its title is on the cover).
+  // TOC = ONE flat entry per included text (like the reference booklets): an EDITABLE
+  // title + the text's start folio. The title is the per-language override authored in
+  // the Documents tab (stored as furniture on the text item); absent that, it falls back
+  // to the text's auto main-title, then its DB title.
   const orderedTexts = [...textItems].sort((a, b) => a.position - b.position);
-  const multiText = orderedTexts.length > 1;
-  const tocRows: TocRow[] = [];
-  for (const it of orderedTexts) {
-    if (multiText) {
+  const tocRows: TocRow[] = orderedTexts.map((it) => {
+    const custom = furniture && lang != null ? furnitureBodyOf(furniture, it, lang) : null;
+    let title: string;
+    if (custom && custom.trim()) {
+      title = inlineHtml(custom);
+    } else {
       const tl = titleByItem.get(it.id) ?? [];
       const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
-      const title = main ? inlineHtml(main) : (it.text_title || '');
-      const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
-      const startLine = itemStartLine.get(it.id);
-      const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
-      tocRows.push({ title, page, level: 0, isTextHeader: true });
+      title = main ? inlineHtml(main) : (it.text_title || '');
     }
-    lines.forEach((l, i) => {
-      if (l.itemId !== it.id || l.role !== 'sapche' || !l.translation) return;
-      tocRows.push({
-        title: inlineHtml(l.translation),
-        page: folioOfLine(i),
-        level: (multiText ? 1 : 0) + (l.level ?? 0),
-      });
-    });
-  }
+    // The text's start folio: its internal title page (2nd+ texts) or its first body page.
+    const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
+    const startLine = itemStartLine.get(it.id);
+    const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
+    return { title, page, level: 0 };
+  });
   const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
 
   return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines, folioOfLine };

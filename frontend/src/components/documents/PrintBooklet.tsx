@@ -66,7 +66,7 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   }
 
   const { bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines } =
-    deriveBooklet(doc.items, rows, lines, titleByItem);
+    deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang);
   const vars = rootVars(config);
 
   const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) =>

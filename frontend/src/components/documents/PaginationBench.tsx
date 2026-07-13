@@ -78,8 +78,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // identically. The bench layers interactive break/balancing controls on top.
   const { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter,
           tocRows, mainTitleLines } = useMemo(
-    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem),
-    [doc, rows, lines, titleByItem],
+    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang),
+    [doc, rows, lines, titleByItem, furniture, lang],
   );
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
