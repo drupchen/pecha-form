@@ -79,7 +79,10 @@ const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => 
     <div className={`bk-line bk-pair bk-role-${l.role}`}>
       {isSection ? (
         l.translation != null && (
-          <div className="bk-section" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
+          <div className="bk-section"
+               // Step the heading size down by outline depth (top = 15pt, floor 10.5pt).
+               style={l.level != null ? { fontSize: `${Math.max(10.5, 15 - l.level * 1.5)}pt` } : undefined}
+               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
         )
       ) : (
         <>

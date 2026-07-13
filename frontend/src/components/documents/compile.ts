@@ -27,6 +27,9 @@ export interface DocLine {
   translation: string | null;
   /** True on the last line of a chunk: a blank line follows (a balancing gap). */
   emptyAfter: boolean;
+  /** Sapche outline nesting depth (0 = top-level) when this line heads a tree node,
+   *  so section headings size by depth; null otherwise. */
+  level: number | null;
 }
 
 const rk = (a: string, b: string) => `${a}-${b}`;
@@ -39,14 +42,36 @@ async function fetchJson(url: string): Promise<any> {
 
 export async function compileTextItem(item: DocumentItem, lang: string): Promise<DocLine[]> {
   const textId = item.text_id!;
-  const [tokens, spans, breaks, markers, translations, phonetics] = await Promise.all([
+  const [tokens, spans, breaks, markers, translations, phonetics, treeNodes] = await Promise.all([
     getEditorTokens(textId),
     fetchJson(`${API_BASE}/texts/${textId}/spans`),
     fetchJson(`${API_BASE}/texts/${textId}/display-breaks`),
     fetchJson(`${API_BASE}/texts/${textId}/markers`),
     getTextTranslations(textId),
     getPhonetics(textId, lang),
+    fetchJson(`${API_BASE}/texts/${textId}/tree-nodes`),
   ]);
+
+  // Sapche outline depth per anchor syllable: a tree node's `segment_start` offset →
+  // the syllable starting there → its nesting depth (root = 0). Section headings use
+  // this to step their size by outline level.
+  const depthOfNode = (n: any): number => {
+    let d = 0, cur = n, guard = 0;
+    const byId = new Map<number, any>(treeNodes.map((x: any) => [x.id, x]));
+    while (cur.parent_id != null && guard++ < 64) { cur = byId.get(cur.parent_id); if (!cur) break; d++; }
+    return d;
+  };
+  const sylAtOffset = new Map<number, string>();
+  for (const t of tokens) if (t.text.trim() !== '') sylAtOffset.set(t.start_offset, t.id);
+  const depthBySyl = new Map<string, number>();
+  for (const n of treeNodes) {
+    if (n.segment_start == null) continue;
+    const syl = sylAtOffset.get(n.segment_start);
+    if (!syl) continue;
+    const d = depthOfNode(n);
+    const prev = depthBySyl.get(syl);
+    if (prev == null || d < prev) depthBySyl.set(syl, d);
+  }
 
   const breakOverrides = new Map<string, number>(breaks.map((b: any) => [b.syl_id, b.count]));
   const markerOffsets = new Set<number>(markers.map((m: any) => m.position));
@@ -132,6 +157,7 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
       phonetics: phonFor(l),
       translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
+      level: depthBySyl.get(l.startSylId) ?? null,
     });
   });
   return out;
