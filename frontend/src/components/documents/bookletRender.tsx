@@ -93,9 +93,32 @@ export const Verso: React.FC<{
  *  - mantra: the romanised mantra only (the phonetics), standalone bold-italic;
  *  - verse/prose/small: an INTERLINEAR PAIR — phonetics then its indented translation,
  *    kept together (the whole `.bk-line` has break-inside: avoid). */
-export const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => {
+export const Recto: React.FC<{
+  l: DocLine; adj?: LineAdj;
+  /** Split mode (bench): render the single recto text as clickable words; clicking word
+   *  `w` sets this edition's recto cut (the tail starts at word `w`). */
+  onWordSplit?: (w: number) => void;
+}> = ({ l, adj = NO_ADJ, onWordSplit }) => {
   const isSection = l.role === 'title' || l.role === 'sapche';
   const isMantra = l.role === 'mantra';
+
+  // Split mode on a splittable line: show the single recto text as clickable words.
+  if (onWordSplit && isSplittable(l) && (l.translation || l.phonetics)) {
+    const isTrans = l.translation != null;
+    const text = isTrans ? plainTextOf(l.translation!) : l.phonetics;
+    const words = text.split(/\s+/).filter(Boolean);
+    const cls = isTrans ? (isSection ? 'bk-section' : 'bk-translation') : 'bk-phonetics';
+    return (
+      <div className={`bk-line bk-pair bk-role-${l.role}`}>
+        <div className={`${cls} bk-wordsplit`}>
+          {words.map((w, i) => (
+            <span key={i} className="bk-word" onClick={() => onWordSplit(i)}>{w} </span>
+          ))}
+        </div>
+        {l.emptyAfter && <Gap adj={adj} />}
+      </div>
+    );
+  }
   return (
     <div className={`bk-line bk-pair bk-role-${l.role}`}>
       {isSection ? (
@@ -289,22 +312,61 @@ const plainTextOf = (h: string): string => {
     ?.replace(/\s+/g, ' ').trim() ?? '';
 };
 
-/** Split a line at token (syllable) index `k` into head + tail — reused by the mid-line
- *  hairline split. Token boundaries are syllable boundaries, so Tibetan never cuts a
- *  syllable. Phonetics splits proportionally; the translation stays with the head. */
-function splitDocLine(l: DocLine, k: number): [DocLine, DocLine] {
-  const words = (l.phonetics || '').split(/\s+/).filter(Boolean);
-  const cut = l.tokens.length
-    ? Math.max(0, Math.min(words.length, Math.round((k / l.tokens.length) * words.length))) : 0;
+/** A line is splittable (mid-line) only when its recto is a SINGLE element — a homage/
+ *  `small` line (translation only) or a mantra (phonetics only). Interlinear phonetics+
+ *  translation pairs are never split. */
+export const isSplittable = (l: { phonetics: string; translation: string | null }): boolean =>
+  !(l.phonetics && l.translation);
+
+/** Split a space-separated plain string at word index `w`. */
+function splitWordsPlain(s: string, w: number): [string, string] {
+  const parts = s.split(/\s+/).filter(Boolean);
+  const cut = Math.max(0, Math.min(parts.length, w));
+  return [parts.slice(0, cut).join(' '), parts.slice(cut).join(' ')];
+}
+
+/** Split an inline-HTML translation at word index `w`, preserving inline tags via a DOM
+ *  Range (cloneContents closes partially-selected ancestors). */
+function splitHtmlAtWord(html: string, w: number): [string, string] {
+  if (w <= 0) return ['', html];
+  const tmpl = document.createElement('template');
+  tmpl.innerHTML = html;
+  const frag = tmpl.content;
+  const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+  let count = 0; let target: Node | null = null; let offset = 0; let node: Node | null;
+  outer: while ((node = walker.nextNode())) {
+    const re = /\S+/g; let m: RegExpExecArray | null;
+    while ((m = re.exec(node.nodeValue || ''))) {
+      if (count === w) { target = node; offset = m.index; break outer; }
+      count++;
+    }
+  }
+  if (!target || !frag.firstChild) return [html, ''];
+  const ser = (f: DocumentFragment) => { const d = document.createElement('div'); d.appendChild(f); return d.innerHTML.trim(); };
+  const head = document.createRange();
+  head.setStart(frag, 0); head.setEnd(target, offset);
+  const tail = document.createRange();
+  tail.setStart(target, offset); tail.setEndAfter(frag.lastChild!);
+  return [ser(head.cloneContents()), ser(tail.cloneContents())];
+}
+
+/** Split a line at token (syllable) index `k` (Tibetan, shared across editions — never
+ *  cuts a syllable) into head + tail. The SINGLE recto text (translation for a homage
+ *  line, phonetics for a mantra) is cut at the per-language word index `rectoCut`; with
+ *  none set the whole recto text stays on the head. */
+function splitDocLine(l: DocLine, k: number, rectoCut: number | null): [DocLine, DocLine] {
+  const rc = rectoCut ?? Number.MAX_SAFE_INTEGER;   // undefined → whole recto on head
+  let hPhon = l.phonetics, tPhon = '';
+  let hTrans = l.translation, tTrans: string | null = null;
+  if (l.translation) [hTrans, tTrans] = splitHtmlAtWord(l.translation, rc);
+  else if (l.phonetics) [hPhon, tPhon] = splitWordsPlain(l.phonetics, rc);
   const head: DocLine = {
-    ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k),
-    endSylId: l.tokens[k - 1].id, phonetics: words.slice(0, cut).join(' '),
-    translation: l.translation, emptyAfter: false, splitAnchor: l.startSylId,
+    ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k), endSylId: l.tokens[k - 1].id,
+    phonetics: hPhon, translation: hTrans, emptyAfter: false, splitAnchor: l.startSylId,
   };
   const tail: DocLine = {
-    ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k),
-    startSylId: l.tokens[k].id, phonetics: words.slice(cut).join(' '),
-    translation: null, emptyAfter: l.emptyAfter, splitAnchor: l.startSylId,
+    ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k), startSylId: l.tokens[k].id,
+    phonetics: tPhon, translation: tTrans, emptyAfter: l.emptyAfter, splitAnchor: l.startSylId,
   };
   return [head, tail];
 }
@@ -332,22 +394,30 @@ export function deriveBooklet(
   titleByItem: Map<number, DocLine[]>,
   furniture?: DocumentFurnitureRow[],
   lang?: string,
+  /** Split-edit mode (bench): ignore recto cuts so the whole recto text shows on the head
+   *  for word-picking. The Tibetan still splits. */
+  editRecto = false,
 ): DerivedBooklet {
   // Apply mid-line splits first: a page_break row carrying a `char_offset` splits its
-  // line at that syllable (token) index into head + tail, reusing the hairline-break
-  // machinery between them. Everything downstream operates on the augmented `lines`.
+  // (non-pair) line at that syllable (token) index into head + tail, reusing the hairline-
+  // break machinery between them. The recto text is cut at the per-language `recto_cut`
+  // word index. Everything downstream operates on the augmented `lines`.
   const splitAt = new Map<string, number>();
+  const rectoCutAt = new Map<string, number>();
   for (const r of rows) {
     if (r.kind === 'page_break' && r.char_offset != null && r.char_offset > 0) {
       splitAt.set(`${r.item_id}:${r.anchor_syl_id}`, r.char_offset);
+    } else if (r.kind === 'recto_cut' && r.char_offset != null && (r.lang ?? '') === (lang ?? '')) {
+      rectoCutAt.set(`${r.item_id}:${r.anchor_syl_id}`, r.char_offset);
     }
   }
   const lines: DocLine[] = [];
   const splitTails = new Set<number>();   // indices in `lines` that are split tails
   for (const l of srcLines) {
-    const k = splitAt.get(`${l.itemId}:${l.startSylId}`);
-    if (k != null && k > 0 && k < l.tokens.length) {
-      const [head, tail] = splitDocLine(l, k);
+    const key = `${l.itemId}:${l.startSylId}`;
+    const k = splitAt.get(key);
+    if (k != null && k > 0 && k < l.tokens.length && isSplittable(l)) {
+      const [head, tail] = splitDocLine(l, k, editRecto ? null : (rectoCutAt.get(key) ?? null));
       lines.push(head);
       splitTails.add(lines.length);
       lines.push(tail);

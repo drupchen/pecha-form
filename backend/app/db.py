@@ -525,7 +525,7 @@ CREATE TABLE IF NOT EXISTS document_layout (
     item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
     anchor_syl_id TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN
-                     ('page_break','line_space','line_nospace','wrap_extend','hairline')),
+                     ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut')),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -696,13 +696,13 @@ def _add_missing_columns(conn) -> None:
 
 
 def _rebuild_document_layout_kinds(conn) -> None:
-    """Widen `document_layout.kind`'s CHECK to include 'hairline' (the mid-content
-    hairline split). SQLite can't alter a CHECK in place, so rebuild the table when an
-    older one predates the kind. No-op on fresh DBs (SCHEMA already lists it)."""
+    """Widen `document_layout.kind`'s CHECK to include newer kinds ('hairline', then
+    'recto_cut'). SQLite can't alter a CHECK in place, so rebuild the table when an older
+    one predates the newest kind. No-op on fresh DBs (SCHEMA already lists them)."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
     ).fetchone()
-    if not row or "'hairline'" in row["sql"]:
+    if not row or "'recto_cut'" in row["sql"]:
         return
     conn.execute("""
         CREATE TABLE document_layout_new (
@@ -711,7 +711,7 @@ def _rebuild_document_layout_kinds(conn) -> None:
             item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
             anchor_syl_id TEXT NOT NULL,
             kind         TEXT NOT NULL CHECK (kind IN
-                             ('page_break','line_space','line_nospace','wrap_extend','hairline')),
+                             ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut')),
             char_offset  INTEGER,
             value        REAL,
             lang         TEXT,

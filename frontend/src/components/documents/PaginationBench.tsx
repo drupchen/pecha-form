@@ -8,7 +8,7 @@ import {
 import { compileDocument, type DocLine } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, type LineAdj,
+  deriveBooklet, furnitureBodyOf, isSplittable, type LineAdj,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import { StyleDesigner } from './StyleDesigner';
@@ -86,8 +86,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // identically. The bench layers interactive break/balancing controls on top.
   const { lines: renderLines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter,
           backMatter, tocRows, mainTitleLines } = useMemo(
-    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang),
-    [doc, rows, lines, titleByItem, furniture, lang],
+    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang, splitMode),
+    [doc, rows, lines, titleByItem, furniture, lang, splitMode],
   );
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
@@ -172,13 +172,24 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   /** Mid-line split: click a verso syllable (token index `k`) to split the line there
    *  (Tibetan cuts on the syllable boundary); `k === -1` clears an existing split. */
   const setSplit = async (l: DocLine, k: number) => {
+    const anchor = l.splitAnchor ?? l.startSylId;
     if (k === -1) {
-      const anchor = l.splitAnchor ?? l.startSylId;
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
+      // Clearing a split drops its per-language recto cuts too.
+      for (const lg of [...(doc?.languages ?? []), ''])
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg });
     } else if (k >= 1) {
       await putLayoutRow(documentId, {
         item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', char_offset: k });
     } else return;
+    setRows((await getDocumentLayout(documentId)).rows);
+  };
+
+  /** Set this edition's recto cut for a split line (the tail starts at word `w`). */
+  const setRectoCut = async (l: DocLine, w: number) => {
+    const anchor = l.splitAnchor ?? l.startSylId;
+    await putLayoutRow(documentId, {
+      item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', char_offset: w, lang });
     setRows((await getDocumentLayout(documentId)).rows);
   };
 
@@ -282,8 +293,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               </button>
             </span>
           )}
-          {Comp === Verso && splitMode
+          {splitMode && isSplittable(l) && Comp === Verso
             ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
+            : splitMode && isSplittable(l) && Comp === Recto
+            ? <Recto l={l} onWordSplit={(w) => void setRectoCut(l, w)} />
             : <Comp l={l} adj={adjFor(l, true)} />}
         </div>
       );
