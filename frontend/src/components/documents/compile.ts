@@ -30,6 +30,9 @@ export interface DocLine {
   /** Sapche outline nesting depth (0 = top-level) when this line heads a tree node,
    *  so section headings size by depth; null otherwise. */
   level: number | null;
+  /** Set on the head/tail of a mid-line split — the original line's anchor syllable, so
+   *  the split can be cleared from either half. */
+  splitAnchor?: string;
   /** Title lines only: the title chunk's translation split into its `<p>` pieces, so
    *  the cover / internal title page can show the first as the main title and the rest
    *  as the subtitle. Set on every title line (they share their chunk's paragraphs). */

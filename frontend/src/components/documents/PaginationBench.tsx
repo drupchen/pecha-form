@@ -36,6 +36,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [styleCss, setStyleCss] = useState('');
   const [showStyles, setShowStyles] = useState(false);
+  const [splitMode, setSplitMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const reloadStyles = () => { void loadBookletStyleCss(documentId).then(setStyleCss); };
@@ -83,8 +84,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Page structure (breaks, spreads, body page-units, front/back matter, TOC) —
   // computed by the SHARED `deriveBooklet` so the bench and the print/PDF page lay out
   // identically. The bench layers interactive break/balancing controls on top.
-  const { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter,
-          tocRows, mainTitleLines } = useMemo(
+  const { lines: renderLines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter,
+          backMatter, tocRows, mainTitleLines } = useMemo(
     () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang),
     [doc, rows, lines, titleByItem, furniture, lang],
   );
@@ -138,8 +139,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
-    if (i <= 0 || i >= lines.length) return;
-    const l = lines[i];
+    if (i <= 0 || i >= renderLines.length) return;
+    const l = renderLines[i];
     if (breakSet.has(i)) {
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
       // A lifted break drops any hairline marking too.
@@ -156,8 +157,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    *  continuation rule. Setting it forces a break there too; clearing it leaves the
    *  break as an ordinary one. */
   const toggleHairline = async (i: number) => {
-    if (i <= 0 || i >= lines.length) return;
-    const l = lines[i];
+    if (i <= 0 || i >= renderLines.length) return;
+    const l = renderLines[i];
     if (hairlineSet.has(i)) {
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
     } else {
@@ -165,6 +166,19 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
       await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline', value: 1 });
     }
+    setRows((await getDocumentLayout(documentId)).rows);
+  };
+
+  /** Mid-line split: click a verso syllable (token index `k`) to split the line there
+   *  (Tibetan cuts on the syllable boundary); `k === -1` clears an existing split. */
+  const setSplit = async (l: DocLine, k: number) => {
+    if (k === -1) {
+      const anchor = l.splitAnchor ?? l.startSylId;
+      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
+    } else if (k >= 1) {
+      await putLayoutRow(documentId, {
+        item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', char_offset: k });
+    } else return;
     setRows((await getDocumentLayout(documentId)).rows);
   };
 
@@ -242,8 +256,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   }
 
   const renderPageLines = (s: { start: number; end: number }, Comp: React.FC<{ l: DocLine; adj?: LineAdj }>) => {
-    const isRecto = Comp === Recto;
-    const els = lines.slice(s.start, s.end).map((l, k) => {
+    const els = renderLines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
       return (
         <div key={l.key} className="bk-linewrap" style={{ position: 'relative' }}>
@@ -269,7 +282,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               </button>
             </span>
           )}
-          <Comp l={l} adj={adjFor(l, true)} />
+          {Comp === Verso && splitMode
+            ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
+            : <Comp l={l} adj={adjFor(l, true)} />}
         </div>
       );
     });
@@ -278,9 +293,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // does (content runs on). Only on the recto text column.
     return (
       <>
-        {isRecto && hairlineSet.has(s.start) && <div className="bk-hairline" />}
+        {hairlineSet.has(s.start) && <div className="bk-hairline" />}
         {els}
-        {isRecto && hairlineSet.has(s.end) && <div className="bk-hairline" />}
+        {hairlineSet.has(s.end) && <div className="bk-hairline" />}
       </>
     );
   };
@@ -326,6 +341,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 style={{ border: '1px solid var(--cline)' }}
                 title="Edit booklet typography (org styles / per-document overrides)">
           <Type size={12} /> styles
+        </button>
+        <button type="button" onClick={() => setSplitMode(v => !v)}
+                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${splitMode ? 'text-vermilion' : 'text-ink-soft'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title="Mid-line split: click a Tibetan syllable to split a line across a page (hairline); click a split to clear it">
+          <Scissors size={12} /> split
         </button>
         <div className="flex-1" />
         <span className="text-ink-soft flex items-center gap-1">

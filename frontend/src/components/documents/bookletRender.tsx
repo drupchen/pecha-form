@@ -65,12 +65,28 @@ export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
   );
 };
 
-export const Verso: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => (
-  <div className={`bk-line bk-role-${l.role}`}>
-    <div className="bk-tibetan">{l.tokens.map((t, i) => <span key={i}>{t.render}</span>)}</div>
-    {l.emptyAfter && <Gap adj={adj} />}
-  </div>
-);
+export const Verso: React.FC<{
+  l: DocLine; adj?: LineAdj;
+  /** Split mode (bench): click a syllable to split the line before it (`k` = token index).
+   *  On a line that is already a split half, any click clears the split (`k` = -1). */
+  onSplit?: (k: number) => void;
+}> = ({ l, adj = NO_ADJ, onSplit }) => {
+  const split = l.splitAnchor != null;
+  return (
+    <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`}>
+      <div className="bk-tibetan">
+        {l.tokens.map((t, i) => (
+          <span key={i}
+                className={onSplit ? 'bk-syl' : undefined}
+                onClick={onSplit ? () => onSplit(split ? -1 : i) : undefined}>
+            {t.render}
+          </span>
+        ))}
+      </div>
+      {l.emptyAfter && <Gap adj={adj} />}
+    </div>
+  );
+};
 
 /* The recto unit, by role:
  *  - section (title/sapche): the translated heading only (Libertinus, large);
@@ -238,6 +254,9 @@ export type PageUnit =
 export interface NavNode { title: string; pageIndex: number; folio: number; children: NavNode[] }
 
 export interface DerivedBooklet {
+  /** The render line stream — `srcLines` with any mid-line splits applied (head/tail).
+   *  Spreads/breakSet index into THIS; consumers render from it. */
+  lines: DocLine[];
   breakSet: Set<number>;
   hairlineSet: Set<number>;
   spreads: { start: number; end: number }[];
@@ -270,6 +289,26 @@ const plainTextOf = (h: string): string => {
     ?.replace(/\s+/g, ' ').trim() ?? '';
 };
 
+/** Split a line at token (syllable) index `k` into head + tail — reused by the mid-line
+ *  hairline split. Token boundaries are syllable boundaries, so Tibetan never cuts a
+ *  syllable. Phonetics splits proportionally; the translation stays with the head. */
+function splitDocLine(l: DocLine, k: number): [DocLine, DocLine] {
+  const words = (l.phonetics || '').split(/\s+/).filter(Boolean);
+  const cut = l.tokens.length
+    ? Math.max(0, Math.min(words.length, Math.round((k / l.tokens.length) * words.length))) : 0;
+  const head: DocLine = {
+    ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k),
+    endSylId: l.tokens[k - 1].id, phonetics: words.slice(0, cut).join(' '),
+    translation: l.translation, emptyAfter: false, splitAnchor: l.startSylId,
+  };
+  const tail: DocLine = {
+    ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k),
+    startSylId: l.tokens[k].id, phonetics: words.slice(cut).join(' '),
+    translation: null, emptyAfter: l.emptyAfter, splitAnchor: l.startSylId,
+  };
+  return [head, tail];
+}
+
 /** Build a nested outline from flat sapche entries, nesting by their depth `level`. */
 function nestByLevel(items: { title: string; pageIndex: number; folio: number; level: number }[]): NavNode[] {
   const roots: NavNode[] = [];
@@ -289,19 +328,46 @@ function nestByLevel(items: { title: string; pageIndex: number; folio: number; l
 export function deriveBooklet(
   items: DocumentItem[],
   rows: DocumentLayoutRow[],
-  lines: DocLine[],
+  srcLines: DocLine[],
   titleByItem: Map<number, DocLine[]>,
   furniture?: DocumentFurnitureRow[],
   lang?: string,
 ): DerivedBooklet {
+  // Apply mid-line splits first: a page_break row carrying a `char_offset` splits its
+  // line at that syllable (token) index into head + tail, reusing the hairline-break
+  // machinery between them. Everything downstream operates on the augmented `lines`.
+  const splitAt = new Map<string, number>();
+  for (const r of rows) {
+    if (r.kind === 'page_break' && r.char_offset != null && r.char_offset > 0) {
+      splitAt.set(`${r.item_id}:${r.anchor_syl_id}`, r.char_offset);
+    }
+  }
+  const lines: DocLine[] = [];
+  const splitTails = new Set<number>();   // indices in `lines` that are split tails
+  for (const l of srcLines) {
+    const k = splitAt.get(`${l.itemId}:${l.startSylId}`);
+    if (k != null && k > 0 && k < l.tokens.length) {
+      const [head, tail] = splitDocLine(l, k);
+      lines.push(head);
+      splitTails.add(lines.length);
+      lines.push(tail);
+    } else {
+      lines.push(l);
+    }
+  }
+
   const findIdx = (r: DocumentLayoutRow) =>
     lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
   const breakSet = new Set<number>();
   const hairlineSet = new Set<number>();
   for (const r of rows) {
-    if (r.kind === 'page_break') { const i = findIdx(r); if (i > 0) breakSet.add(i); }
-    else if (r.kind === 'hairline') { const i = findIdx(r); if (i > 0) hairlineSet.add(i); }
+    if (r.kind === 'page_break') {
+      if (r.char_offset != null && r.char_offset > 0) continue;   // applied as a split
+      const i = findIdx(r); if (i > 0) breakSet.add(i);
+    } else if (r.kind === 'hairline') { const i = findIdx(r); if (i > 0) hairlineSet.add(i); }
   }
+  // A split forces a break + hairline between its head and tail.
+  for (const i of splitTails) { breakSet.add(i); hairlineSet.add(i); }
 
   // Each text always starts a fresh spread (so its internal title page sits cleanly
   // before its first body page — no two texts share a spread).
@@ -410,7 +476,7 @@ export function deriveBooklet(
     return { title: plainTextOf(titleSrc), pageIndex, folio, children: nestByLevel(sections) };
   });
 
-  return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,
+  return { lines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,
            mainTitleLines, folioOfLine, navOutline };
 }
 

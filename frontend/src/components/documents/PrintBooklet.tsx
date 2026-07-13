@@ -68,13 +68,21 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
     return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>Loading booklet…</div>;
   }
 
-  const { bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines, navOutline } =
+  const { lines: flowLines, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines,
+          navOutline, hairlineSet } =
     deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang);
   const vars = rootVars(config);
   const outlineJson = JSON.stringify(navOutline);
 
-  const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) =>
-    lines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} />);
+  // A page's lines, with the reference's thin continuation rule at a hairline boundary
+  // (top if continued from the previous page, bottom if it runs on to the next).
+  const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) => (
+    <>
+      {hairlineSet.has(s.start) && <div className="bk-hairline" />}
+      {flowLines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} />)}
+      {hairlineSet.has(s.end) && <div className="bk-hairline" />}
+    </>
+  );
 
   // A single physical page (front/back matter furniture item).
   const FurniturePageSheet: React.FC<{ item: DocumentItem }> = ({ item }) => (

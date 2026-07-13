@@ -245,6 +245,10 @@
   margin: 1.2mm 13mm 1.2mm 8mm;
 }
 
+/* Split mode — verso syllables are clickable to place a mid-line split. */
+.bk-splitmode .bk-syl { cursor: pointer; border-radius: 2px; }
+.bk-splitmode .bk-syl:hover { background: rgba(197, 48, 48, 0.18); box-shadow: -1px 0 0 var(--vermilion, #c53030); }
+
 /* Measurement container: off-screen, same widths as the real pages. */
 .booklet-measure {
   position: absolute;
