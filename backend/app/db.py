@@ -593,6 +593,13 @@ CREATE TABLE IF NOT EXISTS org_fonts (
     data       BLOB NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- The Style Studio's editable specimen (a JSON list of blocks) — a per-org sample that
+-- covers every role, so a style template can be designed/tested in one place.
+CREATE TABLE IF NOT EXISTS style_samples (
+    org_id  INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    content TEXT NOT NULL DEFAULT ''
+);
 """
 
 

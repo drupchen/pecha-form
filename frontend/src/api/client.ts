@@ -363,6 +363,14 @@ export async function importStyleTemplate(
   return res.json();
 }
 
+// Style Studio specimen (per-org editable sample)
+export const getStyleSample = (orgId = 1): Promise<{ content: string }> =>
+  fetch(`${API_BASE}/style-sample?org_id=${orgId}`).then(r => r.json());
+export const putStyleSample = (content: string, orgId = 1) =>
+  fetch(`${API_BASE}/style-sample?org_id=${orgId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+
 export interface DocumentSummary {
   id: number;
   title: string;

@@ -11,7 +11,7 @@ import {
   deriveBooklet, furnitureBodyOf, isSplittable, type LineAdj,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
-import { StyleDesigner } from './StyleDesigner';
+import { StyleStudio } from './StyleStudio';
 import '../../styles/booklet.css';
 
 /**
@@ -266,6 +266,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     return <div className="flex-1 flex items-center justify-center text-ink-soft">Loading booklet…</div>;
   }
 
+  // The Style Studio takes over the whole workspace; closing it reloads the styles so the
+  // pages reflect any changes.
+  if (showStyles) {
+    return <StyleStudio documentId={documentId}
+                        onClose={() => { setShowStyles(false); reloadStyles(); }} />;
+  }
+
   const renderPageLines = (s: { start: number; end: number }, Comp: React.FC<{ l: DocLine; adj?: LineAdj }>) => {
     const els = renderLines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
@@ -408,10 +415,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           </div>
         )}
       </div>
-      {showStyles && (
-        <StyleDesigner documentId={documentId} onChange={reloadStyles}
-                       onClose={() => setShowStyles(false)} />
-      )}
       </div>
 
       {/* Measurement container — mounted only during a seed/re-flow pass. */}

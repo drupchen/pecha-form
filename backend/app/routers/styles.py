@@ -238,6 +238,37 @@ def delete_org_font(font_id: int):
         conn.close()
 
 
+# ── Style Studio specimen (per-org editable sample) ──────────────────────────
+
+class SampleIn(BaseModel):
+    content: str
+
+
+@router.get("/style-sample")
+def get_style_sample(org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT content FROM style_samples WHERE org_id = ?", (org_id,)).fetchone()
+        return {"content": row["content"] if row else ""}
+    finally:
+        conn.close()
+
+
+@router.put("/style-sample")
+def put_style_sample(payload: SampleIn, org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO style_samples (org_id, content) VALUES (?, ?) "
+            "ON CONFLICT(org_id) DO UPDATE SET content = excluded.content",
+            (org_id, payload.content))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
 # ── docx style templates (import / export) ───────────────────────────────────
 # An external docx whose NAMED styles follow ROLE_STYLE_NAMES seeds org or document
 # styles — parsed to derive font family/size/weight/italic/colour/alignment. The

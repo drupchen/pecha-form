@@ -251,6 +251,33 @@
 .bk-wordsplit .bk-word { cursor: pointer; border-radius: 2px; }
 .bk-wordsplit .bk-word:hover { background: rgba(197, 48, 48, 0.18); box-shadow: -1px 0 0 var(--vermilion, #c53030); }
 
+/* ── Style Studio specimen — compact editable blocks ─────────────────────────
+ * Reuses the booklet role classes so the live compiled styles apply, but neutralizes
+ * the page-filling / absolute containers so blocks stack compactly and stay editable. */
+.style-specimen .bk-titlepage,
+.style-specimen .bk-copyright,
+.style-specimen .bk-toc { height: auto; display: block; }
+.style-specimen .bk-titlepage { text-align: center; }
+.style-specimen .bk-seal { margin-bottom: 2mm; }
+.style-specimen .booklet-folio { position: static; }
+.style-specimen .bk-foliobox { text-align: right; }
+.style-specimen .bk-section { margin: 5pt 0; }
+.style-specimen .bk-line { margin: 1mm 0; }
+.specimen-block { position: relative; padding: 1px 0; }
+.specimen-block:hover { background: rgba(47, 111, 159, 0.04); }
+.specimen-gutter {
+  position: absolute; top: -13px; left: 0; z-index: 5; display: none;
+  align-items: center; gap: 2px; padding: 1px 3px; border-radius: 4px;
+  background: var(--cream-hi, #f7f2e7); border: 1px solid var(--cline, #ddd);
+}
+.specimen-block:hover > .specimen-gutter,
+.specimen-block:focus-within > .specimen-gutter { display: flex; }
+.specimen-gutter select { max-width: 74px; font-size: 10px; }
+.specimen-gutter button { padding: 1px; color: #888; display: inline-flex; }
+.specimen-gutter button:hover { color: var(--lapis, #2f6f9f); }
+.bk-editable { min-height: 1em; }
+.bk-editable:focus { outline: 1px dashed var(--lapis, #2f6f9f); outline-offset: 2px; }
+
 /* Measurement container: off-screen, same widths as the real pages. */
 .booklet-measure {
   position: absolute;
