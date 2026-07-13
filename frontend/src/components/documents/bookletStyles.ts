@@ -19,40 +19,44 @@ export interface StyleProps {
   color?: string;
   lineHeight?: string;   // unitless number as string, or var()
   align?: 'left' | 'center' | 'right' | 'justify';
+  indent?: string;       // left indent (→ margin-left), a CSS length like '10mm'
 }
 
 export interface RoleDef { role: string; label: string; selector: string; def: StyleProps }
 
 /** The editable roles, their selectors, and defaults matching booklet.css. */
 export const ROLE_DEFS: RoleDef[] = [
+  // Defaults GROUNDED in the reference docx's named styles (font/size/weight/italic/indent),
+  // not Western assumptions: e.g. small letters are SMALLER than translation, and the
+  // phonetics/mantra/section styles are UPRIGHT (the body runs carry no direct italic).
   { role: 'tibetan_body', label: 'Tibetan (body)', selector: '.bk-tibetan',
-    def: { fontFamily: 'var(--font-tibetan)', fontSize: 'var(--tibetan-pt)', lineHeight: 'var(--leading)' } },
-  { role: 'tibetan_title', label: 'Tibetan (title/section)', selector: '.bk-role-title .bk-tibetan, .booklet-root .bk-role-sapche .bk-tibetan',
-    def: { fontSize: 'calc(var(--tibetan-pt) * 1.4)', align: 'center' } },
+    def: { fontFamily: 'var(--font-tibetan)', fontSize: 'var(--tibetan-pt)', lineHeight: 'var(--leading)' } },  // བོད་ཡིག 16, left
+  { role: 'tibetan_title', label: 'Tibetan (section heading)', selector: '.bk-role-title .bk-tibetan, .booklet-root .bk-role-sapche .bk-tibetan',
+    def: { fontFamily: 'var(--font-tibetan)', fontSize: '11pt', align: 'left', indent: '4mm' } },  // ས་བཅད 11, left, indent (NOT enlarged/centred)
   { role: 'phonetics', label: 'Phonetics', selector: '.bk-phonetics',
-    def: { fontFamily: 'var(--font-phonetics)', fontSize: 'var(--phonetics-pt)', fontWeight: 600, italic: true, lineHeight: '1.25', color: '#222' } },
+    def: { fontFamily: 'var(--font-phonetics)', fontSize: 'var(--phonetics-pt)', fontWeight: 600, italic: false, indent: '10mm' } },  // Raleway SemiBold 10, upright, indent 28.4pt
   { role: 'translation', label: 'Translation', selector: '.bk-translation',
-    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', lineHeight: 'var(--leading)' } },
+    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '15mm', align: 'left' } },  // Gentium 11, indent 42.5pt
   { role: 'mantra', label: 'Mantra', selector: '.bk-role-mantra .bk-phonetics',
-    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', fontWeight: 700, italic: true, color: '#1a1a1a' } },
+    def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', fontWeight: 700, italic: false, indent: '10mm' } },  // Mantras (Words) Gentium 12 bold, upright
   { role: 'small', label: 'Small letters / homage', selector: '.bk-role-small .bk-translation',
-    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false } },
+    def: { fontFamily: 'var(--font-small)', fontSize: '9pt', italic: false, indent: '0' } },  // Small Letters Libertinus Serif Display 9, upright
   { role: 'section', label: 'Section heading', selector: '.bk-section',
-    def: { fontFamily: 'var(--font-small)', fontSize: '15pt', fontWeight: 600, italic: true, lineHeight: '1.2' } },
+    def: { fontFamily: 'var(--font-small)', fontSize: '15pt', fontWeight: 400, italic: false } },  // Sections Libertinus Serif Display 15, upright, not bold
   { role: 'title_tib', label: 'Title page — Tibetan', selector: '.bk-title-tib',
-    def: { fontFamily: 'var(--font-tibetan)', fontSize: '20pt', lineHeight: '1.4' } },
+    def: { fontFamily: 'var(--font-tibetan)', fontSize: '24pt', align: 'center', lineHeight: '1.4' } },  // ཁ་བྱང 24, centred
   { role: 'title_main', label: 'Title page — main title', selector: '.bk-title-main',
-    def: { fontFamily: 'var(--font-title)', fontSize: '18pt', lineHeight: '1.35' } },
+    def: { fontFamily: 'var(--font-title)', fontSize: '18pt', align: 'center', lineHeight: '1.35' } },  // Title Libertinus Serif Semibold 18, centred
   { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub',
-    def: { fontFamily: 'var(--font-title)', fontSize: '12.5pt', italic: true, lineHeight: '1.35' } },
+    def: { fontFamily: 'Calibri', fontSize: '12pt', italic: true, align: 'center', lineHeight: '1.35' } },  // Subtitle Calibri 12 italic
   { role: 'copyright', label: 'Copyright', selector: '.bk-copyright',
-    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', color: '#333' } },
+    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', color: '#333' } },  // no docx style — Normal-ish
   { role: 'toc', label: 'Table of contents', selector: '.bk-toc',
-    def: { fontFamily: 'var(--font-translation)', fontSize: '10.5pt' } },
+    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt' } },  // toc file separate; Gentium 11
   { role: 'folio', label: 'Page number (folio)', selector: '.booklet-folio',
     def: { fontFamily: 'Georgia, serif', fontSize: '9pt', fontWeight: 400, lineHeight: '1', color: '#666' } },
   { role: 'image_caption', label: 'Image caption', selector: '.bk-image-caption',
-    def: { fontFamily: 'var(--font-translation)', fontSize: '9.5pt', italic: true, color: '#444' } },
+    def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', italic: true, color: '#444' } },  // Caption 12 italic
 ];
 
 /** Bundled font families (booklet.css @font-face) selectable in the designer, plus the
@@ -88,6 +92,7 @@ function ruleFor(selector: string, p: StyleProps): string {
   if (p.color) decls.push(`color: ${p.color}`);
   if (p.lineHeight) decls.push(`line-height: ${p.lineHeight}`);
   if (p.align) decls.push(`text-align: ${p.align}`);
+  if (p.indent) decls.push(`margin-left: ${p.indent}`);
   if (!decls.length) return '';
   // Scope under .booklet-root so these win over booklet.css's unscoped role rules.
   return `.booklet-root ${selector} { ${decls.join('; ')}; }`;

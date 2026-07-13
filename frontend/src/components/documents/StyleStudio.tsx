@@ -270,6 +270,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                       {['left', 'center', 'right', 'justify'].map(a => <option key={a} value={a}>{a}</option>)}
                     </select>
                     <input className={sel} style={border} value={p.color ?? ''} placeholder="colour (#hex)" onChange={e => void setProp(rd.role, 'color', e.target.value)} />
+                    <input className={sel} style={border} value={p.indent ?? ''} placeholder="indent (e.g. 10mm)" onChange={e => void setProp(rd.role, 'indent', e.target.value)} />
                   </div>
                 </div>
               );

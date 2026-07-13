@@ -22,7 +22,7 @@ DEFAULT_ORG = 1
 ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "tibetan_body":  ("Tibetan Body", ["བོད་ཡིག", "Tibetan"]),
     "tibetan_title": ("Tibetan Section Title", ["ས་བཅད།", "Tibetan Section"]),
-    "phonetics":     ("Phonetics", ["Phonetics Words", "Phonetics With-Tib"]),
+    "phonetics":     ("Phonetics", ["Phonetics Words"]),
     "translation":   ("Translation", ["Translation Words", "Translation With-Tib"]),
     "mantra":        ("Mantras", ["Mantra", "Mantras Words"]),
     "small":         ("Small Letters", ["Small Words", "Small"]),
@@ -36,23 +36,23 @@ ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "image_caption": ("Caption", ["Image Caption"]),
 }
 
-# Concrete role defaults for a starter template (the reference booklet's look), used when
-# neither the org nor the document has a stored value. font/size/bold/italic.
+# Concrete role defaults for a starter template — GROUNDED in the reference docx's named
+# styles (font/size/bold/italic/indent pt), used when neither org nor document has a value.
 _TEMPLATE_DEFAULTS: dict[str, dict] = {
     "tibetan_body":  {"font": "Chogyal", "size": 16},
-    "tibetan_title": {"font": "Chogyal", "size": 22},
-    "phonetics":     {"font": "Raleway", "size": 10, "italic": True},
-    "translation":   {"font": "Gentium Basic", "size": 11},
-    "mantra":        {"font": "Gentium Basic", "size": 11, "bold": True, "italic": True},
-    "small":         {"font": "Libertinus Serif Display", "size": 9},
-    "section":       {"font": "Libertinus Serif Display", "size": 15, "italic": True},
-    "title_tib":     {"font": "Chogyal", "size": 20},
-    "title_main":    {"font": "Libertinus Serif", "size": 18},
-    "title_sub":     {"font": "Libertinus Serif", "size": 12.5, "italic": True},
+    "tibetan_title": {"font": "Chogyal", "size": 11, "indent": 11.3},           # ས་བཅད
+    "phonetics":     {"font": "Raleway SemiBold", "size": 10, "indent": 28.4},   # Phonetics
+    "translation":   {"font": "Gentium Basic", "size": 11, "indent": 42.5},      # Translation
+    "mantra":        {"font": "Gentium Basic", "size": 12, "bold": True, "indent": 28.4},  # Mantras (Words)
+    "small":         {"font": "Libertinus Serif Display", "size": 9},            # Small Letters
+    "section":       {"font": "Libertinus Serif Display", "size": 15},           # Sections (upright)
+    "title_tib":     {"font": "Chogyal", "size": 24},                            # ཁ་བྱང
+    "title_main":    {"font": "Libertinus Serif Semibold", "size": 18},          # Title
+    "title_sub":     {"font": "Calibri", "size": 12, "italic": True},            # Subtitle
     "copyright":     {"font": "Gentium Basic", "size": 11},
-    "toc":           {"font": "Gentium Basic", "size": 10.5},
+    "toc":           {"font": "Gentium Basic", "size": 11},
     "folio":         {"font": "Georgia", "size": 9},
-    "image_caption": {"font": "Gentium Basic", "size": 9.5, "italic": True},
+    "image_caption": {"font": "Gentium Basic", "size": 12, "italic": True},      # Caption
 }
 ALLOWED_FONT_MIME = {"font/ttf", "font/otf", "font/woff", "font/woff2",
                      "application/font-sfnt", "application/x-font-ttf",
@@ -291,7 +291,7 @@ def _props_from_docx_style(style) -> dict:
             props["color"] = f"#{str(f.color.rgb).lower()}"
     except (AttributeError, ValueError):
         pass
-    # Paragraph styles carry alignment/spacing; character styles don't.
+    # Paragraph styles carry alignment/spacing/indent; character styles don't.
     pf = getattr(style, "paragraph_format", None)
     if pf is not None:
         align = pf.alignment
@@ -301,6 +301,8 @@ def _props_from_docx_style(style) -> dict:
                 props["align"] = mapped
         if pf.line_spacing is not None and isinstance(pf.line_spacing, float):
             props["lineHeight"] = f"{pf.line_spacing:g}"
+        if pf.left_indent is not None:
+            props["indent"] = f"{pf.left_indent.mm:.1f}mm"
     return props
 
 
@@ -338,6 +340,9 @@ def export_style_template(target: str = "document", org_id: int = DEFAULT_ORG,
                 except ValueError: pass
             if "fontWeight" in src: base["bold"] = int(src.get("fontWeight") or 0) >= 600
             if "italic" in src: base["italic"] = bool(src["italic"])
+            if src.get("indent"):
+                try: base["indent"] = float(str(src["indent"]).rstrip("mm")) / 25.4 * 72
+                except ValueError: pass
         try:
             st = out.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
         except ValueError:
@@ -346,6 +351,7 @@ def export_style_template(target: str = "document", org_id: int = DEFAULT_ORG,
         if base.get("size"): st.font.size = Pt(float(base["size"]))
         if base.get("bold") is not None: st.font.bold = bool(base.get("bold"))
         if base.get("italic") is not None: st.font.italic = bool(base.get("italic"))
+        if base.get("indent"): st.paragraph_format.left_indent = Pt(float(base["indent"]))
         p = out.add_paragraph(f"{name} — sample text  ༄༅།", style=name)  # noqa: RUF001
 
     buf = io.BytesIO()
@@ -383,17 +389,29 @@ async def import_style_template(
         for nm in (canon, *aliases):
             name_to_role[nm.strip().lower()] = role
 
+    # Merge every style matching a role: a CHARACTER style ("… Words") wins on the run's
+    # font attrs; the PARAGRAPH style supplies indent/align/line-height. So we get both.
+    FONT_KEYS = ("fontFamily", "fontSize", "fontWeight", "italic", "color")
+    PARA_KEYS = ("align", "lineHeight", "indent")
     applied: dict[str, dict] = {}
     for style in d.styles:
         try:
             role = name_to_role.get((style.name or "").strip().lower())
         except Exception:
             role = None
-        if not role or role in applied:
+        if not role:
             continue
         props = _props_from_docx_style(style)
-        if props:
-            applied[role] = props
+        if not props:
+            continue
+        cur = applied.setdefault(role, {})
+        is_char = getattr(style, "paragraph_format", None) is None
+        for k in FONT_KEYS:
+            if k in props and (is_char or k not in cur):
+                cur[k] = props[k]
+        for k in PARA_KEYS:
+            if k in props:
+                cur[k] = props[k]
 
     if not applied:
         raise HTTPException(422, "No matching named styles found. See the expected style names.")
