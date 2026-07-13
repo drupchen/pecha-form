@@ -6,11 +6,13 @@ import {
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
 import {
-  getLanguages, getFurniture, putFurniture,
+  getLanguages, getFurniture, putFurniture, getDocumentLayout,
   uploadItemImage, deleteItemImage, itemImageUrl,
-  type Language, type DocumentItemKind, type TocSection, type DocumentFurnitureRow,
+  type Language, type DocumentItemKind, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
+import { compileDocument } from './compile';
+import { deriveBooklet, type NavNode } from './bookletRender';
 
 /** Furniture kinds that carry per-language authored text. */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page'];
@@ -26,16 +28,24 @@ const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode
 };
 const FURNITURE: DocumentItemKind[] = ['cover', 'blank', 'toc', 'copyright', 'image_page', 'backcover'];
 
-/** Recursive TOC section list (structure only — page numbers arrive with D2). */
-const TocSections: React.FC<{ sections: TocSection[]; depth?: number }> = ({ sections, depth = 0 }) => (
-  <ul className="list-none">
-    {sections.map((s, i) => (
-      <li key={i} style={{ paddingLeft: depth * 14 }} className="py-0.5">
-        <span className={depth === 0 ? 'text-ink' : 'text-ink-soft'}>{s.title}</span>
-        {s.children.length > 0 && <TocSections sections={s.children} depth={depth + 1} />}
-      </li>
+/** The booklet's navigation outline (what the PDF's bookmarks contain): each text with
+ *  its sapche sections nested by depth, translated headings + reader folio. */
+const NavOutline: React.FC<{ nodes: NavNode[]; depth?: number }> = ({ nodes, depth = 0 }) => (
+  <div>
+    {nodes.map((n, i) => (
+      <div key={i}>
+        <div style={{ paddingLeft: depth * 12 }} className="flex items-baseline gap-1 py-0.5">
+          <span className={depth === 0 ? 'font-medium text-lapis' : 'text-ink-soft'}>
+            {n.title || '—'}
+          </span>
+          <span className="flex-1 border-b border-dotted self-end mb-1"
+                style={{ borderColor: 'var(--cline)' }} />
+          <span className="text-ink-soft text-xs shrink-0">{n.folio}</span>
+        </div>
+        {n.children.length > 0 && <NavOutline nodes={n.children} depth={depth + 1} />}
+      </div>
     ))}
-  </ul>
+  </div>
 );
 
 /**
@@ -46,7 +56,6 @@ const TocSections: React.FC<{ sections: TocSection[]; depth?: number }> = ({ sec
 export const DocumentsView: React.FC = () => {
   const list = useDocumentStore(s => s.list);
   const current = useDocumentStore(s => s.current);
-  const toc = useDocumentStore(s => s.toc);
   const error = useDocumentStore(s => s.error);
   const fetchList = useDocumentStore(s => s.fetchList);
   const open = useDocumentStore(s => s.open);
@@ -71,6 +80,9 @@ export const DocumentsView: React.FC = () => {
   const [editingItem, setEditingItem] = useState<number | null>(null);
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
+  const [navPreview, setNavPreview] = useState<NavNode[]>([]);
+  const [navLang, setNavLang] = useState<string>('');
+  const [navLoading, setNavLoading] = useState(false);
   const pickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -85,6 +97,32 @@ export const DocumentsView: React.FC = () => {
     else setFurniture([]);
     setEditingItem(null);
   }, [current?.id]);
+
+  // Compute the real navigation outline (what the PDF bookmarks contain) for the preview
+  // pane — same pipeline as the print page, so preview == PDF navigation.
+  useEffect(() => {
+    if (!current) { setNavPreview([]); return; }
+    const edition = current.languages.includes(navLang) ? navLang : (current.languages[0] ?? 'en');
+    if (edition !== navLang) { setNavLang(edition); return; }
+    const hasText = current.items.some(i => i.kind === 'text' && i.text_id != null);
+    if (!hasText) { setNavPreview([]); return; }
+    let alive = true;
+    setNavLoading(true);
+    (async () => {
+      try {
+        const [compiled, layout, furn] = await Promise.all([
+          compileDocument(current.items, edition),
+          getDocumentLayout(current.id),
+          getFurniture(current.id),
+        ]);
+        if (!alive) return;
+        const d = deriveBooklet(current.items, layout.rows, compiled.lines, compiled.titleByItem, furn, edition);
+        setNavPreview(d.navOutline);
+      } catch { if (alive) setNavPreview([]); }
+      finally { if (alive) setNavLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, [current?.id, current?.items, navLang]);
 
   const furnitureBody = (itemId: number, langCode: string) =>
     furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
@@ -426,26 +464,35 @@ export const DocumentsView: React.FC = () => {
               </div>
             </div>
 
-            {/* TOC preview */}
+            {/* Navigation-outline preview — what the PDF's bookmarks will contain. */}
             <div className="w-80 shrink-0 overflow-auto px-4 py-4 bg-cream-hi"
                  style={{ borderLeft: '1px solid var(--cline)' }}>
-              <div className="text-xs text-ink-soft mb-2 uppercase tracking-wide">Table of contents</div>
-              {toc.length === 0 ? (
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-ink-soft uppercase tracking-wide">PDF navigation</span>
+                {current.languages.length > 1 && (
+                  <div className="flex items-center gap-1">
+                    {current.languages.map(code => (
+                      <button key={code} type="button" onClick={() => setNavLang(code)}
+                              className={`px-1.5 py-0.5 rounded text-[11px] ${
+                                navLang === code ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}>
+                        {code}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {navLoading ? (
+                <div className="text-xs text-ink-soft">Building outline…</div>
+              ) : navPreview.length === 0 ? (
                 <div className="text-xs text-ink-soft">Add a text page to populate the contents.</div>
               ) : (
-                <div className="flex flex-col gap-3 text-sm">
-                  {toc.map(entry => (
-                    <div key={entry.item_id}>
-                      <div className="font-medium text-lapis tibetan-text-sm">{entry.text_title}</div>
-                      {entry.sections.length > 0
-                        ? <TocSections sections={entry.sections} />
-                        : <div className="text-xs text-ink-soft italic">no sections</div>}
-                    </div>
-                  ))}
+                <div className="text-sm">
+                  <NavOutline nodes={navPreview} />
                 </div>
               )}
               <div className="mt-4 text-[11px] text-ink-soft italic">
-                Page numbers appear once pagination is built.
+                The printed TOC page lists one line per text; this full outline is the PDF’s
+                clickable navigation. Folios reflect the current pagination.
               </div>
             </div>
           </div>

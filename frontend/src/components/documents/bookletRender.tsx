@@ -222,8 +222,9 @@ export type PageUnit =
   | { kind: 'title'; item: DocumentItem; titleLines: DocLine[] };
 
 /** A node in the PDF navigation outline (bookmarks): plain-text title, the 0-based
- *  PHYSICAL page index it points at, and nested children (a text's sapche sections). */
-export interface NavNode { title: string; pageIndex: number; children: NavNode[] }
+ *  PHYSICAL page index the bookmark points at, the reader-facing `folio` (recto page
+ *  number, for previews), and nested children (a text's sapche sections). */
+export interface NavNode { title: string; pageIndex: number; folio: number; children: NavNode[] }
 
 export interface DerivedBooklet {
   breakSet: Set<number>;
@@ -259,11 +260,11 @@ const plainTextOf = (h: string): string => {
 };
 
 /** Build a nested outline from flat sapche entries, nesting by their depth `level`. */
-function nestByLevel(items: { title: string; pageIndex: number; level: number }[]): NavNode[] {
+function nestByLevel(items: { title: string; pageIndex: number; folio: number; level: number }[]): NavNode[] {
   const roots: NavNode[] = [];
   const stack: { node: NavNode; level: number }[] = [];
   for (const it of items) {
-    const node: NavNode = { title: it.title, pageIndex: it.pageIndex, children: [] };
+    const node: NavNode = { title: it.title, pageIndex: it.pageIndex, folio: it.folio, children: [] };
     while (stack.length && stack[stack.length - 1].level >= it.level) stack.pop();
     (stack.length ? stack[stack.length - 1].node.children : roots).push(node);
     stack.push({ node, level: it.level });
@@ -386,12 +387,16 @@ export function deriveBooklet(
     const startLine = itemStartLine.get(it.id);
     const pageIndex = titleUnitIdx >= 0 ? unitBase[titleUnitIdx]
       : (startLine != null ? rectoPageOfLine(startLine) : F);
-    const sections: { title: string; pageIndex: number; level: number }[] = [];
+    const folio = startLine != null ? folioOfLine(startLine) : 1;
+    const sections: { title: string; pageIndex: number; folio: number; level: number }[] = [];
     lines.forEach((l, i) => {
       if (l.itemId !== it.id || l.role !== 'sapche' || !l.translation) return;
-      sections.push({ title: plainTextOf(l.translation), pageIndex: rectoPageOfLine(i), level: l.level ?? 0 });
+      sections.push({
+        title: plainTextOf(l.translation), pageIndex: rectoPageOfLine(i),
+        folio: folioOfLine(i), level: l.level ?? 0,
+      });
     });
-    return { title: plainTextOf(titleSrc), pageIndex, children: nestByLevel(sections) };
+    return { title: plainTextOf(titleSrc), pageIndex, folio, children: nestByLevel(sections) };
   });
 
   return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,
