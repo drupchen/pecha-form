@@ -593,6 +593,9 @@ class DocumentLanguagesIn(BaseModel):
 class TocSection(BaseModel):
     title: Optional[str] = None
     level: Optional[int] = None
+    # The syllable the section starts at (its tree node's segment anchor), so the
+    # frontend can resolve which page it lands on.
+    anchor_syl_id: Optional[str] = None
     children: List['TocSection'] = []
 
 class TocEntry(BaseModel):
@@ -637,3 +640,14 @@ class DocumentLayoutConfigIn(BaseModel):
 class DocumentLayoutOut(BaseModel):
     config: dict                       # effective geometry (defaults + overrides)
     rows: List[DocumentLayoutRow] = []
+
+# Per-language furniture content (copyright text, cover/title overrides, captions).
+class DocumentFurnitureRow(BaseModel):
+    item_id: int
+    lang: str
+    body: str
+
+class DocumentFurnitureIn(BaseModel):
+    item_id: int
+    lang: str
+    body: str

@@ -61,6 +61,24 @@
 
 .booklet-content { height: 100%; }
 
+/* Furniture pages (title / copyright / toc / blank / backcover) — single, symmetric. */
+.booklet-page.furniture { padding: var(--m-top) var(--m-outer) var(--m-bottom); }
+.bk-titlepage { height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; gap: 4mm; }
+.bk-seal { font-size: 26pt; color: #444; margin-bottom: 8mm; }
+.bk-title-tib { font-family: var(--font-tibetan); font-size: 20pt; line-height: 1.4; }
+.bk-title-trans { font-family: var(--font-title); font-size: 15pt; line-height: 1.4; margin-top: 2mm; }
+.bk-copyright { height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; font-family: var(--font-translation);
+  font-size: 11pt; color: #333; }
+.bk-toc { height: 100%; display: flex; flex-direction: column; justify-content: center;
+  font-family: var(--font-translation); font-size: 11pt; }
+.bk-toc-entry { display: flex; align-items: baseline; padding: 1.2mm 0; }
+.bk-toc-title { white-space: nowrap; }
+.bk-toc-dots { flex: 1; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
+.bk-toc-page { white-space: nowrap; }
+.bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
+
 /* Recto page number (verso is unnumbered). */
 .booklet-folio {
   position: absolute;

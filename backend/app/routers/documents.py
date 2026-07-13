@@ -19,7 +19,9 @@ from ..schemas import (
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
     DocumentLayoutConfigIn, DocumentLayoutOut,
+    DocumentFurnitureRow, DocumentFurnitureIn,
 )
+from .translations import _sanitize_body
 from .tree_nodes import get_nested_tree
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -268,7 +270,8 @@ def _to_toc_sections(nodes: list) -> List[TocSection]:
         kids = _to_toc_sections(n.get("children", []))
         title = (n.get("title") or "").strip()
         if title:
-            out.append(TocSection(title=title, level=None, children=kids))
+            out.append(TocSection(title=title, level=None,
+                                  anchor_syl_id=n.get("segment_start_syl_id"), children=kids))
         else:
             out.extend(kids)  # promote children of an untitled node
     return out
@@ -400,5 +403,41 @@ def delete_layout_row(document_id: int, payload: DocumentLayoutDeleteIn):
         _touch(conn, document_id)
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── Furniture content (per-language authored text for cover/title/copyright) ────
+
+@router.get("/documents/{document_id}/furniture", response_model=List[DocumentFurnitureRow])
+def list_furniture(document_id: int):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        return [DocumentFurnitureRow(item_id=r["item_id"], lang=r["lang"], body=r["body"])
+                for r in conn.execute(
+                    "SELECT item_id, lang, body FROM document_furniture WHERE document_id = ?",
+                    (document_id,)).fetchall()]
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/furniture", response_model=DocumentFurnitureRow)
+def upsert_furniture(document_id: int, payload: DocumentFurnitureIn):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                            (payload.item_id, document_id)).fetchone():
+            raise HTTPException(404, "Item not in this document")
+        body = _sanitize_body(payload.body)
+        conn.execute(
+            "INSERT INTO document_furniture (document_id, item_id, lang, body) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(document_id, item_id, lang) DO UPDATE SET body = excluded.body",
+            (document_id, payload.item_id, payload.lang, body))
+        _touch(conn, document_id)
+        conn.commit()
+        return DocumentFurnitureRow(item_id=payload.item_id, lang=payload.lang, body=body)
     finally:
         conn.close()

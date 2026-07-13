@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Scissors } from 'lucide-react';
 import {
-  getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow,
-  type DocumentDetail, type LayoutConfig, type DocumentLayoutRow,
+  getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
+  type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
+  type DocumentFurnitureRow,
 } from '../../api/client';
 import { compileDocument, type DocLine } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
@@ -101,6 +102,57 @@ const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => 
   );
 };
 
+interface TocRow { title: string; page: number }
+
+/** A single furniture page (cover/title, copyright, toc, blank/backcover, image). */
+const FurniturePage: React.FC<{
+  item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
+}> = ({ item, titleLines, body, toc }) => {
+  let content: React.ReactNode = null;
+  if (item.kind === 'cover') {
+    content = (
+      <div className="bk-titlepage">
+        <div className="bk-seal">ༀ</div>
+        {titleLines.map((t, i) => (
+          <div key={i} className="bk-tibetan bk-title-tib">
+            {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
+          </div>
+        ))}
+        {titleLines.map((t, i) => t.translation && (
+          <div key={`tr${i}`} className="bk-title-trans"
+               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(t.translation) }} />
+        ))}
+      </div>
+    );
+  } else if (item.kind === 'copyright') {
+    content = body
+      ? <div className="bk-copyright" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+      : <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
+  } else if (item.kind === 'toc') {
+    content = (
+      <div className="bk-toc">
+        {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
+        {toc.map((e, i) => (
+          <div key={i} className="bk-toc-entry">
+            <span className="bk-toc-title">{e.title}</span>
+            <span className="bk-toc-dots" />
+            <span className="bk-toc-page">{e.page}</span>
+          </div>
+        ))}
+      </div>
+    );
+  } else if (item.kind === 'image_page') {
+    content = <div className="bk-placeholder">Image page</div>;
+  }
+  return (
+    <div className="booklet-spread">
+      <div className="booklet-page furniture">
+        <div className="booklet-content">{content}</div>
+      </div>
+    </div>
+  );
+};
+
 /**
  * Pagination bench (Phase D2). Compiles a document's text pages into the SHARED line
  * stream and flows it into facing pages (Tibetan verso / phonetics+translation recto).
@@ -119,6 +171,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
   const [lang, setLang] = useState<string>('en');
   const [lines, setLines] = useState<DocLine[]>([]);
+  const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
+  const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const measureRef = useRef<HTMLDivElement>(null);
@@ -127,14 +181,18 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     let alive = true;
     (async () => {
       setLoading(true);
-      const [d, lay] = await Promise.all([getDocument(documentId), getDocumentLayout(documentId)]);
+      const [d, lay, furn] = await Promise.all([
+        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId)]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
+      setFurniture(furn);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       setLang(edition);
-      setLines(await compileDocument(d.items, edition));
+      const compiled = await compileDocument(d.items, edition);
+      setLines(compiled.lines);
+      setTitleByItem(compiled.titleByItem);
       setLoading(false);
     })();
     return () => { alive = false; };
@@ -145,7 +203,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     let alive = true;
     (async () => {
       const compiled = await compileDocument(doc.items, lang);
-      if (alive) setLines(compiled);
+      if (!alive) return;
+      setLines(compiled.lines);
+      setTitleByItem(compiled.titleByItem);
     })();
     return () => { alive = false; };
   }, [lang]);
@@ -294,6 +354,44 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const vFirst = Math.max(0, Math.floor(scrollTop / spreadHpx) - 1);
   const vLast = Math.min(spreads.length, Math.ceil((scrollTop + viewH) / spreadHpx) + 1);
 
+  // ── Furniture pages (front/back matter) + auto-TOC with page numbers ──
+  const textItems = (doc?.items ?? []).filter((it) => it.kind === 'text' && it.text_id != null);
+  const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
+  const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
+  const frontMatter = (doc?.items ?? [])
+    .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
+    .sort((a, b) => a.position - b.position);
+  const backMatter = (doc?.items ?? [])
+    .filter((it) => it.kind !== 'text' && it.position > lastTextPos)
+    .sort((a, b) => a.position - b.position);
+
+  const itemStartLine = useMemo(() => {
+    const m = new Map<number, number>();
+    lines.forEach((l, i) => { if (!m.has(l.itemId)) m.set(l.itemId, i); });
+    return m;
+  }, [lines]);
+  const folioOfLine = (idx: number) => {
+    for (let s = 0; s < spreads.length; s++) if (spreads[s].start <= idx && idx < spreads[s].end) return s + 1;
+    return 1;
+  };
+  const stripHtml = (h: string) => h.replace(/<[^>]+>/g, '').trim();
+  const tocRows: TocRow[] = textItems.map((it) => {
+    const tl = titleByItem.get(it.id) ?? [];
+    const title = tl[0]?.translation ? stripHtml(sanitizeTranslationHtml(tl[0].translation)) : (it.text_title || '');
+    const startLine = itemStartLine.get(it.id);
+    return { title, page: startLine != null ? folioOfLine(startLine) : 1 };
+  });
+  const mainTitleLines = firstTextPos !== Infinity
+    ? (titleByItem.get(textItems.find((i) => i.position === firstTextPos)!.id) ?? []) : [];
+  const furnitureBody = (item: DocumentItem) =>
+    furniture.find((f) => f.item_id === item.id && f.lang === lang)?.body ?? null;
+
+  const renderFurniture = (item: DocumentItem) => (
+    <FurniturePage key={`f${item.id}`} item={item}
+      titleLines={item.kind === 'cover' ? mainTitleLines : []}
+      body={furnitureBody(item)} toc={item.kind === 'toc' ? tocRows : []} />
+  );
+
   if (!doc || !config) {
     return <div className="flex-1 flex items-center justify-center text-ink-soft">Loading booklet…</div>;
   }
@@ -354,11 +452,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         </span>
       </div>
 
-      {/* Pages — virtualized: only spreads near the viewport are mounted (each spread
-          is a fixed page height, so the scroll height is exact). */}
+      {/* Pages — front-matter furniture, then the virtualized body spreads, then
+          back-matter furniture. Each body spread is a fixed page height. */}
       <div ref={scrollRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
            className="flex-1 overflow-auto" style={{ background: 'var(--cream)' }}>
-        <div style={{ height: spreads.length * spreadHpx, position: 'relative' }}>
+        {frontMatter.length > 0 && (
+          <div className="flex flex-col items-center gap-6 pt-6">{frontMatter.map(renderFurniture)}</div>
+        )}
+        <div style={{ height: spreads.length * spreadHpx, position: 'relative', marginTop: 24 }}>
           {spreads.slice(vFirst, vLast).map((s, k) => {
             const si = vFirst + k;
             return (
@@ -377,9 +478,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
             );
           })}
         </div>
-        {!loading && !seeding && lines.length === 0 && (
+        {backMatter.length > 0 && (
+          <div className="flex flex-col items-center gap-6 pb-6">{backMatter.map(renderFurniture)}</div>
+        )}
+        {!loading && !seeding && lines.length === 0 && frontMatter.length === 0 && backMatter.length === 0 && (
           <div className="text-ink-soft text-sm py-10 text-center">
-            No text pages with content — add text pages and translations first.
+            No pages — add text pages (and furniture) in the Documents tab.
           </div>
         )}
       </div>

@@ -147,13 +147,27 @@ function splitParagraphs(html: string): string[] {
     .filter(Boolean);
 }
 
-/** Compile the whole document's text pages (in order) for one language edition. */
-export async function compileDocument(items: DocumentItem[], lang: string): Promise<DocLine[]> {
-  const out: DocLine[] = [];
+export interface CompiledDoc {
+  /** The document's body line stream (title lifted out), text pages in order. */
+  lines: DocLine[];
+  /** Per text item: its lifted leading title line(s) (Tibetan + translated title),
+   *  for the title/cover page. */
+  titleByItem: Map<number, DocLine[]>;
+}
+
+/** Compile the whole document's text pages for one language, lifting each text's
+ *  leading title (role `title`) out of the body so it can head a title page. */
+export async function compileDocument(items: DocumentItem[], lang: string): Promise<CompiledDoc> {
+  const lines: DocLine[] = [];
+  const titleByItem = new Map<number, DocLine[]>();
   for (const it of items) {
-    if (it.kind === 'text' && it.text_id != null) {
-      out.push(...(await compileTextItem(it, lang)));
-    }
+    if (it.kind !== 'text' || it.text_id == null) continue;
+    const compiled = await compileTextItem(it, lang);
+    let i = 0;
+    const titleLines: DocLine[] = [];
+    while (i < compiled.length && compiled[i].role === 'title') { titleLines.push(compiled[i]); i++; }
+    titleByItem.set(it.id, titleLines);
+    lines.push(...compiled.slice(i));
   }
-  return out;
+  return { lines, titleByItem };
 }

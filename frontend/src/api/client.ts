@@ -382,6 +382,14 @@ export const deleteLayoutRow = (id: number, body: {
   jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/layout`,
     { method: 'DELETE', headers: J, body: JSON.stringify(body) });
 
+// Per-language furniture content (copyright text, cover/title overrides, captions).
+export interface DocumentFurnitureRow { item_id: number; lang: string; body: string }
+export const getFurniture = (id: number) =>
+  jfetch<DocumentFurnitureRow[]>(`${API_BASE}/documents/${id}/furniture`);
+export const putFurniture = (id: number, body: { item_id: number; lang: string; body: string }) =>
+  jfetch<DocumentFurnitureRow>(`${API_BASE}/documents/${id}/furniture`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
 export async function deleteText(id: number) {
   const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());

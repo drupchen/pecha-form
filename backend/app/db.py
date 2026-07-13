@@ -532,6 +532,18 @@ CREATE TABLE IF NOT EXISTS document_layout (
     UNIQUE(document_id, item_id, anchor_syl_id, kind, lang)
 );
 CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_id);
+
+-- Per-language authored content for FURNITURE items (cover/title/copyright/image
+-- caption). Booklet-specific (NOT a text): e.g. the copyright page's per-language text.
+-- The title page's translated title is seeded from the text's own title but can be
+-- overridden here. body is the sanitized HTML subset used by the translation layer.
+CREATE TABLE IF NOT EXISTS document_furniture (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    item_id     INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
+    lang        TEXT NOT NULL,
+    body        TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (document_id, item_id, lang)
+);
 """
 
 
@@ -706,7 +718,8 @@ def _rename_documents_to_texts(conn) -> None:
     # `document_items`/`document_languages` that own a real `document_id`. Only the
     # LEGACY `documents` table (the former `texts`) carries text columns like
     # `raw_text`; distinguish them so this historical rename never touches the booklets.
-    NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout"}
+    NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout",
+                          "document_furniture"}
     documents_is_legacy = "documents" in tables and "raw_text" in {
         r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if documents_is_legacy:
