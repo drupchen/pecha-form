@@ -110,6 +110,8 @@ const FurniturePage: React.FC<{
 }> = ({ item, titleLines, body, toc }) => {
   let content: React.ReactNode = null;
   if (item.kind === 'cover') {
+    // The translated title's parts: the first is the main title, the rest the subtitle.
+    const trans = titleLines.map((t) => t.translation).filter((x): x is string => !!x);
     content = (
       <div className="bk-titlepage">
         <div className="bk-seal">ༀ</div>
@@ -118,9 +120,13 @@ const FurniturePage: React.FC<{
             {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
           </div>
         ))}
-        {titleLines.map((t, i) => t.translation && (
-          <div key={`tr${i}`} className="bk-title-trans"
-               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(t.translation) }} />
+        {trans[0] && (
+          <div className="bk-title-main"
+               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
+        )}
+        {trans.slice(1).map((p, i) => (
+          <div key={`sub${i}`} className="bk-title-sub"
+               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
         ))}
       </div>
     );

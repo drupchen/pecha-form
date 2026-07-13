@@ -1,12 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Library, Plus, Trash2, ChevronUp, ChevronDown, FileText, Image as ImageIcon,
-  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate,
+  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate, Pencil,
 } from 'lucide-react';
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
-import { getLanguages, type Language, type DocumentItemKind, type TocSection } from '../../api/client';
+import {
+  getLanguages, getFurniture, putFurniture,
+  type Language, type DocumentItemKind, type TocSection, type DocumentFurnitureRow,
+} from '../../api/client';
 import { PaginationBench } from './PaginationBench';
+
+/** Furniture kinds that carry per-language authored text. */
+const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page'];
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -60,6 +66,8 @@ export const DocumentsView: React.FC = () => {
   const [renaming, setRenaming] = useState(false);
   const [pickingText, setPickingText] = useState(false);
   const [paginating, setPaginating] = useState(false);
+  const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
+  const [editingItem, setEditingItem] = useState<number | null>(null);
   const pickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,6 +75,26 @@ export const DocumentsView: React.FC = () => {
     fetchTexts();
     getLanguages().then(setLangs).catch(() => {});
   }, [fetchList, fetchTexts]);
+
+  // Load furniture content whenever the open document changes.
+  useEffect(() => {
+    if (current) getFurniture(current.id).then(setFurniture).catch(() => setFurniture([]));
+    else setFurniture([]);
+    setEditingItem(null);
+  }, [current?.id]);
+
+  const furnitureBody = (itemId: number, langCode: string) =>
+    furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
+  const saveFurniture = async (itemId: number, langCode: string, body: string) => {
+    if (!current) return;
+    if (body === furnitureBody(itemId, langCode)) return;
+    try {
+      const row = await putFurniture(current.id, { item_id: itemId, lang: langCode, body });
+      setFurniture(prev => [
+        ...prev.filter(f => !(f.item_id === itemId && f.lang === langCode)), row,
+      ]);
+    } catch { /* surfaced by store elsewhere */ }
+  };
 
   // Secondary texts first (the booklet intent), then the rest; primaries allowed.
   const pickable = useMemo(() => {
@@ -224,31 +252,67 @@ export const DocumentsView: React.FC = () => {
             <div className="flex-1 overflow-auto px-5 py-4">
               <div className="text-xs text-ink-soft mb-2">Pages ({current.items.length})</div>
               <div className="flex flex-col gap-1">
-                {current.items.map((it, i) => (
-                  <div key={it.id}
-                       className="flex items-center gap-2 px-3 py-2 rounded-md bg-white"
-                       style={{ border: '1px solid var(--cline)' }}>
-                    <span className="text-ink-soft w-6 text-right text-xs">{i + 1}</span>
-                    <span className="text-lapis">{KIND_META[it.kind].icon}</span>
-                    <span className="text-sm flex-1 truncate">
-                      {it.kind === 'text'
-                        ? (it.text_title ?? <span className="text-vermilion">missing text</span>)
-                        : <span className="text-ink-soft">{KIND_META[it.kind].label}</span>}
-                    </span>
-                    <button type="button" onClick={() => void moveItem(it.id, -1)} disabled={i === 0}
-                            className="p-0.5 text-ink-soft hover:text-lapis disabled:opacity-30" title="Move up">
-                      <ChevronUp size={15} />
-                    </button>
-                    <button type="button" onClick={() => void moveItem(it.id, 1)} disabled={i === current.items.length - 1}
-                            className="p-0.5 text-ink-soft hover:text-lapis disabled:opacity-30" title="Move down">
-                      <ChevronDown size={15} />
-                    </button>
-                    <button type="button" onClick={() => void removeItem(it.id)}
-                            className="p-0.5 text-ink-soft hover:text-vermilion" title="Remove page">
-                      <Trash2 size={14} />
-                    </button>
+                {current.items.map((it, i) => {
+                  const editable = EDITABLE_FURNITURE.includes(it.kind);
+                  return (
+                  <div key={it.id}>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-white"
+                         style={{ border: '1px solid var(--cline)' }}>
+                      <span className="text-ink-soft w-6 text-right text-xs">{i + 1}</span>
+                      <span className="text-lapis">{KIND_META[it.kind].icon}</span>
+                      <span className="text-sm flex-1 truncate">
+                        {it.kind === 'text'
+                          ? (it.text_title ?? <span className="text-vermilion">missing text</span>)
+                          : <span className="text-ink-soft">{KIND_META[it.kind].label}</span>}
+                      </span>
+                      {editable && (
+                        <button type="button"
+                                onClick={() => setEditingItem(editingItem === it.id ? null : it.id)}
+                                className={`p-0.5 hover:text-lapis ${editingItem === it.id ? 'text-lapis' : 'text-ink-soft'}`}
+                                title="Edit content (per language)">
+                          <Pencil size={13} />
+                        </button>
+                      )}
+                      <button type="button" onClick={() => void moveItem(it.id, -1)} disabled={i === 0}
+                              className="p-0.5 text-ink-soft hover:text-lapis disabled:opacity-30" title="Move up">
+                        <ChevronUp size={15} />
+                      </button>
+                      <button type="button" onClick={() => void moveItem(it.id, 1)} disabled={i === current.items.length - 1}
+                              className="p-0.5 text-ink-soft hover:text-lapis disabled:opacity-30" title="Move down">
+                        <ChevronDown size={15} />
+                      </button>
+                      <button type="button" onClick={() => void removeItem(it.id)}
+                              className="p-0.5 text-ink-soft hover:text-vermilion" title="Remove page">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    {editable && editingItem === it.id && (
+                      <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
+                           style={{ border: '1px solid var(--cline)' }}>
+                        <div className="text-[11px] text-ink-soft">
+                          {KIND_META[it.kind].label} content — per language (HTML: &lt;p&gt;, &lt;em&gt;, &lt;strong&gt;)
+                        </div>
+                        {current.languages.length === 0 && (
+                          <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
+                        )}
+                        {current.languages.map(code => (
+                          <label key={code} className="flex items-start gap-2">
+                            <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
+                            <textarea
+                              defaultValue={furnitureBody(it.id, code)}
+                              onBlur={e => void saveFurniture(it.id, code, e.target.value)}
+                              rows={2}
+                              placeholder={it.kind === 'copyright' ? 'Copyright © …' : 'content…'}
+                              className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
+                              style={{ border: '1px solid var(--cline)' }}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
                 {current.items.length === 0 && (
                   <div className="text-xs text-ink-soft py-4">Add pages below.</div>
                 )}
