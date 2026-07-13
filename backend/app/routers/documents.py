@@ -9,9 +9,15 @@ computed from each text page's section tree (reuses tree_nodes.get_nested_tree).
 from typing import List
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from ..db import get_db
 import json
+import os
+import shutil
+import subprocess
+import tempfile
 
 from ..schemas import (
     DocumentCreate, DocumentUpdate, DocumentOut, DocumentDetailOut,
@@ -441,3 +447,67 @@ def upsert_furniture(document_id: int, payload: DocumentFurnitureIn):
         return DocumentFurnitureRow(item_id=payload.item_id, lang=payload.lang, body=body)
     finally:
         conn.close()
+
+
+# ─── PDF export (Phase D3) ───────────────────────────────────────────────────
+# The booklet is printed by headless Chromium off the frontend's `?print=` route —
+# the SAME rendering engine as the on-screen pagination bench, so the PDF is WYSIWYG.
+# We drive the system Chrome/Chromium (no bundled browser dependency); the frontend
+# must be reachable at PECHA_FRONTEND_URL (the dev server, or a served build).
+
+_CHROME_BINS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"]
+FRONTEND_URL = os.environ.get("PECHA_FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
+
+def _find_chrome() -> str | None:
+    for b in _CHROME_BINS:
+        p = shutil.which(b)
+        if p:
+            return p
+    return None
+
+
+@router.get("/documents/{document_id}/pdf")
+def export_pdf(document_id: int, lang: str = "en"):
+    conn = get_db()
+    try:
+        doc = _require_doc(conn, document_id)
+        title = doc["title"]
+    finally:
+        conn.close()
+
+    chrome = _find_chrome()
+    if not chrome:
+        raise HTTPException(500, "No Chrome/Chromium binary found on the server for PDF export.")
+
+    fd, out_path = tempfile.mkstemp(suffix=".pdf", prefix="booklet_")
+    os.close(fd)
+    url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}"
+    cmd = [
+        chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+        "--no-pdf-header-footer", "--virtual-time-budget=25000",
+        f"--print-to-pdf={out_path}", url,
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+    except subprocess.TimeoutExpired:
+        _safe_unlink(out_path)
+        raise HTTPException(504, "PDF render timed out. Is the frontend reachable at PECHA_FRONTEND_URL?")
+
+    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+        _safe_unlink(out_path)
+        raise HTTPException(500, "PDF render produced no output.")
+
+    safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
+    filename = f"{safe}-{lang}.pdf"
+    return FileResponse(
+        out_path, media_type="application/pdf", filename=filename,
+        background=BackgroundTask(_safe_unlink, out_path),
+    )
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass

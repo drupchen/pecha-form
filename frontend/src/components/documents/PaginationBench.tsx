@@ -1,186 +1,16 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus, FileDown } from 'lucide-react';
 import {
-  getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
+  API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow,
 } from '../../api/client';
 import { compileDocument, type DocLine } from './compile';
-import { sanitizeTranslationHtml } from '../translate/sanitize';
+import {
+  MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
+  deriveBooklet, furnitureBodyOf, type LineAdj,
+} from './bookletRender';
 import '../../styles/booklet.css';
-
-const MM_PX = 96 / 25.4;
-
-function rootVars(c: LayoutConfig): React.CSSProperties {
-  return {
-    ['--page-w' as any]: `${c.page_width_mm}mm`,
-    ['--page-h' as any]: `${c.page_height_mm}mm`,
-    ['--m-top' as any]: `${c.margin_top_mm}mm`,
-    ['--m-bottom' as any]: `${c.margin_bottom_mm}mm`,
-    ['--m-bind' as any]: `${c.margin_bind_mm}mm`,
-    ['--m-outer' as any]: `${c.margin_outer_mm}mm`,
-    ['--tibetan-pt' as any]: `${c.tibetan_pt}pt`,
-    ['--phonetics-pt' as any]: `${c.phonetics_pt}pt`,
-    ['--translation-pt' as any]: `${c.translation_pt}pt`,
-    ['--leading' as any]: `${c.leading}`,
-  };
-}
-
-/** Balancing state applied to one line, plus (interactive only) the handlers. */
-interface LineAdj {
-  gapDeltaMm: number;   // empty-line spacing delta
-  noSpace: boolean;     // blank line removed
-  wrapMm: number;       // rightward wrap-limit push for the translation
-  onGap?: (delta: number) => void;
-  onToggleNoSpace?: () => void;
-  onWrap?: (delta: number) => void;
-}
-const NO_ADJ: LineAdj = { gapDeltaMm: 0, noSpace: false, wrapMm: 0 };
-
-/** The empty-line gap between chunks — the primary balancing lever. */
-const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
-  if (adj.noSpace) {
-    return adj.onToggleNoSpace ? (
-      <div className="bk-gap-removed">
-        <button type="button" className="bk-gapctl" title="Restore blank line"
-                onClick={adj.onToggleNoSpace}>+ line</button>
-      </div>
-    ) : null;
-  }
-  return (
-    <div className="bk-gap" style={{ height: `calc(var(--translation-pt) * var(--leading) + ${adj.gapDeltaMm}mm)` }}>
-      {adj.onGap && (
-        <span className="bk-gapctl-group">
-          <button type="button" className="bk-gapctl" title="Less space" onClick={() => adj.onGap!(-1)}>−</button>
-          <button type="button" className="bk-gapctl" title="More space" onClick={() => adj.onGap!(1)}>+</button>
-          <button type="button" className="bk-gapctl" title="Remove blank line" onClick={adj.onToggleNoSpace}>×</button>
-        </span>
-      )}
-    </div>
-  );
-};
-
-const Verso: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => (
-  <div className={`bk-line bk-role-${l.role}`}>
-    <div className="bk-tibetan">{l.tokens.map((t, i) => <span key={i}>{t.render}</span>)}</div>
-    {l.emptyAfter && <Gap adj={adj} />}
-  </div>
-);
-
-/* The recto unit, by role:
- *  - section (title/sapche): the translated heading only (Libertinus, large);
- *  - mantra: the romanised mantra only (the phonetics), standalone bold-italic;
- *  - verse/prose/small: an INTERLINEAR PAIR — phonetics then its indented translation,
- *    kept together (the whole `.bk-line` has break-inside: avoid). */
-const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ }) => {
-  const isSection = l.role === 'title' || l.role === 'sapche';
-  const isMantra = l.role === 'mantra';
-  return (
-    <div className={`bk-line bk-pair bk-role-${l.role}`}>
-      {isSection ? (
-        l.translation != null && (
-          <div className="bk-section"
-               // Step the heading size down by outline depth (top = 15pt, floor 10.5pt).
-               style={l.level != null ? { fontSize: `${Math.max(10.5, 15 - l.level * 1.5)}pt` } : undefined}
-               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
-        )
-      ) : (
-        <>
-          {l.phonetics && <div className="bk-phonetics">{l.phonetics}</div>}
-          {!isMantra && l.translation != null && (
-            <div className="bk-translation" style={adj.wrapMm ? { marginRight: `-${adj.wrapMm}mm` } : undefined}>
-              <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
-              {adj.onWrap && (
-                <span className="bk-wrapctl">
-                  <button type="button" title="Narrower" onClick={() => adj.onWrap!(-1)}>−</button>
-                  <button type="button" title="Wider (into the outer margin)" onClick={() => adj.onWrap!(1)}>+</button>
-                </span>
-              )}
-            </div>
-          )}
-        </>
-      )}
-      {l.emptyAfter && <Gap adj={adj} />}
-    </div>
-  );
-};
-
-interface TocRow { title: string; page: number }
-
-/** The centred title block (Tibetan title + translated main title / italic subtitle),
- *  shared by the booklet cover and each text's internal title page. `seal` shows the
- *  ༀ ornament (cover only). */
-const TitleContent: React.FC<{ titleLines: DocLine[]; seal?: boolean }> = ({ titleLines, seal }) => {
-  // The translated title's parts: the first is the main title, the rest the subtitle.
-  // Prefer the title chunk's `<p>` structure (carried on any title line); fall back to
-  // one entry per title line.
-  const trans = (titleLines.find((t) => t.paragraphs?.length)?.paragraphs)
-    ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
-  return (
-    <div className="bk-titlepage">
-      {seal && <div className="bk-seal">ༀ</div>}
-      {titleLines.map((t, i) => (
-        <div key={i} className="bk-tibetan bk-title-tib">
-          {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
-        </div>
-      ))}
-      {trans[0] && (
-        <div className="bk-title-main"
-             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
-      )}
-      {trans.slice(1).map((p, i) => (
-        <div key={`sub${i}`} className="bk-title-sub"
-             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
-      ))}
-    </div>
-  );
-};
-
-/** A text's internal title page — a single furniture-styled page heading the text
- *  (for the 2nd+ text in a multi-text booklet; the first text's title is on the cover). */
-const InternalTitlePage: React.FC<{ titleLines: DocLine[] }> = ({ titleLines }) => (
-  <div className="booklet-spread">
-    <div className="booklet-page furniture">
-      <div className="booklet-content"><TitleContent titleLines={titleLines} /></div>
-    </div>
-  </div>
-);
-
-/** A single furniture page (cover/title, copyright, toc, blank/backcover, image). */
-const FurniturePage: React.FC<{
-  item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
-}> = ({ item, titleLines, body, toc }) => {
-  let content: React.ReactNode = null;
-  if (item.kind === 'cover') {
-    content = <TitleContent titleLines={titleLines} seal />;
-  } else if (item.kind === 'copyright') {
-    content = body
-      ? <div className="bk-copyright" dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
-      : <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
-  } else if (item.kind === 'toc') {
-    content = (
-      <div className="bk-toc">
-        {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
-        {toc.map((e, i) => (
-          <div key={i} className="bk-toc-entry">
-            <span className="bk-toc-title">{e.title}</span>
-            <span className="bk-toc-dots" />
-            <span className="bk-toc-page">{e.page}</span>
-          </div>
-        ))}
-      </div>
-    );
-  } else if (item.kind === 'image_page') {
-    content = <div className="bk-placeholder">Image page</div>;
-  }
-  return (
-    <div className="booklet-spread">
-      <div className="booklet-page furniture">
-        <div className="booklet-content">{content}</div>
-      </div>
-    </div>
-  );
-};
 
 /**
  * Pagination bench (Phase D2). Compiles a document's text pages into the SHARED line
@@ -243,39 +73,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const contentHpx = config
     ? (config.page_height_mm - config.margin_top_mm - config.margin_bottom_mm) * MM_PX : 0;
 
-  // Stored break line-indices (shared across editions) → spread spans.
-  const breakSet = useMemo(() => {
-    const idx = new Set<number>();
-    for (const r of rows) {
-      if (r.kind !== 'page_break') continue;
-      const i = lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
-      if (i > 0) idx.add(i);
-    }
-    return idx;
-  }, [rows, lines]);
-
-  // Line-indices whose page break is a deliberate mid-content "hairline split" — a
-  // break placed where a pair/paragraph would otherwise stay together, drawn with a
-  // thin rule (matching the reference booklets) so the reader sees the content runs on.
-  const hairlineSet = useMemo(() => {
-    const idx = new Set<number>();
-    for (const r of rows) {
-      if (r.kind !== 'hairline') continue;
-      const i = lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
-      if (i > 0) idx.add(i);
-    }
-    return idx;
-  }, [rows, lines]);
-
-  const spreads = useMemo(() => {
-    if (!lines.length) return [] as { start: number; end: number }[];
-    // Each text always starts a fresh spread (so its internal title page sits cleanly
-    // before its first body page — no two texts share a spread).
-    const forced = new Set<number>(breakSet);
-    for (let i = 1; i < lines.length; i++) if (lines[i].itemId !== lines[i - 1].itemId) forced.add(i);
-    const starts = [0, ...Array.from(forced).sort((a, b) => a - b)];
-    return starts.map((s, i) => ({ start: s, end: i + 1 < starts.length ? starts[i + 1] : lines.length }));
-  }, [breakSet, lines]);
+  // Page structure (breaks, spreads, body page-units, front/back matter, TOC) —
+  // computed by the SHARED `deriveBooklet` so the bench and the print/PDF page lay out
+  // identically. The bench layers interactive break/balancing controls on top.
+  const { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter,
+          tocRows, mainTitleLines } = useMemo(
+    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem),
+    [doc, rows, lines, titleByItem],
+  );
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
 
@@ -402,46 +207,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   const vars = useMemo(() => (config ? rootVars(config) : {}), [config]);
 
-  // ── Furniture pages (front/back matter) + auto-TOC with page numbers ──
-  const textItems = (doc?.items ?? []).filter((it) => it.kind === 'text' && it.text_id != null);
-  const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
-  const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
-  const firstTextItemId = firstTextPos !== Infinity
-    ? textItems.find((i) => i.position === firstTextPos)!.id : null;
-  const frontMatter = (doc?.items ?? [])
-    .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
-    .sort((a, b) => a.position - b.position);
-  const backMatter = (doc?.items ?? [])
-    .filter((it) => it.kind !== 'text' && it.position > lastTextPos)
-    .sort((a, b) => a.position - b.position);
-
-  const itemStartLine = useMemo(() => {
-    const m = new Map<number, number>();
-    lines.forEach((l, i) => { if (!m.has(l.itemId)) m.set(l.itemId, i); });
-    return m;
-  }, [lines]);
-
-  // Body page-units: the flowed spreads, each 2nd+ text preceded by its internal
-  // title page (a single furniture-styled page). Both unit kinds are one page tall,
-  // so the virtualizer treats them uniformly and folios count them alike.
-  type PageUnit =
-    | { kind: 'spread'; s: { start: number; end: number } }
-    | { kind: 'title'; item: DocumentItem; titleLines: DocLine[] };
-  const bodyUnits = useMemo<PageUnit[]>(() => {
-    const units: PageUnit[] = [];
-    for (const s of spreads) {
-      const startItemId = lines[s.start]?.itemId;
-      const startsText = startItemId != null && itemStartLine.get(startItemId) === s.start;
-      if (startsText && startItemId !== firstTextItemId) {
-        const item = textItems.find((i) => i.id === startItemId);
-        const tl = titleByItem.get(startItemId) ?? [];
-        if (item && tl.length) units.push({ kind: 'title', item, titleLines: tl });
-      }
-      units.push({ kind: 'spread', s });
-    }
-    return units;
-  }, [spreads, lines, itemStartLine, titleByItem, textItems, firstTextItemId]);
-
   // Fixed-height virtualization: each page-unit is one page tall (+ a 24px gutter).
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -459,38 +224,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const vFirst = Math.max(0, Math.floor(scrollTop / spreadHpx) - 1);
   const vLast = Math.min(bodyUnits.length, Math.ceil((scrollTop + viewH) / spreadHpx) + 1);
 
-  // Recto folio for a body-unit index = its 1-based position (each unit is one page).
-  const spreadUnitIdx = useMemo(() => {
-    const m = new Map<number, number>();  // spread.start line index → body-unit index
-    bodyUnits.forEach((u, i) => { if (u.kind === 'spread') m.set(u.s.start, i); });
-    return m;
-  }, [bodyUnits]);
-  const folioOfLine = (idx: number) => {
-    for (const u of bodyUnits) {
-      if (u.kind === 'spread' && u.s.start <= idx && idx < u.s.end) return (spreadUnitIdx.get(u.s.start) ?? 0) + 1;
-    }
-    return 1;
-  };
-  const stripHtml = (h: string) => h.replace(/<[^>]+>/g, '').trim();
-  const tocRows: TocRow[] = textItems.map((it) => {
-    const tl = titleByItem.get(it.id) ?? [];
-    // The main-title paragraph (or the joined first line) for the entry.
-    const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
-    const title = main ? stripHtml(sanitizeTranslationHtml(main)) : (it.text_title || '');
-    // Prefer the text's internal title-page folio; else its first body page.
-    const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
-    const startLine = itemStartLine.get(it.id);
-    const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
-    return { title, page };
-  });
-  const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
-  const furnitureBody = (item: DocumentItem) =>
-    furniture.find((f) => f.item_id === item.id && f.lang === lang)?.body ?? null;
-
   const renderFurniture = (item: DocumentItem) => (
     <FurniturePage key={`f${item.id}`} item={item}
       titleLines={item.kind === 'cover' ? mainTitleLines : []}
-      body={furnitureBody(item)} toc={item.kind === 'toc' ? tocRows : []} />
+      body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []} />
   );
 
   if (!doc || !config) {
@@ -569,6 +306,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Discard breaks and auto-suggest a fresh pagination for this edition">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
+        <a href={`${API_BASE}/documents/${documentId}/pdf?lang=${lang}`}
+           className="px-2 py-1 rounded-md flex items-center gap-1 text-jade hover:bg-cream"
+           style={{ border: '1px solid var(--cline)' }}
+           title={`Export the ${lang.toUpperCase()} edition as a print-ready PDF`}>
+          <FileDown size={12} /> PDF
+        </a>
         <div className="flex-1" />
         <span className="text-ink-soft flex items-center gap-1">
           {(loading || seeding) && <RefreshCw size={12} className="animate-spin" />}

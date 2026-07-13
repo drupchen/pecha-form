@@ -6,13 +6,33 @@ import { WorkspaceView } from './components/workspace/WorkspaceView'
 import { TranslateView } from './components/translate/TranslateView'
 import { PhoneticsView } from './components/phonetics/PhoneticsView'
 import { DocumentsView } from './components/documents/DocumentsView'
+import { PrintBooklet } from './components/documents/PrintBooklet'
 import { useUndoStore } from './store/useUndoStore'
 import { useTextStore } from './store/useTextStore'
 import { useUIStore } from './store/useUIStore'
 
 export type Route = '/' | '/workspace' | '/translate' | '/phonetics' | '/documents';
 
+// Print/PDF mode: `?print=<documentId>&lang=<code>` renders ONLY the booklet, for
+// headless Chromium to print. No app chrome, no header, no stores. Determined from the
+// URL at load, so it is a stable top-level branch (hooks below only run for the app).
+function printModeParams() {
+  const p = new URLSearchParams(window.location.search);
+  const id = p.get('print');
+  if (!id || !Number.isFinite(Number(id))) return null;
+  return { documentId: Number(id), lang: p.get('lang') || 'en' };
+}
+
 export default function App() {
+  const printParams = printModeParams();
+  if (printParams) {
+    return (
+      <ErrorBoundary>
+        <PrintBooklet documentId={printParams.documentId} lang={printParams.lang} />
+      </ErrorBoundary>
+    );
+  }
+
   const [route, setRoute] = useState<Route>('/');
   const currentDocId = useTextStore(s => s.currentText?.id ?? null);
   const workspaceFullscreen = useUIStore(s => s.workspaceFullscreen);

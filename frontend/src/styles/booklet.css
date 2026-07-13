@@ -78,10 +78,28 @@
 .bk-toc { height: 100%; display: flex; flex-direction: column; justify-content: center;
   font-family: var(--font-translation); font-size: 11pt; }
 .bk-toc-entry { display: flex; align-items: baseline; padding: 1.2mm 0; }
-.bk-toc-title { white-space: nowrap; }
-.bk-toc-dots { flex: 1; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
-.bk-toc-page { white-space: nowrap; }
+/* Truncate over-long titles so the leader dots + page number stay aligned rather than
+   running off the page edge. */
+.bk-toc-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.bk-toc-dots { flex: 1 0 8mm; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
+.bk-toc-page { flex: none; white-space: nowrap; }
 .bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
+.bk-image { max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; display: block; }
+
+/* ── Print / PDF page (Phase D3) ─────────────────────────────────────────────
+ * The print route stacks physical pages sequentially. On screen it previews as
+ * separated sheets on a grey field; when printed (headless Chromium → PDF) each
+ * `.booklet-page` fills one `@page` (size injected inline) and breaks after. */
+.booklet-print { display: block; background: #e9e4d7; padding: 8mm 0; }
+.booklet-print .booklet-page { margin: 0 auto 8mm; }
+.booklet-print .print-page { break-after: page; }
+.booklet-print .print-page:last-child { break-after: auto; }
+@media print {
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .booklet-print { background: #fff; padding: 0; }
+  .booklet-print .booklet-page { margin: 0; box-shadow: none; }
+}
 
 /* Recto page number (verso is unnumbered). */
 .booklet-folio {
