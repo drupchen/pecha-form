@@ -58,7 +58,7 @@ def _item_out(conn, row) -> DocumentItemOut:
         t = conn.execute("SELECT title FROM texts WHERE id = ?", (row["text_id"],)).fetchone()
         title = t["title"] if t else None
     has_image = False
-    if row["kind"] == "image_page":
+    if row["kind"] in ("image_page", "backcover"):
         has_image = conn.execute(
             "SELECT 1 FROM document_images WHERE item_id = ?", (row["id"],)).fetchone() is not None
     return DocumentItemOut(
@@ -599,8 +599,8 @@ async def upload_item_image(item_id: int, file: UploadFile = File(...)):
             "SELECT document_id, kind FROM document_items WHERE id = ?", (item_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Item not found")
-        if row["kind"] != "image_page":
-            raise HTTPException(400, "Item is not an image page")
+        if row["kind"] not in ("image_page", "backcover"):
+            raise HTTPException(400, "Item does not support an image")
         conn.execute(
             "INSERT INTO document_images (item_id, document_id, mime, data) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(item_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, "

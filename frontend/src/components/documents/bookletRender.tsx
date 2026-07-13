@@ -192,6 +192,17 @@ export const FurnitureContent: React.FC<{
       )
       : <div className="bk-placeholder">Image page — add an image in the Documents tab.</div>;
   }
+  if (item.kind === 'backcover') {
+    // Optional image and/or per-language text, centred; empty otherwise.
+    if (!item.has_image && !body) return null;
+    return (
+      <div className="bk-backcover">
+        {item.has_image && <img className="bk-image" src={itemImageUrl(item.id)} alt="" />}
+        {body && <div className="bk-copyright"
+                      dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />}
+      </div>
+    );
+  }
   return null;
 };
 

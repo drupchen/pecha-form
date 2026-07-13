@@ -14,8 +14,10 @@ import { PaginationBench } from './PaginationBench';
 import { compileDocument } from './compile';
 import { deriveBooklet, type NavNode } from './bookletRender';
 
-/** Furniture kinds that carry per-language authored text. */
-const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page'];
+/** Furniture kinds that carry per-language authored text and/or an image. */
+const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
+/** Furniture kinds that can hold an uploaded image. */
+const IMAGE_FURNITURE: DocumentItemKind[] = ['image_page', 'backcover'];
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -354,7 +356,7 @@ export const DocumentsView: React.FC = () => {
                     {editable && editingItem === it.id && (
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
-                        {it.kind === 'image_page' && (
+                        {IMAGE_FURNITURE.includes(it.kind) && (
                           <div className="flex items-center gap-3 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {it.has_image ? (
@@ -389,7 +391,9 @@ export const DocumentsView: React.FC = () => {
                             ? 'Table-of-contents title — per language (blank = the text’s own title)'
                             : it.kind === 'image_page'
                               ? 'Caption — per language (optional)'
-                              : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
+                              : it.kind === 'backcover'
+                                ? 'Back-cover text — per language (optional; HTML: <p>, <em>, <strong>)'
+                                : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
                         </div>
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
