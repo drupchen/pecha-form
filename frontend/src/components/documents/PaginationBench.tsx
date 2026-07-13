@@ -10,6 +10,7 @@ import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, type LineAdj,
 } from './bookletRender';
+import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
 
 /**
@@ -32,6 +33,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [lines, setLines] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
+  const [styleCss, setStyleCss] = useState('');
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   const measureRef = useRef<HTMLDivElement>(null);
@@ -40,13 +42,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     let alive = true;
     (async () => {
       setLoading(true);
-      const [d, lay, furn] = await Promise.all([
-        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId)]);
+      const [d, lay, furn, css] = await Promise.all([
+        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
+        loadBookletStyleCss(documentId)]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
       setFurniture(furn);
+      setStyleCss(css);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       setLang(edition);
       const compiled = await compileDocument(d.items, edition);
@@ -280,6 +284,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden booklet-root" style={vars}>
+      {/* Data-driven typography (org styles ← per-doc overrides); default = booklet.css. */}
+      {styleCss && <style dangerouslySetInnerHTML={{ __html: styleCss }} />}
       <div className="px-5 py-2.5 shrink-0 flex items-center gap-4 bg-cream-hi text-xs"
            style={{ borderBottom: '1px solid var(--cline)' }}>
         <button type="button" onClick={onClose}

@@ -309,6 +309,45 @@ export async function deleteItemImage(itemId: number): Promise<void> {
   if (!res.ok) throw new Error(await res.text());
 }
 
+// ── Style designer (Phase 4) ──
+export interface OrgFont { id: number; family: string; weight: number; italic: boolean; mime: string }
+type StyleMap = Record<string, Record<string, unknown>>;
+
+export const getOrgStyles = (orgId = 1): Promise<StyleMap> =>
+  fetch(`${API_BASE}/styles?org_id=${orgId}`).then(r => r.json());
+export const putOrgStyle = (role: string, props: Record<string, unknown>, orgId = 1) =>
+  fetch(`${API_BASE}/styles/${role}?org_id=${orgId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ props }),
+  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+export const deleteOrgStyle = (role: string, orgId = 1) =>
+  fetch(`${API_BASE}/styles/${role}?org_id=${orgId}`, { method: 'DELETE' });
+
+export const getDocStyles = (docId: number): Promise<StyleMap> =>
+  fetch(`${API_BASE}/documents/${docId}/styles`).then(r => r.json());
+export const putDocStyle = (docId: number, role: string, props: Record<string, unknown>) =>
+  fetch(`${API_BASE}/documents/${docId}/styles/${role}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ props }),
+  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+export const deleteDocStyle = (docId: number, role: string) =>
+  fetch(`${API_BASE}/documents/${docId}/styles/${role}`, { method: 'DELETE' });
+
+export const getOrgFonts = (orgId = 1): Promise<OrgFont[]> =>
+  fetch(`${API_BASE}/org-fonts?org_id=${orgId}`).then(r => r.json());
+export const orgFontFileUrl = (fontId: number) => `${API_BASE}/org-fonts/${fontId}/file`;
+export async function uploadOrgFont(
+  file: File, family: string, weight = 400, italic = false, orgId = 1,
+): Promise<OrgFont> {
+  const fd = new FormData();
+  fd.append('file', file); fd.append('family', family);
+  fd.append('weight', String(weight)); fd.append('italic', String(italic));
+  fd.append('org_id', String(orgId));
+  const res = await fetch(`${API_BASE}/org-fonts`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+export const deleteOrgFont = (fontId: number) =>
+  fetch(`${API_BASE}/org-fonts/${fontId}`, { method: 'DELETE' });
+
 export interface DocumentSummary {
   id: number;
   title: string;

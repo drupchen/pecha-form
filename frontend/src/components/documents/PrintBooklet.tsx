@@ -9,6 +9,7 @@ import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
   deriveBooklet, furnitureBodyOf,
 } from './bookletRender';
+import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
 
 /**
@@ -27,17 +28,19 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   const [lines, setLines] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [ready, setReady] = useState(false);
+  const [styleCss, setStyleCss] = useState('');
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [d, lay, furn] = await Promise.all([
-        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId)]);
+      const [d, lay, furn, css] = await Promise.all([
+        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
+        loadBookletStyleCss(documentId)]);
       if (!alive) return;
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       const compiled = await compileDocument(d.items, edition);
       if (!alive) return;
-      setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn);
+      setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn); setStyleCss(css);
       setLines(compiled.lines); setTitleByItem(compiled.titleByItem);
     })();
     return () => { alive = false; };
@@ -92,6 +95,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
          data-booklet-ready={ready ? 'true' : 'false'}>
       {/* Concrete @page size (CSS variables aren't allowed in @page). */}
       <style>{`@page { size: ${config.page_width_mm}mm ${config.page_height_mm}mm; margin: 0; }`}</style>
+      {/* Data-driven typography (org styles ← per-doc overrides); default = booklet.css. */}
+      {styleCss && <style dangerouslySetInnerHTML={{ __html: styleCss }} />}
       {/* The PDF navigation outline (bookmarks): the export endpoint reads this blob
           from the rendered DOM and injects it into the PDF. */}
       <script id="booklet-outline" type="application/json"
