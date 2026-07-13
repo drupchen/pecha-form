@@ -75,9 +75,11 @@
 .bk-copyright { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; font-family: var(--font-translation);
   font-size: 11pt; color: #333; }
-.bk-toc { height: 100%; display: flex; flex-direction: column; justify-content: center;
-  font-family: var(--font-translation); font-size: 11pt; }
-.bk-toc-entry { display: flex; align-items: baseline; padding: 1.2mm 0; }
+.bk-toc { height: 100%; display: flex; flex-direction: column; justify-content: flex-start;
+  font-family: var(--font-translation); font-size: 10.5pt; }
+.bk-toc-entry { display: flex; align-items: baseline; padding: 0.9mm 0; }
+.bk-toc-head { font-weight: 600; margin-top: 3mm; }
+.bk-toc-head:first-child { margin-top: 0; }
 /* Truncate over-long titles so the leader dots + page number stay aligned rather than
    running off the page edge. */
 .bk-toc-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden;

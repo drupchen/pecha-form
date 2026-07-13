@@ -109,7 +109,16 @@ export const Recto: React.FC<{ l: DocLine; adj?: LineAdj }> = ({ l, adj = NO_ADJ
   );
 };
 
-export interface TocRow { title: string; page: number }
+export interface TocRow {
+  title: string;
+  page: number;
+  /** Indent depth (0 = flush). Text headers and top sapche sections are 0; nested
+   *  sapche sections step in by their outline depth. */
+  level: number;
+  /** A text's title heading its section group (multi-text booklets only) — rendered
+   *  bold, ungapped from its sections. */
+  isTextHeader?: boolean;
+}
 
 /** The centred title block (Tibetan title + translated main title / italic subtitle),
  *  shared by the booklet cover and each text's internal title page. `seal` shows the
@@ -157,8 +166,11 @@ export const FurnitureContent: React.FC<{
       <div className="bk-toc">
         {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
         {toc.map((e, i) => (
-          <div key={i} className="bk-toc-entry">
-            <span className="bk-toc-title">{e.title}</span>
+          <div key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
+               style={{ paddingLeft: `${e.level * 5}mm` }}>
+            {/* Inner HTML (block tags already flattened) so entities/emphasis render as
+                on the body headings, not as raw &#x27; text. */}
+            <span className="bk-toc-title" dangerouslySetInnerHTML={{ __html: e.title }} />
             <span className="bk-toc-dots" />
             <span className="bk-toc-page">{e.page}</span>
           </div>
@@ -212,7 +224,15 @@ export interface DerivedBooklet {
   folioOfLine: (idx: number) => number;
 }
 
-const stripHtml = (h: string) => h.replace(/<[^>]+>/g, '').trim();
+/** Flatten a translation body to a single inline HTML run: sanitize, drop block tags
+ *  (p/div/br → space), keep inline emphasis + entities — so a TOC entry renders like
+ *  the body heading it mirrors (entities decoded), not as raw `&#x27;` text. */
+const inlineHtml = (h: string) =>
+  sanitizeTranslationHtml(h)
+    .replace(/<\/?(?:p|div)\b[^>]*>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 /** Pure composition of a document's page structure from its items, stored layout rows,
  *  compiled line stream and lifted per-text titles. Deterministic → the bench and the
@@ -278,15 +298,31 @@ export function deriveBooklet(
     return 1;
   };
 
-  const tocRows: TocRow[] = textItems.map((it) => {
-    const tl = titleByItem.get(it.id) ?? [];
-    const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
-    const title = main ? stripHtml(sanitizeTranslationHtml(main)) : (it.text_title || '');
-    const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
-    const startLine = itemStartLine.get(it.id);
-    const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
-    return { title, page };
-  });
+  // TOC = the sapche SECTION outline (translated heading + folio, indented by depth),
+  // per text. Multi-text booklets get a bold text-title header before each text's
+  // sections; a single-text booklet lists its sections flush (its title is on the cover).
+  const orderedTexts = [...textItems].sort((a, b) => a.position - b.position);
+  const multiText = orderedTexts.length > 1;
+  const tocRows: TocRow[] = [];
+  for (const it of orderedTexts) {
+    if (multiText) {
+      const tl = titleByItem.get(it.id) ?? [];
+      const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
+      const title = main ? inlineHtml(main) : (it.text_title || '');
+      const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
+      const startLine = itemStartLine.get(it.id);
+      const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
+      tocRows.push({ title, page, level: 0, isTextHeader: true });
+    }
+    lines.forEach((l, i) => {
+      if (l.itemId !== it.id || l.role !== 'sapche' || !l.translation) return;
+      tocRows.push({
+        title: inlineHtml(l.translation),
+        page: folioOfLine(i),
+        level: (multiText ? 1 : 0) + (l.level ?? 0),
+      });
+    });
+  }
   const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
 
   return { breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines, folioOfLine };

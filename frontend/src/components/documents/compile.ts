@@ -172,13 +172,20 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
   return out;
 }
 
-/** Split a translation body into its per-line `<p>` inner-HTML pieces. */
+/** Split a translation body into its per-line `<p>` pieces. Parses via the DOM (not a
+ *  regex) so HTML entities in the text decode (`&#x27;` → `'`); a paragraph with inline
+ *  markup keeps it (innerHTML), a plain one is returned as decoded text — either way the
+ *  downstream `sanitizeTranslationHtml` renders it once, without re-encoding the `&`. */
 function splitParagraphs(html: string): string[] {
   if (!html) return [];
-  const m = html.match(/<p\b[^>]*>[\s\S]*?<\/p>/gi);
-  if (!m) return html.trim() ? [html.trim()] : [];
-  return m
-    .map((p) => p.replace(/^<p\b[^>]*>/i, '').replace(/<\/p>\s*$/i, '').trim())
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const ps = Array.from(doc.body.querySelectorAll('p'));
+  if (!ps.length) return html.trim() ? [html.trim()] : [];
+  return ps
+    .map((p) => {
+      const hasEl = Array.from(p.childNodes).some((n) => n.nodeType === Node.ELEMENT_NODE);
+      return (hasEl ? p.innerHTML : p.textContent ?? '').trim();
+    })
     .filter(Boolean);
 }
 
