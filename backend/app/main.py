@@ -8,7 +8,7 @@ from .db import init_db
 from .routers import (
     texts, tags, spans, markers, tree_nodes, suggestions, notes, passages,
     derivation, text_groups, reading_positions, display_breaks, translations,
-    phonetics, documents,
+    phonetics, documents, styles,
 )
 
 app = FastAPI(title="Sapche Backend API")
@@ -28,6 +28,7 @@ app.include_router(display_breaks.router)
 app.include_router(translations.router)
 app.include_router(phonetics.router)
 app.include_router(documents.router)
+app.include_router(styles.router)
 
 
 # Turn any unhandled exception into a JSON 500 *before* it escapes past the CORS

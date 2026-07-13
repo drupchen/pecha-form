@@ -554,6 +554,45 @@ CREATE TABLE IF NOT EXISTS document_images (
     data        BLOB NOT NULL,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Style designer (Phase 4). Booklet typography is data-driven: ORGANIZATION-wide style
+-- templates + per-DOCUMENT overrides, resolved default ← org ← document at render.
+-- Organizations/users are NOT built yet — this only PREPARES the org dimension; assume
+-- org 1 / user 1 for now (a single seeded organization keeps the FK valid).
+CREATE TABLE IF NOT EXISTS organizations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL DEFAULT 'Default organization',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Org-wide style for a named booklet role (JSON props: font_family/size/weight/italic/
+-- color/line_height/align). Missing role or prop → the built-in default.
+CREATE TABLE IF NOT EXISTS style_roles (
+    org_id INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    role   TEXT NOT NULL,
+    props  TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (org_id, role)
+);
+
+-- Per-document override of a role's props (partial JSON — only the overridden props).
+CREATE TABLE IF NOT EXISTS document_style_overrides (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    role        TEXT NOT NULL,
+    props       TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (document_id, role)
+);
+
+-- Org-uploaded fonts (@font-face), selectable by any role alongside the bundled fonts.
+CREATE TABLE IF NOT EXISTS org_fonts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    family     TEXT NOT NULL,
+    weight     INTEGER NOT NULL DEFAULT 400,
+    italic     INTEGER NOT NULL DEFAULT 0,
+    mime       TEXT NOT NULL,
+    data       BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -761,7 +800,7 @@ def _rename_documents_to_texts(conn) -> None:
     # LEGACY `documents` table (the former `texts`) carries text columns like
     # `raw_text`; distinguish them so this historical rename never touches the booklets.
     NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout",
-                          "document_furniture", "document_images"}
+                          "document_furniture", "document_images", "document_style_overrides"}
     documents_is_legacy = "documents" in tables and "raw_text" in {
         r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if documents_is_legacy:
@@ -1076,6 +1115,8 @@ def init_db():
             "INSERT OR IGNORE INTO languages (code, name) VALUES (?, ?)",
             [("en", "English"), ("fr", "Français"), ("de", "Deutsch"), ("pt", "Português")],
         )
+        # Seed the single default organization (org/user management is not built yet).
+        conn.execute("INSERT OR IGNORE INTO organizations (id, name) VALUES (1, 'Default organization')")
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)
