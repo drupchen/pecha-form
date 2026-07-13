@@ -84,18 +84,23 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
   const lines = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true);
   const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups);
 
-  // Phonetics matched to a line: exact range, else any overlapping row's body.
+  // Phonetics matched to a line: exact range, else the row ANCHORED in this line (its
+  // start syllable falls here). Anchor-only — matching the end syllable too would make a
+  // row spanning several lines render on both its first AND last line (duplication).
   const phonByRange = new Map<string, string>();
   for (const p of phonetics) phonByRange.set(rk(p.start_syl_id, p.end_syl_id), p.body);
   const phonFor = (l: { startSylId: string; endSylId: string; sylIds: string[] }): string => {
     const exact = phonByRange.get(rk(l.startSylId, l.endSylId));
     if (exact != null) return exact;
     const ids = new Set(l.sylIds);
-    for (const p of phonetics) if (ids.has(p.start_syl_id) || ids.has(p.end_syl_id)) return p.body;
+    for (const p of phonetics) if (ids.has(p.start_syl_id)) return p.body;
     return '';
   };
 
-  // Translation matched to a chunk: exact range, else overlap.
+  // Translation matched to a chunk: exact range, else the row ANCHORED in this chunk
+  // (its start syllable falls here). Anchor-only — matching the end syllable too would
+  // make a translation spanning several derived chunks render on both its first AND last
+  // chunk with an empty gap between (the colophon-duplication bug).
   const transByRange = new Map<string, string>();
   for (const c of translations) {
     const t = c.translations.find((x) => x.lang === lang);
@@ -106,7 +111,7 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
     if (exact != null) return exact;
     const ids = new Set(ch.sylIds);
     for (const c of translations) {
-      if (ids.has(c.start_syl_id) || ids.has(c.end_syl_id)) {
+      if (ids.has(c.start_syl_id)) {
         const t = c.translations.find((x) => x.lang === lang);
         if (t) return t.body;
       }
