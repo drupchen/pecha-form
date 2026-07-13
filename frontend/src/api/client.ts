@@ -289,6 +289,24 @@ export interface DocumentItem {
   text_title: string | null;
   caption: string | null;
   body: string | null;
+  /** image_page items only: whether an image has been uploaded. */
+  has_image?: boolean;
+}
+
+/** The served-image URL for an image_page item (append a cache-buster when it changes). */
+export const itemImageUrl = (itemId: number) => `${API_BASE}/document-items/${itemId}/image`;
+
+/** Upload/replace the image for an image_page item. */
+export async function uploadItemImage(itemId: number, file: File): Promise<void> {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'PUT', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function deleteItemImage(itemId: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 export interface DocumentSummary {

@@ -7,6 +7,7 @@ import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
 import {
   getLanguages, getFurniture, putFurniture,
+  uploadItemImage, deleteItemImage, itemImageUrl,
   type Language, type DocumentItemKind, type TocSection, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
@@ -68,6 +69,8 @@ export const DocumentsView: React.FC = () => {
   const [paginating, setPaginating] = useState(false);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [editingItem, setEditingItem] = useState<number | null>(null);
+  const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
+  const [imgBusy, setImgBusy] = useState(false);
   const pickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -94,6 +97,27 @@ export const DocumentsView: React.FC = () => {
         ...prev.filter(f => !(f.item_id === itemId && f.lang === langCode)), row,
       ]);
     } catch { /* surfaced by store elsewhere */ }
+  };
+
+  const onPickImage = async (itemId: number, file: File | undefined) => {
+    if (!current || !file) return;
+    setImgBusy(true);
+    try {
+      await uploadItemImage(itemId, file);
+      await open(current.id);            // refresh has_image
+      setImgBust(v => v + 1);            // bust the preview cache
+    } catch { /* surfaced elsewhere */ }
+    finally { setImgBusy(false); }
+  };
+  const onRemoveImage = async (itemId: number) => {
+    if (!current) return;
+    setImgBusy(true);
+    try {
+      await deleteItemImage(itemId);
+      await open(current.id);
+      setImgBust(v => v + 1);
+    } catch { /* ignore */ }
+    finally { setImgBusy(false); }
   };
 
   // Secondary texts first (the booklet intent), then the rest; primaries allowed.
@@ -292,10 +316,42 @@ export const DocumentsView: React.FC = () => {
                     {editable && editingItem === it.id && (
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
+                        {it.kind === 'image_page' && (
+                          <div className="flex items-center gap-3 pb-1.5 mb-0.5"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            {it.has_image ? (
+                              <img src={`${itemImageUrl(it.id)}?v=${imgBust}`} alt=""
+                                   className="h-16 w-16 object-contain rounded bg-white"
+                                   style={{ border: '1px solid var(--cline)' }} />
+                            ) : (
+                              <div className="h-16 w-16 rounded bg-white flex items-center justify-center text-[10px] text-ink-soft"
+                                   style={{ border: '1px dashed var(--cline)' }}>no image</div>
+                            )}
+                            <div className="flex flex-col gap-1">
+                              <label className="px-2 py-1 rounded-md text-xs text-lapis hover:bg-cream cursor-pointer inline-flex items-center gap-1"
+                                     style={{ border: '1px solid var(--cline)' }}>
+                                <ImageIcon size={12} /> {it.has_image ? 'Replace image' : 'Upload image'}
+                                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif"
+                                       className="hidden" disabled={imgBusy}
+                                       onChange={e => { void onPickImage(it.id, e.target.files?.[0]); e.target.value = ''; }} />
+                              </label>
+                              {it.has_image && (
+                                <button type="button" onClick={() => void onRemoveImage(it.id)}
+                                        disabled={imgBusy}
+                                        className="px-2 py-1 rounded-md text-xs text-vermilion hover:bg-cream disabled:opacity-40 inline-flex items-center gap-1"
+                                        style={{ border: '1px solid var(--cline)' }}>
+                                  <Trash2 size={12} /> Remove
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                         <div className="text-[11px] text-ink-soft">
                           {isTextItem
                             ? 'Table-of-contents title — per language (blank = the text’s own title)'
-                            : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
+                            : it.kind === 'image_page'
+                              ? 'Caption — per language (optional)'
+                              : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
                         </div>
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>

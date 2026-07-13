@@ -567,6 +567,8 @@ class DocumentItemOut(BaseModel):
     text_title: Optional[str] = None
     caption: Optional[str] = None
     body: Optional[str] = None
+    # image_page items only: whether an image has been uploaded (Phase D3).
+    has_image: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 class DocumentOut(BaseModel):

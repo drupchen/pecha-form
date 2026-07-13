@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  itemImageUrl,
   type DocumentItem, type LayoutConfig, type DocumentLayoutRow, type DocumentFurnitureRow,
 } from '../../api/client';
 import { type DocLine } from './compile';
@@ -179,8 +180,17 @@ export const FurnitureContent: React.FC<{
     );
   }
   if (item.kind === 'image_page') {
-    // Image storage is a later D3 sub-task; a placeholder holds the page for now.
-    return <div className="bk-placeholder">Image page — add an image in the Documents tab.</div>;
+    return item.has_image
+      ? (
+        <div className="bk-imagepage">
+          <img className="bk-image" src={itemImageUrl(item.id)} alt="" />
+          {body && (
+            <div className="bk-image-caption"
+                 dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+          )}
+        </div>
+      )
+      : <div className="bk-placeholder">Image page — add an image in the Documents tab.</div>;
   }
   return null;
 };

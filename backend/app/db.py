@@ -544,6 +544,16 @@ CREATE TABLE IF NOT EXISTS document_furniture (
     body        TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (document_id, item_id, lang)
 );
+
+-- The image for an `image_page` furniture item (Phase D3). One image per item, stored
+-- inline (booklet images are few and small); shared across language editions.
+CREATE TABLE IF NOT EXISTS document_images (
+    item_id     INTEGER PRIMARY KEY REFERENCES document_items(id) ON DELETE CASCADE,
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    mime        TEXT NOT NULL,
+    data        BLOB NOT NULL,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -751,7 +761,7 @@ def _rename_documents_to_texts(conn) -> None:
     # LEGACY `documents` table (the former `texts`) carries text columns like
     # `raw_text`; distinguish them so this historical rename never touches the booklets.
     NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout",
-                          "document_furniture"}
+                          "document_furniture", "document_images"}
     documents_is_legacy = "documents" in tables and "raw_text" in {
         r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if documents_is_legacy:

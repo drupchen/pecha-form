@@ -87,7 +87,11 @@
 .bk-toc-dots { flex: 1 0 8mm; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
 .bk-toc-page { flex: none; white-space: nowrap; }
 .bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
-.bk-image { max-width: 100%; max-height: 100%; object-fit: contain; margin: auto; display: block; }
+.bk-imagepage { height: 100%; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 4mm; }
+.bk-image { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.bk-image-caption { font-family: var(--font-translation); font-size: 9.5pt; font-style: italic;
+  color: #444; text-align: center; }
 
 /* ── Print / PDF page (Phase D3) ─────────────────────────────────────────────
  * The print route stacks physical pages sequentially. On screen it previews as

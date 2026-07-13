@@ -8,8 +8,8 @@ computed from each text page's section tree (reuses tree_nodes.get_nested_tree).
 """
 from typing import List
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from ..db import get_db
@@ -56,10 +56,14 @@ def _item_out(conn, row) -> DocumentItemOut:
     if row["text_id"] is not None:
         t = conn.execute("SELECT title FROM texts WHERE id = ?", (row["text_id"],)).fetchone()
         title = t["title"] if t else None
+    has_image = False
+    if row["kind"] == "image_page":
+        has_image = conn.execute(
+            "SELECT 1 FROM document_images WHERE item_id = ?", (row["id"],)).fetchone() is not None
     return DocumentItemOut(
         id=row["id"], document_id=row["document_id"], position=row["position"],
         kind=row["kind"], text_id=row["text_id"], text_title=title,
-        caption=row["caption"], body=row["body"])
+        caption=row["caption"], body=row["body"], has_image=has_image)
 
 
 def _items(conn, document_id: int) -> List[DocumentItemOut]:
@@ -511,3 +515,70 @@ def _safe_unlink(path: str) -> None:
         os.unlink(path)
     except OSError:
         pass
+
+
+# ─── Image pages (Phase D3) ──────────────────────────────────────────────────
+# One image per `image_page` item, stored inline (booklet images are few/small),
+# shared across language editions. Served back to the print route / editor preview.
+
+ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+@router.put("/document-items/{item_id}/image")
+async def upload_item_image(item_id: int, file: UploadFile = File(...)):
+    data = await file.read()
+    mime = file.content_type or ""
+    if mime not in ALLOWED_IMAGE_MIME:
+        raise HTTPException(415, f"Unsupported image type: {mime or 'unknown'}")
+    if not data:
+        raise HTTPException(400, "Empty file")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Image too large (max 10 MB)")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT document_id, kind FROM document_items WHERE id = ?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Item not found")
+        if row["kind"] != "image_page":
+            raise HTTPException(400, "Item is not an image page")
+        conn.execute(
+            "INSERT INTO document_images (item_id, document_id, mime, data) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(item_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (item_id, row["document_id"], mime, data))
+        _touch(conn, row["document_id"])
+        conn.commit()
+        return {"ok": True, "mime": mime, "bytes": len(data)}
+    finally:
+        conn.close()
+
+
+@router.get("/document-items/{item_id}/image")
+def get_item_image(item_id: int):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT mime, data FROM document_images WHERE item_id = ?", (item_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "No image for this item")
+        return Response(content=row["data"], media_type=row["mime"],
+                        headers={"Cache-Control": "no-store"})
+    finally:
+        conn.close()
+
+
+@router.delete("/document-items/{item_id}/image")
+def delete_item_image(item_id: int):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT document_id FROM document_images WHERE item_id = ?", (item_id,)).fetchone()
+        conn.execute("DELETE FROM document_images WHERE item_id = ?", (item_id,))
+        if row:
+            _touch(conn, row["document_id"])
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
