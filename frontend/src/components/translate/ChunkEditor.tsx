@@ -49,6 +49,15 @@ const EXTENSIONS = [
   FnNote,
 ];
 
+/** Move keyboard focus to the previous/next translation box (marked `data-tbox`),
+ *  in document (top-to-bottom) order. Focusing a box opens it for editing. */
+function focusAdjacentTbox(from: HTMLElement, dir: 1 | -1) {
+  const boxes = Array.from(document.querySelectorAll<HTMLElement>('[data-tbox]'));
+  const cur = from.closest<HTMLElement>('[data-tbox]');
+  const i = cur ? boxes.indexOf(cur) : -1;
+  boxes[i + dir]?.focus();
+}
+
 const InnerEditor: React.FC<{
   initial: string;
   onDone: (html: string) => void;
@@ -97,6 +106,16 @@ const InnerEditor: React.FC<{
         const slice = new Slice(Fragment.fromArray(nodes), 1, 1);
         view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
         return true;
+      },
+      // Tab / Shift+Tab move to the next / previous translation box (committing this
+      // one on the way, via focusout) so the translator can work down without the mouse.
+      handleKeyDown(view, event) {
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          focusAdjacentTbox(view.dom as HTMLElement, event.shiftKey ? -1 : 1);
+          return true;
+        }
+        return false;
       },
     },
   });
@@ -149,7 +168,7 @@ const InnerEditor: React.FC<{
   };
 
   return (
-    <div ref={wrapRef} className="flex flex-col gap-1">
+    <div ref={wrapRef} data-tbox className="flex flex-col gap-1">
       <div className="flex items-center gap-1">
         <button
           type="button"
@@ -233,6 +252,7 @@ export const ChunkEditor: React.FC<{
   const html = sanitizeTranslationHtml(value);
   return (
     <div
+      data-tbox
       role="button"
       tabIndex={0}
       onClick={() => setEditing(true)}

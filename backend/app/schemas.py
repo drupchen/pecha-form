@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 from datetime import datetime
 
 # ─── Texts ────────────────────────────────────────────────────────────────
@@ -110,6 +110,8 @@ class PassageUpdate(BaseModel):
     # same anchor flow into that same segment).
     own_segment: Optional[bool] = None
     members: Optional[List[PassageMemberIn]] = None  # None = leave members alone
+    # Passage-local translation edits: the FULL {lang: {unitKey: body}} map (None = leave alone).
+    translations: Optional[dict] = None
 
 class PassageSplitIn(BaseModel):
     """Divide a passage in two after `after_syl_id` (must be strictly interior to the
@@ -135,6 +137,8 @@ class PassageOut(BaseModel):
     own_segment: bool = False
     # True when INHERITED from a source text — read-only here (edit on the owner).
     inherited: bool = False
+    # Passage-local translation overrides ({lang: {unitKey: body}}); empty = retrieved source.
+    translations: dict = {}
     members: List[PassageMemberOut] = []
 
 class PassageSplitOut(BaseModel):

@@ -678,6 +678,8 @@ export interface Passage {
   own_segment: boolean;
   /** True when INHERITED from a source text — read-only here (edit on the owner). */
   inherited?: boolean;
+  /** Passage-local translation overrides ({lang: {unitKey: body}}); empty = retrieved source. */
+  translations?: Record<string, Record<string, string>>;
   members: PassageMember[];
 }
 
@@ -702,7 +704,7 @@ export async function createPassage(
 
 export async function updatePassage(
   passageId: number,
-  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; attach_prev: boolean; members: PassageMemberInput[] }>,
+  patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; attach_prev: boolean; members: PassageMemberInput[]; translations: Record<string, Record<string, string>> }>,
 ): Promise<Passage> {
   const res = await fetch(`${API_BASE}/passages/${passageId}`, {
     method: 'PATCH',

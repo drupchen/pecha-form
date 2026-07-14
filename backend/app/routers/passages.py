@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, HTTPException
 from typing import List
 
@@ -48,6 +49,10 @@ def _passage_out(conn, row, stream_text_id=None, inherited=False) -> dict:
     d["attach_prev"] = bool(d.get("attach_prev", 0))
     d["own_segment"] = bool(d.get("own_segment", 0))
     d["inherited"] = inherited
+    try:
+        d["translations"] = json.loads(d.get("translations") or "{}")
+    except (ValueError, TypeError):
+        d["translations"] = {}
     return {**d, "members": _resolve_members(conn, stream_text_id, row["id"])}
 
 
@@ -161,6 +166,10 @@ def update_passage(passage_id: int, payload: PassageUpdate):
         sets.append("color = ?"); args.append(payload.color)
     if payload.own_segment is not None:
         sets.append("own_segment = ?"); args.append(int(payload.own_segment))
+    if payload.translations is not None:
+        # Store the full map; an empty map (all langs reverted) clears the column.
+        sets.append("translations = ?")
+        args.append(json.dumps(payload.translations) if payload.translations else None)
     if sets:
         conn.execute(f"UPDATE passages SET {', '.join(sets)} WHERE id = ?", (*args, passage_id))
     if payload.members is not None:

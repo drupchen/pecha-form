@@ -9,7 +9,8 @@ import { useUIStore } from '../../store/useUIStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
 import { TreePane } from '../workspace/TreePane';
-import { deriveChunks, applyMoves, insertTitleChunks, type DerivedChunk } from './chunks';
+import { deriveChunks, applyMoves, insertTitleChunks, insertPassageChunks, type DerivedChunk } from './chunks';
+import { usePassageStore } from '../../store/usePassageStore';
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
 import { sanitizeTranslationHtml } from './sanitize';
@@ -74,6 +75,9 @@ export const TranslateView: React.FC = () => {
   const seen = useTranslationStore(s => s.seen);
   const suggestions = useTranslationStore(s => s.suggestions);
   const layouts = useTranslationStore(s => s.layouts);
+  const passages = usePassageStore(s => s.passages);
+  const fetchPassages = usePassageStore(s => s.fetchPassages);
+  const editPassage = usePassageStore(s => s.editPassage);
   const fetchLanguages = useTranslationStore(s => s.fetchLanguages);
   const fetchChunks = useTranslationStore(s => s.fetchChunks);
   const fetchCollab = useTranslationStore(s => s.fetchCollab);
@@ -171,11 +175,12 @@ export const TranslateView: React.FC = () => {
     fetchMarkers(id);
     fetchBreaks(id);
     fetchNodes(id);
+    fetchPassages(id);
     fetchLanguages();
     fetchChunks(id);
     fetchCollab(id);
     setArmedMove(null);
-  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchLanguages, fetchChunks, fetchCollab]);
+  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchPassages, fetchLanguages, fetchChunks, fetchCollab]);
 
   // The translator's units: scramble MOVES rearrange the token stream first, the
   // stream chunks naturally, then synthetic TITLE chunks are spliced in. `movedBy`
@@ -189,12 +194,14 @@ export const TranslateView: React.FC = () => {
     const { tokens: rearranged, movedBy, movedFromBy } = applyMoves(tokens, layouts);
     const derived = deriveChunks(rearranged, markerOffsets, spans, breakOverrides, lineBreakGroups, movedBy);
     return {
-      chunks: insertTitleChunks(derived, layouts),
+      chunks: insertPassageChunks(
+        insertTitleChunks(derived, layouts), passages,
+        tokens, markerOffsets, spans, breakOverrides, lineBreakGroups),
       movedBy,
       movedFromBy,
       streamIds: rearranged.map(t => t.id),
     };
-  }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts]);
+  }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts, passages]);
 
   /** Per-unit matching. THE TIBETAN IS THE HARD REFERENCE: one row per derived
    *  unit, always showing its own Tibetan. A unit-exact canonical chunk attaches
@@ -238,6 +245,33 @@ export const TranslateView: React.FC = () => {
 
   const translationOf = (chunk: TranslationChunk | null, lang: string) =>
     chunk?.translations.find(t => t.lang === lang);
+  // Retrieve a passage's translation from the segments it repeats: for each member run,
+  // the source translation chunk COVERING its start syllable (covering, not exact, so a
+  // passage that reuses part of a paragraph still pulls that paragraph's translation as a
+  // starting point). Consecutive duplicates are collapsed.
+  const posById = useMemo(() => {
+    const m = new Map<string, number>();
+    streamIds.forEach((id, i) => m.set(id, i));
+    return m;
+  }, [streamIds]);
+  // Retrieved translation for a passage group: concat (dedup consecutive) the translations
+  // of every source chunk overlapping the group's [start..end] source range.
+  const retrievedForGroup = (u: DerivedChunk, lang: string): string => {
+    const s0 = u.passageUnitStart ? posById.get(u.passageUnitStart) : undefined;
+    const e0 = u.passageUnitEnd ? posById.get(u.passageUnitEnd) : undefined;
+    if (s0 == null || e0 == null) return '';
+    const bodies: string[] = [];
+    serverChunks
+      .map(c => ({ c, s: posById.get(c.start_syl_id), e: posById.get(c.end_syl_id) }))
+      .filter((x): x is { c: TranslationChunk; s: number; e: number } =>
+        x.s != null && x.e != null && x.s <= e0 && x.e >= s0)
+      .sort((a, b) => a.s - b.s)
+      .forEach(x => {
+        const b = translationOf(x.c, lang)?.body ?? '';
+        if (b && b !== bodies[bodies.length - 1]) bodies.push(b);
+      });
+    return bodies.join('');
+  };
   const overrideFor = (chunkId: number | undefined, lang: string) =>
     chunkId == null ? undefined : overrides.find(o => o.chunk_id === chunkId && o.lang === lang);
   const pendingFor = (chunkId: number | undefined, lang: string) =>
@@ -331,16 +365,17 @@ export const TranslateView: React.FC = () => {
     }).catch((e: any) => setSaveError(e.message || 'Move failed'));
   };
 
-  const tibetanTokens = (u: DerivedChunk) => {
+  const tibetanTokens = (u: DerivedChunk, interactive = true) => {
     const lines = tibetanLines(u.tokens);
     let ti = -1; // running token index across lines, preserved for move selection
+    const move = interactive && movable(u);
     return (
       <div
         className={`tibetan-text ${u.tagType === 'mantra' ? 'opacity-40' : ''} ${
-          armedMove && movable(u) ? 'cursor-crosshair' : ''}`}
-        onMouseUp={!armedMove && movable(u) ? handleChunkMouseUp : undefined}
-        onMouseMove={armedMove && movable(u) ? handlePlacementMove : undefined}
-        onClick={armedMove && movable(u) ? handlePlacementClick : undefined}
+          armedMove && move ? 'cursor-crosshair' : ''}`}
+        onMouseUp={!armedMove && move ? handleChunkMouseUp : undefined}
+        onMouseMove={armedMove && move ? handlePlacementMove : undefined}
+        onClick={armedMove && move ? handlePlacementClick : undefined}
       >
         {lines.map((line, li) => (
           <div key={`${u.key}-l${li}`} className="tibetan-line">
@@ -572,6 +607,92 @@ export const TranslateView: React.FC = () => {
           <div className="max-w-6xl mx-auto flex flex-col gap-3">
             {displayRows.map((row, i) => {
               const u = row.u;
+              // ── Synthetic PASSAGE group (a same-type run of repeated content) ──
+              if (u.passage) {
+                const p = u.passage;
+                const key = u.passageUnitKey ?? '';
+                const jump = u.passageSrcOffset != null;
+                const goOrigin = () => {
+                  const el = document.querySelector<HTMLElement>(`[data-link-key="${u.passageSrcOffset}"]`);
+                  if (!el) return;
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  el.classList.add('link-pulse');
+                  setTimeout(() => el.classList.remove('link-pulse'), 1300);
+                };
+                const header = (
+                  <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft">
+                    <span className="px-1.5 rounded-full font-medium bg-cream">passage · repeated</span>
+                    {jump && (
+                      <button type="button" onClick={goOrigin} className={`${miniBtn} text-lapis`}
+                              style={miniStyle} title="Scroll to the original occurrence">
+                        <MoveRight size={10} /> go to original
+                      </button>
+                    )}
+                  </div>
+                );
+                // Mantra run: kept as is (Sanskrit), no translation.
+                if (u.tagType === 'mantra') {
+                  return (
+                    <div key={u.key} className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/50 p-4"
+                         style={{ border: '1px dashed var(--cline)' }}>
+                      <div className="min-w-0 opacity-60">{header}{tibetanTokens(u, false)}</div>
+                      <div className="min-w-0 flex items-center text-xs text-ink-soft italic">
+                        Sanskrit — kept as is (phonetics handled in the phonetics bench).
+                      </div>
+                    </div>
+                  );
+                }
+                // Translatable run: grayed Tibetan + retrieved, passage-local editable translation.
+                const retrieved = retrievedForGroup(u, targetLang);
+                const local = p.translations?.[targetLang]?.[key];
+                const editable = !p.inherited;
+                return (
+                  <div key={u.key} className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/50 p-4"
+                       style={{ border: '1px dashed var(--cline)' }}>
+                    <div className="min-w-0 opacity-60">{header}{tibetanTokens(u, false)}</div>
+                    <div className="min-w-0 flex flex-col gap-1.5">
+                      {editable ? (
+                        <ChunkEditor
+                          value={local ?? retrieved}
+                          placeholder={`${targetLang} translation…`}
+                          onSave={(html) => {
+                            if (html === (local ?? retrieved)) return;
+                            const tr = p.translations ?? {};
+                            void editPassage(p.id, { translations: { ...tr, [targetLang]: { ...tr[targetLang], [key]: html } } })
+                              .catch((e: any) => setSaveError(e.message || 'Passage translation save failed'));
+                          }}
+                        />
+                      ) : (
+                        <TranslationBody body={local ?? retrieved} className="whitespace-pre-wrap text-sm opacity-70" />
+                      )}
+                      <div className="flex items-center gap-2 text-[10px] text-ink-soft flex-wrap">
+                        {local != null ? (
+                          <>
+                            <span className="px-1.5 rounded-full bg-lapis/15 text-lapis flex items-center gap-1"
+                                  title="This passage carries its own wording; the original occurrence is untouched">
+                              <GitBranch size={9} /> passage-local
+                            </span>
+                            <button type="button" className={miniBtn} style={miniStyle}
+                              onClick={() => {
+                                const tr = { ...(p.translations ?? {}) };
+                                const langMap = { ...(tr[targetLang] ?? {}) };
+                                delete langMap[key];
+                                if (Object.keys(langMap).length) tr[targetLang] = langMap; else delete tr[targetLang];
+                                void editPassage(p.id, { translations: tr })
+                                  .catch((e: any) => setSaveError(e.message));
+                              }}
+                              title="Discard the local edit and use the original's translation">
+                              <Undo2 size={10} /> revert to original
+                            </button>
+                          </>
+                        ) : (
+                          <span className="italic">retrieved from its first occurrence — edit here for this passage only</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               // ── Synthetic TITLE chunk (scramble layer) ──
               if (u.titleLayout) {
                 const l = u.titleLayout;

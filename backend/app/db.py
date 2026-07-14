@@ -649,7 +649,11 @@ _COLUMN_MIGRATIONS = {
     # own_segment: the marker-free "manual split" — render as a standalone card
     # (its own segment) instead of inline. Node-linked passages are standalone too.
     "passages": [("attach_prev", "INTEGER NOT NULL DEFAULT 0"),
-                 ("own_segment", "INTEGER NOT NULL DEFAULT 0")],
+                 ("own_segment", "INTEGER NOT NULL DEFAULT 0"),
+                 # Passage-local translation overrides (JSON {lang: body}) — a passage
+                 # repeats earlier content, so its translation is retrieved from the
+                 # source; this holds a per-occurrence edit that leaves the source intact.
+                 ("translations", "TEXT")],
     # level: title level for heading chunks (sapche/title), NULL = not a heading.
     "translation_chunks": [("level", "INTEGER")],
     "text_portions": [

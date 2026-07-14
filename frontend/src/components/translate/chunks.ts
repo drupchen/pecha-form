@@ -1,4 +1,4 @@
-import type { EditorToken, ChunkLayout } from '../../api/client';
+import type { EditorToken, ChunkLayout, Passage } from '../../api/client';
 import type { Span } from '../../store/useTagStore';
 import { tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from '../workspace/segments';
 
@@ -37,6 +37,18 @@ export interface DerivedChunk {
   /** Synthetic title chunk (scramble layer): no Tibetan, per-language bodies
    *  live on the layout row; `level` = heading level. */
   titleLayout?: ChunkLayout;
+  /** Synthetic PASSAGE chunk: a repetition of earlier content, shown grayed. Its
+   *  `tokens` are re-derived from the source slice so it renders with the SAME line
+   *  breaks + run types it will paginate with. `passageSrcOffset` is the origin
+   *  segment's `startOffset` (its row's `data-link-key`) — the scroll target for "edit
+   *  at the original". One synthetic chunk per same-type GROUP of the passage block;
+   *  `passageUnitStart`/`passageUnitEnd` are the group's source syl range (for retrieving
+   *  the source translation) and `passageUnitKey` keys the per-unit local edit. */
+  passage?: Passage;
+  passageSrcOffset?: number;
+  passageUnitStart?: string;
+  passageUnitEnd?: string;
+  passageUnitKey?: string;
 }
 
 /** Content-type priority: the FIRST of these covering a substantial token wins.
@@ -51,6 +63,16 @@ export const TYPE_PRIORITY = ['small', 'mantra', 'sapche', 'title', 'verse', 'pr
  *  surrounding line instead of splitting it — and their tokens are flagged `small` so
  *  the Translate/Phonetics editors render them smaller. Extend if others become small. */
 const MINOR = new Set(['small', 'sapche']);
+
+/** A `small` run fuses into an adjacent MANTRA only when it is one of these abbreviation
+ *  particles (the liturgical "…etc." forms) — a particle plus an eventual punctuation
+ *  syllable. Any other small run next to a mantra stays its own translatable unit. */
+const ABBREV_FORMS = [
+  'ནས།', 'ནས་', 'སོགས།', 'སོགས་', 'ལ་སོགས་', 'ལ་སོགས།',
+  'ལ་སོགས་པ་', 'ལ་སོགས་པས་', 'ལ་སོགས་པས།', 'ལ་སོགས་པ།', 'ས་', 'ས།',
+];
+const stripEnd = (s: string) => s.replace(/[་།༎\s]+$/gu, ''); // drop trailing tsheg/shad/space
+const ABBREV_CORES = new Set(ABBREV_FORMS.map(stripEnd));
 
 /** Apply the scramble layer's MOVE rows as token-stream surgery BEFORE chunk
  *  derivation: each active move excises its source range and splices it in front
@@ -116,6 +138,76 @@ export function insertTitleChunks(
   return out;
 }
 
+/** Insert grayed, read-only PASSAGE rows: a passage repeats earlier content. Passages at
+ *  the SAME anchor form one block — concatenate their source ranges, re-derive with the
+ *  usual rules (so runs keep their type + line breaks and a whitelisted `ནས` fuses into a
+ *  mantra), then emit ONE row per same-type group (adjacent same-type units merged), so
+ *  each renders by its type (verse → numbered/editable, mantra → kept as is). */
+export function insertPassageChunks(
+  chunks: DerivedChunk[],
+  passages: Passage[],
+  tokens: EditorToken[],
+  markerOffsets: Set<number>,
+  spans: Span[],
+  breakOverrides: Map<string, number>,
+  groups: { verse: boolean; sapche: boolean; mantra: boolean },
+): DerivedChunk[] {
+  if (!passages.length) return chunks;
+  const idx = new Map(tokens.map((t, i) => [t.id, i] as const));
+  const out = [...chunks];
+  // Group passages by anchor, ordered by position (a shared anchor = one repeated block).
+  const byAnchor = new Map<string, Passage[]>();
+  for (const p of passages) {
+    const k = p.anchor_syl_id ?? ' end';
+    (byAnchor.get(k) ?? byAnchor.set(k, []).get(k)!).push(p);
+  }
+  for (const [, group] of byAnchor) {
+    group.sort((a, b) => a.position - b.position);
+    const first = group[0];
+    // Combined source-token stream for the whole block (all passages, all members, in order).
+    const combined: EditorToken[] = [];
+    for (const p of group) {
+      for (const m of p.members) {
+        const s = idx.get(m.src_start_syl_id), e = idx.get(m.src_end_syl_id);
+        if (s != null && e != null && e >= s) combined.push(...tokens.slice(s, e + 1));
+      }
+    }
+    const units = combined.length
+      ? deriveChunks(combined, markerOffsets, spans, breakOverrides, groups)
+      : [];
+    // Merge adjacent same-type units into groups ("concatenate adjacent same-type").
+    const merged: DerivedChunk[] = [];
+    for (const u of units) {
+      const prev = merged[merged.length - 1];
+      if (prev && prev.tagType === u.tagType) {
+        prev.tokens = [...prev.tokens, ...u.tokens];
+        prev.text = `${prev.text}\n${u.text}`;
+        prev.endSylId = u.endSylId;
+      } else merged.push({ ...u });
+    }
+    const at = first.anchor_syl_id
+      ? out.findIndex(c => c.sylIds.includes(first.anchor_syl_id!)) : -1;
+    const rows = merged.map((g, gi): DerivedChunk => {
+      const srcChunk = chunks.find(c => c.sylIds.includes(g.startSylId));
+      return {
+        key: `passage-${first.id}-${gi}`,
+        startSylId: '', endSylId: '',
+        text: g.text, sylIds: [], startOffset: -1,
+        tokens: g.tokens,
+        tagType: g.tagType, tagColor: g.tagColor,
+        passage: first,
+        passageSrcOffset: srcChunk ? srcChunk.startOffset : undefined,
+        passageUnitStart: g.startSylId,
+        passageUnitEnd: g.endSylId,
+        passageUnitKey: g.startSylId,
+      };
+    });
+    if (at >= 0) out.splice(at, 0, ...rows);
+    else out.push(...rows);
+  }
+  return out;
+}
+
 /** Split the composed stream into translation chunks. Boundaries: segment markers,
  *  EMPTY lines — an explicit "empty line" break override (count 2) or two
  *  consecutive real newline tokens — and CONTENT-TYPE changes (small → verse etc.,
@@ -158,6 +250,20 @@ export function deriveChunks(
     return { name: 'plain', color: null };
   };
 
+  // Token ids belonging to a `small` run whose text is a whitelisted abbreviation particle
+  // — the only small runs allowed to fuse into an adjacent mantra line.
+  const abbrevSmall = new Set<string>();
+  for (let i = 0; i < tokens.length; ) {
+    if (tokens[i].text.trim() === '' || typeOf(tokens[i]).name !== 'small') { i++; continue; }
+    const run: EditorToken[] = [];
+    let j = i;
+    while (j < tokens.length && tokens[j].text.trim() !== '' && typeOf(tokens[j]).name === 'small') {
+      run.push(tokens[j]); j++;
+    }
+    if (ABBREV_CORES.has(stripEnd(run.map(t => t.text).join('')))) run.forEach(t => abbrevSmall.add(t.id));
+    i = j;
+  }
+
   const effective = (i: number): number => {
     const t = tokens[i];
     const nxt = tokens.slice(i + 1).find(x => x.text !== '');
@@ -179,6 +285,9 @@ export function deriveChunks(
   // absorbed into a neighbour by the inline-minor rule (which would drop it, e.g., into a
   // mantra and out of translation scope).
   let curMovedId: number | undefined;
+  // First substantial token id of the current chunk — lets a `small→mantra` transition
+  // test whether the current small run is a whitelisted abbreviation.
+  let curAnchorId: string | null = null;
 
   const flush = () => {
     const substantial = cur.filter(t => t.text.trim() !== '');
@@ -207,6 +316,7 @@ export function deriveChunks(
     curRenders = [];
     curType = null;
     curMovedId = undefined;
+    curAnchorId = null;
   };
 
   // Whether a line break occurred since the last substantial token — used to tell an
@@ -229,11 +339,18 @@ export function deriveChunks(
       if (curType != null && curMoved !== curMovedId) { flush(); sawBreak = false; }
       const ty = typeOf(t);
       if (curType != null && ty.name !== curType.name) {
-        const minorInline = (MINOR.has(ty.name) || MINOR.has(curType.name)) && !sawBreak;
+        let minorInline = (MINOR.has(ty.name) || MINOR.has(curType.name)) && !sawBreak;
+        // A small run fuses into a mantra ONLY when it is a whitelisted abbreviation
+        // particle; otherwise it stays its own translatable unit.
+        if (minorInline) {
+          const smallId = ty.name === 'small' ? t.id : curType.name === 'small' ? curAnchorId : null;
+          const otherIsMantra = ty.name === 'mantra' || curType.name === 'mantra';
+          if (smallId && otherIsMantra && !abbrevSmall.has(smallId)) minorInline = false;
+        }
         if (!minorInline) flush();
         else if (MINOR.has(curType.name) && !MINOR.has(ty.name)) curType = ty; // real type wins
       }
-      if (curType == null) { curType = ty; curMovedId = curMoved; }
+      if (curType == null) { curType = ty; curMovedId = curMoved; curAnchorId = t.id; }
       tokenSmall = MINOR.has(ty.name);
       sawBreak = false;
     }
