@@ -427,13 +427,20 @@ CREATE TABLE IF NOT EXISTS translation_suggestions (
 CREATE INDEX IF NOT EXISTS idx_translation_suggestions_chunk ON translation_suggestions(chunk_id);
 
 -- Scramble layer: translator-driven DISPLAY arrangement of the chunk stream.
--- kind='move': the small/sapche instruction fragment (src range) displays before
--- the chunk starting at anchor_syl_id (NULL = end of stream) instead of at its
--- source position. kind='title': a synthetic title chunk (no Tibetan) appears
--- before the anchor, with a heading level; its per-language text lives in
--- layout_titles. text_id NULL = GLOBAL default (applies wherever the content
--- appears); non-NULL = booklet-specific. A booklet 'move' row with the same src
--- range shadows the global one; disabled=1 lets a booklet switch a global row off.
+-- kind='move': the small/sapche instruction fragment (src range) displays at
+-- anchor_syl_id instead of at its source position. Two intents, `move_mode`:
+--   'inline'  — the translator's HAIRLINE: the fragment is integrated INSIDE the
+--               destination chunk, right before (anchor_after=0) or right after
+--               (anchor_after=1) the anchor syllable. It joins that chunk's
+--               translation unit; it gets no translation box of its own.
+--   'segment' — the translator's BAR between chunks: the fragment stands as its
+--               OWN segment before the chunk starting at anchor_syl_id, with its
+--               own translation. anchor_syl_id NULL = end of stream (both modes).
+-- kind='title': a synthetic title chunk (no Tibetan) appears before the anchor,
+-- with a heading level; its per-language text lives in layout_titles. text_id
+-- NULL = GLOBAL default (applies wherever the content appears); non-NULL =
+-- booklet-specific. A booklet 'move' row with the same src range shadows the
+-- global one; disabled=1 lets a booklet switch a global row off.
 CREATE TABLE IF NOT EXISTS chunk_layouts (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id          INTEGER REFERENCES texts(id) ON DELETE CASCADE,
@@ -441,6 +448,8 @@ CREATE TABLE IF NOT EXISTS chunk_layouts (
     src_start_syl_id TEXT,
     src_end_syl_id   TEXT,
     anchor_syl_id    TEXT,
+    move_mode        TEXT,
+    anchor_after     INTEGER NOT NULL DEFAULT 0,
     level            INTEGER,
     disabled         INTEGER NOT NULL DEFAULT 0,
     position         INTEGER NOT NULL DEFAULT 0,
@@ -702,6 +711,11 @@ _COLUMN_MIGRATIONS = {
     "text_groups": [("position", "INTEGER")],
     # D2: page geometry + type sizes for the booklet layout (JSON; NULL = defaults).
     "documents": [("layout_config", "TEXT")],
+    # The two move gestures of the translate bench (see the chunk_layouts CREATE):
+    # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
+    # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.
+    "chunk_layouts": [("move_mode", "TEXT"),
+                      ("anchor_after", "INTEGER NOT NULL DEFAULT 0")],
 }
 
 
@@ -1089,6 +1103,11 @@ def _make_tags_text_id_nullable(conn) -> None:
         raise RuntimeError("Could not strip NOT NULL from tags.text_id; DDL unexpected")
     before = conn.execute("SELECT COUNT(*) AS n FROM tags").fetchone()["n"]
     conn.execute("PRAGMA foreign_keys = OFF")
+    # legacy_alter_table: without it, `RENAME TO tags__old` REWRITES the FK clauses of every
+    # child table to reference `tags__old` — so the children end up pointing at the scratch
+    # table instead of the rebuilt `tags` (see _repair_tag_fks, which repairs DBs where this
+    # already happened). Legacy mode leaves child DDL alone, which is what a rebuild wants.
+    conn.execute("PRAGMA legacy_alter_table = ON")
     try:
         with conn:
             conn.execute("ALTER TABLE tags RENAME TO tags__old")
@@ -1109,6 +1128,57 @@ def _make_tags_text_id_nullable(conn) -> None:
                     f"Foreign-key violations after tags rebuild: {violations[:5]}"
                 )
     finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+# Repair for DBs rebuilt by an earlier (non-legacy_alter_table) run of the tags rebuild: the
+# RENAME rewrote every child's FK to `tags__old`, and that scratch table survived, still owning
+# the pre-share `text_id` values. The children therefore CASCADE off the scratch table, so
+# deleting the text that once owned the tags would wipe every span/portion in the DB. Repoint
+# each child's FK back at `tags` (table rebuild — SQLite can't alter an FK in place) and drop
+# the scratch table. Idempotent: does nothing once `tags__old` is gone. Must run OUTSIDE a
+# transaction (it toggles PRAGMAs), like the migrations above.
+def _repair_tag_fks(conn) -> None:
+    stale = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tags__old'"
+    ).fetchone()
+    if not stale:
+        return
+    children = [
+        (r["name"], r["sql"]) for r in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' "
+            "AND name <> 'tags__old' AND sql LIKE '%tags__old%'")
+    ]
+    counts = {n: conn.execute(f"SELECT COUNT(*) AS c FROM {n}").fetchone()["c"]
+              for n, _ in children}
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        with conn:
+            for name, sql in children:
+                indexes = [r["sql"] for r in conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name = ? "
+                    "AND sql IS NOT NULL", (name,))]
+                fixed = sql.replace('"tags__old"', "tags").replace("tags__old", "tags")
+                conn.execute(fixed.replace(f'"{name}"', f'"{name}__new"', 1)
+                             if f'"{name}"' in fixed else
+                             fixed.replace(name, f"{name}__new", 1))
+                conn.execute(f"INSERT INTO {name}__new SELECT * FROM {name}")
+                conn.execute(f"DROP TABLE {name}")
+                conn.execute(f"ALTER TABLE {name}__new RENAME TO {name}")
+                for ddl in indexes:
+                    conn.execute(ddl)
+                after = conn.execute(f"SELECT COUNT(*) AS c FROM {name}").fetchone()["c"]
+                if after != counts[name]:
+                    raise RuntimeError(
+                        f"{name} rebuild changed row count: {counts[name]} -> {after}")
+            conn.execute("DROP TABLE tags__old")
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(f"Foreign-key violations after tag-FK repair: {violations[:5]}")
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
         conn.execute("PRAGMA foreign_keys = ON")
 
 
@@ -1141,4 +1211,6 @@ def init_db():
     # Part 8: make tags.text_id nullable (shared tags). Runs after the offset drop so
     # `tags` already has its final column set; own foreign_keys-OFF transaction.
     _make_tags_text_id_nullable(conn)
+    # …then repair DBs whose earlier tags rebuild left the children FK-ing `tags__old`.
+    _repair_tag_fks(conn)
     conn.close()
