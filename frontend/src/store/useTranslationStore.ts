@@ -45,7 +45,10 @@ interface TranslationState {
   suggestUpstream: (chunkId: number, lang: string, body: string, fromTextId: number) => Promise<void>;
   resolve: (id: number, accept: boolean, textId: number) => Promise<void>;
   // T2 — scramble layouts
-  addMove: (args: { textId: number | null; srcStart: string; srcEnd: string; anchor: string | null }) => Promise<void>;
+  addMove: (args: {
+    textId: number | null; srcStart: string; srcEnd: string; anchor: string | null;
+    mode: 'inline' | 'segment'; anchorAfter?: boolean;
+  }) => Promise<void>;
   addTitle: (args: { textId: number | null; anchor: string | null; level: number }) => Promise<void>;
   setTitleBody: (layoutId: number, lang: string, body: string) => Promise<void>;
   setTitleLevel: (layoutId: number, level: number) => Promise<void>;
@@ -165,10 +168,11 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     if (accept) await get().fetchChunks(textId);
   },
 
-  addMove: async ({ textId, srcStart, srcEnd, anchor }) => {
+  addMove: async ({ textId, srcStart, srcEnd, anchor, mode, anchorAfter }) => {
     const row = await createLayout({
       text_id: textId, kind: 'move',
       src_start_syl_id: srcStart, src_end_syl_id: srcEnd, anchor_syl_id: anchor,
+      move_mode: mode, anchor_after: !!anchorAfter,
     });
     set(s => ({ layouts: [...s.layouts, row] }));
   },

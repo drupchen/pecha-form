@@ -30,10 +30,20 @@ export interface DerivedChunk {
    *  can render the Tibetan as selectable syllable spans (data-syl-id). `small` marks
    *  a token that came from a small connector re-merged into a mantra line (`mergeChunks`),
    *  so the editors can flag it (smaller + red) as an implicit-mantra cue. */
-  tokens: { id: string; render: string; small?: boolean }[];
+  /** `movedAway` marks a token whose translation was picked up and integrated elsewhere
+   *  (grayed in place, translate-tab display only); `movedIn` marks a READ-ONLY copy of
+   *  such a token injected into its destination chunk. Both carry the move layout id. */
+  tokens: { id: string; render: string; small?: boolean; movedAway?: number; movedIn?: number }[];
   /** Set when this chunk's content was MOVED here by a scramble layout row —
-   *  the translator sees it originally belonged elsewhere. */
+   *  the translator sees it originally belonged elsewhere. `movedAnchorId` is that row's
+   *  anchor (null = end of stream), so a placement bar drawn at this row anchors HERE and
+   *  not back at the origin (the fragment's own syllables live there). */
   movedLayoutId?: number;
+  movedAnchorId?: string | null;
+  /** Set on an ORIGIN chunk whose every substantial token was picked up by a move: nothing
+   *  is left to translate here, so the bench renders it as a grayed read-only placeholder
+   *  (no translation box) — the text is translated at its destination. */
+  movedOutAll?: number;
   /** Synthetic title chunk (scramble layer): no Tibetan, per-language bodies
    *  live on the layout row; `level` = heading level. */
   titleLayout?: ChunkLayout;
@@ -74,38 +84,122 @@ const ABBREV_FORMS = [
 const stripEnd = (s: string) => s.replace(/[་།༎\s]+$/gu, ''); // drop trailing tsheg/shad/space
 const ABBREV_CORES = new Set(ABBREV_FORMS.map(stripEnd));
 
-/** Apply the scramble layer's MOVE rows as token-stream surgery BEFORE chunk
- *  derivation: each active move excises its source range and splices it in front
- *  of the anchor token (null anchor = end of stream). The rearranged stream then
- *  chunks naturally (the moved fragment forms its own type-homogeneous chunk).
- *  Returns the new stream plus `movedBy` (moved token → layout id, for the "moved
- *  here"/"moved in" TARGET badges) and `movedFromBy` (the origin-adjacent token →
- *  layout id, for the "moved from here" ORIGIN badge — so origins and targets are
- *  distinguishable). */
-export function applyMoves(
+/** Resolve the scramble layer's MOVE rows to DISPLAY placements (translate-tab only; the
+ *  Tibetan stream is NOT rearranged and the booklet is untouched). Each active move marks
+ *  its source range as `movedAway` (grayed in place at the origin) and records a placement
+ *  at the destination. The two gestures are distinct placements:
+ *    'inline'  (hairline) — integrate the fragment INSIDE the anchor's chunk, right before
+ *                           the anchor syllable, or right after it when `anchorAfter`.
+ *    'segment' (bar)      — the fragment stands as its OWN chunk before the chunk starting
+ *                           at the anchor.
+ *  A null anchor means the end of the stream in both modes. */
+export interface MovePlacement {
+  layoutId: number;
+  mode: 'inline' | 'segment';
+  anchorId: string | null;
+  anchorAfter: boolean;
+  fragIds: string[];
+}
+
+export function moveDisplays(
   tokens: EditorToken[],
   layouts: ChunkLayout[],
-): { tokens: EditorToken[]; movedBy: Map<string, number>; movedFromBy: Map<string, number> } {
-  const movedBy = new Map<string, number>();
-  const movedFromBy = new Map<string, number>();
-  let stream = tokens;
+): { movedAway: Map<string, number>; placements: MovePlacement[] } {
+  const movedAway = new Map<string, number>();
+  const placements: MovePlacement[] = [];
+  const idx = new Map(tokens.map((t, i) => [t.id, i] as const));
   for (const l of layouts) {
     if (l.kind !== 'move' || l.disabled || !l.src_start_syl_id || !l.src_end_syl_id) continue;
-    const si = stream.findIndex(t => t.id === l.src_start_syl_id);
-    const ei = stream.findIndex(t => t.id === l.src_end_syl_id);
-    if (si < 0 || ei < 0 || ei < si) continue;
-    // Anchor the origin badge to the token adjacent to the excised fragment (the
-    // remainder of the segment it came from, for a partial move).
-    const originAnchor = stream[si - 1]?.id ?? stream[ei + 1]?.id;
-    if (originAnchor) movedFromBy.set(originAnchor, l.id);
-    const frag = stream.slice(si, ei + 1);
-    const rest = [...stream.slice(0, si), ...stream.slice(ei + 1)];
-    let at = l.anchor_syl_id ? rest.findIndex(t => t.id === l.anchor_syl_id) : rest.length;
-    if (at < 0) at = rest.length;
-    stream = [...rest.slice(0, at), ...frag, ...rest.slice(at)];
-    frag.forEach(t => movedBy.set(t.id, l.id));
+    const si = idx.get(l.src_start_syl_id), ei = idx.get(l.src_end_syl_id);
+    if (si == null || ei == null || ei < si) continue;
+    const fragIds: string[] = [];
+    for (let i = si; i <= ei; i++) { movedAway.set(tokens[i].id, l.id); fragIds.push(tokens[i].id); }
+    placements.push({
+      layoutId: l.id,
+      mode: l.move_mode === 'segment' ? 'segment' : 'inline',
+      anchorId: l.anchor_syl_id ?? null,
+      anchorAfter: !!l.anchor_after,
+      fragIds,
+    });
   }
-  return { tokens: stream, movedBy, movedFromBy };
+  return { movedAway, placements };
+}
+
+/** Post-process the naturally-derived chunk list for moves: gray the moved-away tokens in
+ *  place (an origin left with nothing substantial is flagged `movedOutAll` — the bench shows
+ *  it as a read-only placeholder), then place each fragment at its destination per its mode:
+ *  an 'inline' move splices a READ-ONLY copy into the destination chunk's tokens (the fragment
+ *  joins that chunk's translation unit); a 'segment' move inserts the fragment as its OWN chunk,
+ *  keeping its real syllable ids so its translation attaches to its own range. Both reuse the
+ *  origin's render tokens (breaks + small flags), so the Tibetan reads as it did at the origin. */
+export function applyMoveDisplays(
+  chunks: DerivedChunk[],
+  movedAway: Map<string, number>,
+  placements: MovePlacement[],
+): DerivedChunk[] {
+  if (!movedAway.size) return chunks;
+  // Snapshot the moved fragment's (untagged) render tokens by id, for the destination copies.
+  const fragById = new Map<string, DerivedChunk['tokens'][number]>();
+  const originOf = new Map<string, DerivedChunk>();
+  for (const c of chunks) for (const t of c.tokens) if (movedAway.has(t.id)) {
+    fragById.set(t.id, t);
+    originOf.set(t.id, c);
+  }
+  const substantial = (t: DerivedChunk['tokens'][number]) => t.render.trim() !== '';
+  // Gray the moved-away tokens in place; an origin emptied of ALL its substantial tokens has
+  // nothing left to translate (`movedOutAll`).
+  const out = chunks.map(c => {
+    if (!c.tokens.some(t => movedAway.has(t.id))) return c;
+    const tokens = c.tokens.map(t =>
+      movedAway.has(t.id) ? { ...t, movedAway: movedAway.get(t.id)! } : t);
+    const left = tokens.filter(t => substantial(t) && t.movedAway == null);
+    return {
+      ...c, tokens,
+      movedOutAll: left.length === 0 ? movedAway.get(c.tokens.find(t => movedAway.has(t.id))!.id) : undefined,
+    };
+  });
+
+  for (const pl of placements) {
+    const frag = pl.fragIds
+      .map(id => fragById.get(id))
+      .filter((t): t is DerivedChunk['tokens'][number] => !!t);
+    if (!frag.some(substantial)) continue;
+    // Destination chunk: the one holding the anchor (null/unresolved anchor = end of stream).
+    const ci = pl.anchorId != null ? out.findIndex(c => c.sylIds.includes(pl.anchorId!)) : -1;
+
+    if (pl.mode === 'segment') {
+      // The bar between chunks: the fragment becomes a chunk of its own, typed like its origin.
+      const src = originOf.get(pl.fragIds[0]);
+      const subs = frag.filter(substantial);
+      const row: DerivedChunk = {
+        key: `move-${pl.layoutId}`,
+        startSylId: subs[0].id,
+        endSylId: subs[subs.length - 1].id,
+        text: frag.map(t => t.render).join('').replace(/\n{2,}/g, '\n').trim(),
+        sylIds: pl.fragIds,
+        tokens: frag.map(t => ({ ...t, movedAway: undefined })),
+        startOffset: -1,                 // synthetic row: the origin keeps the scroll target
+        tagType: src?.tagType ?? 'plain',
+        tagColor: src?.tagColor ?? null,
+        movedLayoutId: pl.layoutId,
+        movedAnchorId: pl.anchorId,
+      };
+      if (ci >= 0) out.splice(ci, 0, row);
+      else out.push(row);
+      continue;
+    }
+
+    // The hairline: a read-only copy integrated inside the destination chunk, at the anchor.
+    const copies = frag.map(t => ({ ...t, movedAway: undefined, movedIn: pl.layoutId }));
+    const di = ci >= 0 ? ci : out.length - 1;
+    if (di < 0) continue;
+    const dest = out[di];
+    let at = dest.tokens.findIndex(t => t.id === pl.anchorId);
+    if (at < 0) at = dest.tokens.length;             // null anchor / not found → end of the chunk
+    else if (pl.anchorAfter) at += 1;
+    out[di] = { ...dest, tokens: [...dest.tokens.slice(0, at), ...copies, ...dest.tokens.slice(at)] };
+  }
+  return out;
 }
 
 /** Insert the scramble layer's synthetic TITLE chunks: each appears before the

@@ -147,7 +147,15 @@ export interface ChunkLayout {
   kind: 'move' | 'title';
   src_start_syl_id: string | null;
   src_end_syl_id: string | null;
-  anchor_syl_id: string | null; // lands BEFORE the chunk starting here; null = end
+  /** 'segment'/'title': lands BEFORE the chunk starting here. 'inline': lands beside
+   *  this very syllable, INSIDE its chunk (after it when `anchor_after`). null = end. */
+  anchor_syl_id: string | null;
+  /** The translator's two move gestures: 'inline' = the hairline (the fragment is
+   *  integrated into the destination chunk's text and translated there), 'segment' =
+   *  the bar between chunks (the fragment stands as its own segment, with its own
+   *  translation). Legacy rows read back as 'inline'. */
+  move_mode: 'inline' | 'segment';
+  anchor_after: boolean;
   level: number | null;
   disabled: boolean;
   position: number;
@@ -194,7 +202,8 @@ export const getLayouts = (textId: number) =>
 export const createLayout = (body: {
   text_id?: number | null; kind: 'move' | 'title';
   src_start_syl_id?: string | null; src_end_syl_id?: string | null;
-  anchor_syl_id?: string | null; level?: number | null;
+  anchor_syl_id?: string | null; move_mode?: 'inline' | 'segment';
+  anchor_after?: boolean; level?: number | null;
 }) =>
   jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts`,
     { method: 'POST', headers: J, body: JSON.stringify(body) });

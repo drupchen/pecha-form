@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Languages, Check, GitBranch, Undo2, ArrowUpToLine, MoveRight, Plus, Trash2 } from 'lucide-react';
+import { Languages, Check, GitBranch, Undo2, ArrowUpToLine, MoveRight, Plus, Trash2, Link } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -9,7 +9,7 @@ import { useUIStore } from '../../store/useUIStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
 import { TreePane } from '../workspace/TreePane';
-import { deriveChunks, applyMoves, insertTitleChunks, insertPassageChunks, type DerivedChunk } from './chunks';
+import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks, type DerivedChunk } from './chunks';
 import { usePassageStore } from '../../store/usePassageStore';
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
@@ -20,7 +20,7 @@ import type { TranslationChunk } from '../../api/client';
 /** Group a chunk's tokens into printed lines (a token whose render carries a
  *  newline ends its line), so each line can be numbered — matching the Tibetan
  *  line count the paginator pairs 1:1 with the translation's paragraphs. */
-type RenderToken = { id: string; render: string; small?: boolean };
+type RenderToken = { id: string; render: string; small?: boolean; movedAway?: number; movedIn?: number };
 function tibetanLines(tokens: RenderToken[]): RenderToken[][] {
   const lines: RenderToken[][] = [];
   let cur: RenderToken[] = [];
@@ -46,6 +46,38 @@ const TranslationBody: React.FC<{ body: string; className?: string }> = ({ body,
   />
 );
 
+/** Upper bound for a manually-set heading level (deeply nested outlines can go far). */
+const MAX_LEVEL = 99;
+
+/** A compact −/+ stepper for a heading level, so outlines can nest arbitrarily deep
+ *  (H1…H99) instead of a fixed row of buttons. `allowClear` lets − at H1 drop to no
+ *  level (null); without it the floor is H1 (used for translation-only titles, which
+ *  are always headings). */
+const LevelStepper: React.FC<{
+  level: number | null;
+  onSet: (lv: number | null) => void;
+  miniStyle: React.CSSProperties;
+  allowClear?: boolean;
+  title?: string;
+}> = ({ level, onSet, miniStyle, allowClear, title }) => {
+  const dec = () => {
+    if (level == null) return;
+    if (level <= 1) { if (allowClear) onSet(null); return; }
+    onSet(level - 1);
+  };
+  const inc = () => onSet(Math.min(MAX_LEVEL, (level ?? 0) + 1));
+  const btn = "px-1 rounded font-mono text-ink-soft hover:bg-cream disabled:opacity-30";
+  return (
+    <span className="flex items-center gap-0.5" title={title}>
+      <button type="button" onClick={dec} disabled={level == null} className={btn} style={miniStyle}>−</button>
+      <span className="px-1 rounded font-mono bg-lapis text-cream-hi text-center" style={{ ...miniStyle, minWidth: '1.9rem' }}>
+        {level == null ? 'H–' : `H${level}`}
+      </span>
+      <button type="button" onClick={inc} className={btn} style={miniStyle}>+</button>
+    </span>
+  );
+};
+
 /**
  * Translator bench. Phase T1: chunked Tibetan + canonical per-chunk translations
  * (ripple everywhere). Phase T2: booklet-local overrides with staleness tracking,
@@ -67,6 +99,7 @@ export const TranslateView: React.FC = () => {
   const refreshNonce = useUIStore(s => s.refreshNonce);
   const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
   const treeNodes = useTreeNodeStore(s => s.nodes);
+  const updateNode = useTreeNodeStore(s => s.updateNode);
   const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
 
   const languages = useTranslationStore(s => s.languages);
@@ -103,14 +136,12 @@ export const TranslateView: React.FC = () => {
   const [armedMove, setArmedMove] = useState<{
     srcStart: string; srcEnd: string; bookletOnly: boolean; label: string;
   } | null>(null);
-  /** Floating "move selection" button over a syllable-snapped selection. */
-  const [selMove, setSelMove] = useState<{
-    startSylId: string; endSylId: string; label: string; x: number; y: number;
-  } | null>(null);
   /** Insertion caret while placing INSIDE a chunk (hairline mechanism). */
   const [hairline, setHairline] = useState<{
     left: number; top: number; height: number; sylId: string; side: 'before' | 'after';
   } | null>(null);
+  /** Passage-starter id whose "link to TOC node" picker is open (null = none). */
+  const [linkPickerFor, setLinkPickerFor] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   // On-screen text size (Translate tab only) — Tibetan and translation resize
@@ -128,6 +159,30 @@ export const TranslateView: React.FC = () => {
       .sort((a, b) => a.segment_start! - b.segment_start!),
     [treeNodes],
   );
+
+  // Sapche outline depth per anchor syllable (0 = top-level), mirroring the booklet's
+  // `compile.ts` derivation: a heading whose start syllable IS a tree node's segment
+  // start inherits its level from the Tibetan outline (read-only). Headings absent from
+  // the outline (and translation-only titles) keep a manually definable level.
+  const sapcheDepthBySyl = useMemo(() => {
+    const byId = new Map<number, typeof treeNodes[number]>(treeNodes.map(n => [n.id, n]));
+    const depthOf = (n: typeof treeNodes[number]) => {
+      let d = 0, cur: typeof n | undefined = n, guard = 0;
+      while (cur?.parent_id != null && guard++ < 64) { cur = byId.get(cur.parent_id); if (!cur) break; d++; }
+      return d;
+    };
+    const sylAtOffset = new Map<number, string>();
+    for (const t of tokens) if (t.text.trim() !== '') sylAtOffset.set(t.start_offset, t.id);
+    const m = new Map<string, number>();
+    for (const n of treeNodes) {
+      if (n.segment_start == null) continue;
+      const syl = sylAtOffset.get(n.segment_start); if (!syl) continue;
+      const d = depthOf(n);
+      const prev = m.get(syl);
+      if (prev == null || d < prev) m.set(syl, d);
+    }
+    return m;
+  }, [treeNodes, tokens]);
   const spyNodeId = useRef<number | null>(null);
   const spyRaf = useRef<number | null>(null);
   const onListScroll = () => {
@@ -160,7 +215,6 @@ export const TranslateView: React.FC = () => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       setArmedMove(null);
-      setSelMove(null);
       setHairline(null);
     };
     window.addEventListener('keydown', onKey);
@@ -182,24 +236,21 @@ export const TranslateView: React.FC = () => {
     setArmedMove(null);
   }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchPassages, fetchLanguages, fetchChunks, fetchCollab]);
 
-  // The translator's units: scramble MOVES rearrange the token stream first, the
-  // stream chunks naturally, then synthetic TITLE chunks are spliced in. `movedBy`
-  // (syl → layout id) marks moved-in tokens and drives the per-chunk undo pills.
-  const { chunks, movedBy, movedFromBy, streamIds } = useMemo(() => {
-    if (!tokens.length) {
-      return { chunks: [], movedBy: new Map<string, number>(),
-               movedFromBy: new Map<string, number>(), streamIds: [] as string[] };
-    }
+  // The translator's units: the Tibetan stream is chunked NATURALLY (moves never
+  // rearrange it — they are translate-tab display only), then move displays gray the
+  // moved-away tokens in place and inject a read-only copy at the destination, and the
+  // synthetic TITLE/PASSAGE chunks are spliced in.
+  const { chunks, streamIds } = useMemo(() => {
+    if (!tokens.length) return { chunks: [], streamIds: [] as string[] };
     const markerOffsets = new Set(markers.map(m => m.position));
-    const { tokens: rearranged, movedBy, movedFromBy } = applyMoves(tokens, layouts);
-    const derived = deriveChunks(rearranged, markerOffsets, spans, breakOverrides, lineBreakGroups, movedBy);
+    const derived = deriveChunks(tokens, markerOffsets, spans, breakOverrides, lineBreakGroups);
+    const { movedAway, placements } = moveDisplays(tokens, layouts);
+    const moved = applyMoveDisplays(derived, movedAway, placements);
     return {
       chunks: insertPassageChunks(
-        insertTitleChunks(derived, layouts), passages,
+        insertTitleChunks(moved, layouts), passages,
         tokens, markerOffsets, spans, breakOverrides, lineBreakGroups),
-      movedBy,
-      movedFromBy,
-      streamIds: rearranged.map(t => t.id),
+      streamIds: tokens.map(t => t.id),
     };
   }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts, passages]);
 
@@ -242,6 +293,18 @@ export const TranslateView: React.FC = () => {
       return { key: u.key, u, match: exact, cover };
     });
   }, [chunks, serverChunks, streamIds]);
+
+  // A passage block can emit several rows (one per same-type unit-group), all sharing the
+  // group's STARTER (`u.passage`). The "link to TOC node" affordance belongs on the first
+  // of the sequence, so remember each starter's first row index.
+  const firstPassageRow = useMemo(() => {
+    const m = new Map<number, number>();
+    displayRows.forEach((row, i) => {
+      const pid = row.u.passage?.id;
+      if (pid != null && !m.has(pid)) m.set(pid, i);
+    });
+    return m;
+  }, [displayRows]);
 
   const translationOf = (chunk: TranslationChunk | null, lang: string) =>
     chunk?.translations.find(t => t.lang === lang);
@@ -314,20 +377,28 @@ export const TranslateView: React.FC = () => {
     );
   }
 
+  // What can be PICKED UP: an instruction run (small/sapche). What can RECEIVE a hairline:
+  // any translated chunk — the fragment is integrated into its text — but never a mantra
+  // (never translated, so a fragment dropped there would fall out of translation scope).
   const movable = (u: DerivedChunk) => u.tagType === 'small' || u.tagType === 'sapche';
+  const droppable = (u: DerivedChunk) => u.tagType !== 'mantra';
 
-  /** Syllable-snapped selection inside a movable chunk → floating "move selection"
-   *  button (the Workspace's edge-snapping via readTokenSelection). */
+  /** A syllable-snapped selection inside a movable chunk PICKS IT UP immediately (arms the
+   *  move) — no intermediate button. The armed-move banner then invites clicking a spot in a
+   *  chunk (hairline: integrate it there) or a bar between chunks (relocate it as its own
+   *  segment); Esc/Cancel aborts. A collapsed selection (a plain click) is a no-op. Snapping
+   *  is the Workspace's readTokenSelection. */
   const handleChunkMouseUp = (e: React.MouseEvent) => {
     const container = e.currentTarget as HTMLElement;
     const sel = readTokenSelection(container);
-    if (!sel) { setSelMove(null); return; }
+    if (!sel) return;
     const text = window.getSelection()?.toString() ?? '';
-    setSelMove({
-      startSylId: sel.startSylId, endSylId: sel.endSylId,
+    setArmedMove({
+      srcStart: sel.startSylId, srcEnd: sel.endSylId,
+      bookletOnly: false,
       label: text.slice(0, 24) + (text.length > 24 ? '…' : ''),
-      x: sel.rect.left + sel.rect.width / 2, y: sel.rect.bottom,
     });
+    window.getSelection()?.removeAllRanges();
   };
 
   /** Hairline caret while a move is armed: snaps before/after the hovered syllable
@@ -349,51 +420,63 @@ export const TranslateView: React.FC = () => {
     });
   };
 
+  /** Clicking the hairline INTEGRATES the fragment inside the hovered chunk, at the caret:
+   *  the anchor is the hovered syllable itself plus the side, so "the very end of this chunk"
+   *  is stored as *after its last syllable* — never as "before the next chunk's first", which
+   *  is what the bar between chunks means. */
   const handlePlacementClick = () => {
     if (!armedMove || !hairline) return;
-    let anchor: string | null = hairline.sylId;
-    if (hairline.side === 'after') {
-      const at = streamIds.indexOf(hairline.sylId);
-      anchor = at >= 0 && at + 1 < streamIds.length ? streamIds[at + 1] : null;
-    }
     const m = armedMove;
     setArmedMove(null);
     setHairline(null);
     void addMove({
       textId: m.bookletOnly ? currentText!.id : null,
-      srcStart: m.srcStart, srcEnd: m.srcEnd, anchor,
+      srcStart: m.srcStart, srcEnd: m.srcEnd,
+      anchor: hairline.sylId, mode: 'inline', anchorAfter: hairline.side === 'after',
     }).catch((e: any) => setSaveError(e.message || 'Move failed'));
   };
 
   const tibetanTokens = (u: DerivedChunk, interactive = true) => {
     const lines = tibetanLines(u.tokens);
     let ti = -1; // running token index across lines, preserved for move selection
-    const move = interactive && movable(u);
+    const pick = interactive && movable(u);
+    const drop = interactive && droppable(u);
     return (
       <div
         className={`tibetan-text ${u.tagType === 'mantra' ? 'opacity-40' : ''} ${
-          armedMove && move ? 'cursor-crosshair' : ''}`}
-        onMouseUp={!armedMove && move ? handleChunkMouseUp : undefined}
-        onMouseMove={armedMove && move ? handlePlacementMove : undefined}
-        onClick={armedMove && move ? handlePlacementClick : undefined}
+          armedMove && drop ? 'cursor-crosshair' : ''}`}
+        onMouseUp={!armedMove && pick ? handleChunkMouseUp : undefined}
+        onMouseMove={armedMove && drop ? handlePlacementMove : undefined}
+        onClick={armedMove && drop ? handlePlacementClick : undefined}
       >
         {lines.map((line, li) => (
           <div key={`${u.key}-l${li}`} className="tibetan-line">
             <span className="tibetan-line-no" contentEditable={false}>{li + 1}</span>
             <span className="tibetan-line-text">
-              {line.map((t) => {
+              {line.map((t, k) => {
+                const keyBase = `${u.key}-${li}-${k}`;
+                // A READ-ONLY copy injected at a move destination: no data-syl-id (its real
+                // id lives at the origin), excluded from selection, shown integrated.
+                if (t.movedIn != null) {
+                  return (
+                    <span key={keyBase} className="moved-in-syl"
+                          title="Moved here from elsewhere for translation">
+                      {t.render.replace(/\n/g, '')}
+                    </span>
+                  );
+                }
                 ti += 1;
-                const mv = movedBy.get(t.id);
+                const away = t.movedAway != null;
                 return (
                   <span
-                    key={`${u.key}-${ti}`}
+                    key={keyBase}
                     data-syl-id={t.id}
                     data-ro={ti}
                     data-reo={ti + 1}
-                    className={[mv != null ? 'moved-syl' : '',
+                    className={[away ? 'moved-away-syl' : '',
                                 t.small ? (u.tagType === 'mantra' ? 'tib-small implicit-mantra' : 'tib-small') : '']
                                 .filter(Boolean).join(' ') || undefined}
-                    title={mv != null ? 'Moved here for translation flow — its original place is elsewhere in the Tibetan'
+                    title={away ? 'Picked up — its translation is integrated at its new place'
                       : t.small && u.tagType === 'mantra' ? 'Small connector between mantras — implicit mantras to fill in' : undefined}
                   >
                     {/* Break is structural now (line div), so drop the render's trailing newline. */}
@@ -424,7 +507,9 @@ export const TranslateView: React.FC = () => {
     );
   };
 
-  /** Thin placement bar shown while a move is armed; also carries "+ title". */
+  /** Thin placement bar shown while a move is armed; also carries "+ title". Clicking it
+   *  RELOCATES the fragment: it stands as its own segment here, with its own translation
+   *  (the hairline, by contrast, integrates it into a chunk's text). */
   const placeBar = (anchor: string | null, key: string) => (
     <div key={key} className="flex items-center gap-2 -my-1.5 h-4 group">
       {armedMove ? (
@@ -433,13 +518,14 @@ export const TranslateView: React.FC = () => {
           onClick={() => {
             const m = armedMove;
             setArmedMove(null);
+            setHairline(null);
             void addMove({
               textId: m.bookletOnly ? currentText.id : null,
-              srcStart: m.srcStart, srcEnd: m.srcEnd, anchor,
+              srcStart: m.srcStart, srcEnd: m.srcEnd, anchor, mode: 'segment',
             }).catch((e: any) => setSaveError(e.message || 'Move failed'));
           }}
           className="flex-1 h-2 rounded-full bg-lapis/30 hover:bg-lapis transition-colors"
-          title="Place the instruction here"
+          title="Relocate the instruction here as its own segment"
         />
       ) : (
         <button
@@ -567,7 +653,7 @@ export const TranslateView: React.FC = () => {
           style={{ borderBottom: '1px solid var(--cline)' }}
         >
           <MoveRight size={12} className="text-lapis" />
-          <span>Placing <span className="tibetan-text-sm">{armedMove.label}</span> — click a position between chunks.</span>
+          <span>Placing <span className="tibetan-text-sm">{armedMove.label}</span> — click INSIDE a chunk to integrate it there (hairline), or a bar between chunks to relocate it as its own segment (Esc to cancel).</span>
           <label className="flex items-center gap-1 cursor-pointer">
             <input
               type="checkbox"
@@ -619,6 +705,14 @@ export const TranslateView: React.FC = () => {
                   el.classList.add('link-pulse');
                   setTimeout(() => el.classList.remove('link-pulse'), 1300);
                 };
+                // Only the FIRST row of a passage sequence carries the TOC-node link (the
+                // link lives on the group starter, `p`). A free tree node (unlinked to a
+                // segment or another passage) can be attached; attaching sets node.passage_id.
+                const isFirstRow = firstPassageRow.get(p.id) === i;
+                const linkedNode = treeNodes.find(n => n.passage_id === p.id);
+                const linkCandidates = treeNodes
+                  .filter(n => !n.inherited && n.segment_start == null && n.passage_id == null)
+                  .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
                 const header = (
                   <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft">
                     <span className="px-1.5 rounded-full font-medium bg-cream">passage · repeated</span>
@@ -628,13 +722,47 @@ export const TranslateView: React.FC = () => {
                         <MoveRight size={10} /> go to original
                       </button>
                     )}
+                    {isFirstRow && (linkedNode ? (
+                      <button type="button"
+                        onClick={() => void updateNode(linkedNode.id, { passage_id: null })
+                          .catch((e: any) => setSaveError(e.message || 'Unlink failed'))}
+                        className={`${miniBtn} text-lapis`} style={miniStyle}
+                        title={`Unlink this passage from TOC node “${linkedNode.title || `#${linkedNode.id}`}”`}>
+                        <Link size={10} /> TOC: {linkedNode.title || `#${linkedNode.id}`}
+                      </button>
+                    ) : (
+                      <span className="relative">
+                        <button type="button"
+                          onClick={() => setLinkPickerFor(linkPickerFor === p.id ? null : p.id)}
+                          className={`${miniBtn} hover:text-lapis`} style={miniStyle}
+                          title="Link this passage to a node in the table of contents (sapche outline)">
+                          <Link size={10} /> link to TOC…
+                        </button>
+                        {linkPickerFor === p.id && (
+                          <div className="absolute z-30 mt-1 left-0 min-w-[10rem] max-h-56 overflow-auto rounded-md bg-white shadow-lg py-1"
+                               style={miniStyle}>
+                            {linkCandidates.length === 0 ? (
+                              <div className="px-2 py-1 italic text-ink-soft">No free TOC nodes</div>
+                            ) : linkCandidates.map(n => (
+                              <button key={n.id} type="button"
+                                onClick={() => { void updateNode(n.id, { passage_id: p.id })
+                                  .then(() => setLinkPickerFor(null))
+                                  .catch((e: any) => setSaveError(e.message || 'Link failed')); }}
+                                className="block w-full text-left px-2 py-1 hover:bg-cream truncate">
+                                {n.title || `#${n.id}`}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </span>
+                    ))}
                   </div>
                 );
                 // Mantra run: kept as is (Sanskrit), no translation.
                 if (u.tagType === 'mantra') {
                   return (
                     <div key={u.key} className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/50 p-4"
-                         style={{ border: '1px dashed var(--cline)' }}>
+                         style={{ border: '2px dashed var(--cline)' }}>
                       <div className="min-w-0 opacity-60">{header}{tibetanTokens(u, false)}</div>
                       <div className="min-w-0 flex items-center text-xs text-ink-soft italic">
                         Sanskrit — kept as is (phonetics handled in the phonetics bench).
@@ -648,7 +776,7 @@ export const TranslateView: React.FC = () => {
                 const editable = !p.inherited;
                 return (
                   <div key={u.key} className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/50 p-4"
-                       style={{ border: '1px dashed var(--cline)' }}>
+                       style={{ border: `2px dashed ${u.tagColor ?? 'var(--cline)'}` }}>
                     <div className="min-w-0 opacity-60">{header}{tibetanTokens(u, false)}</div>
                     <div className="min-w-0 flex flex-col gap-1.5">
                       {editable ? (
@@ -705,22 +833,13 @@ export const TranslateView: React.FC = () => {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft">
                           <span className="px-1.5 rounded-full font-medium bg-cream">title · translation-only</span>
-                          <span className="flex items-center gap-0.5" title="Heading level">
-                            {[1, 2, 3, 4].map(lv => (
-                              <button
-                                key={lv}
-                                type="button"
-                                onClick={() => void setTitleLevel(l.id, lv)
-                                  .catch((e: any) => setSaveError(e.message))}
-                                className={`px-1 rounded font-mono ${
-                                  l.level === lv ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'
-                                }`}
-                                style={miniStyle}
-                              >
-                                H{lv}
-                              </button>
-                            ))}
-                          </span>
+                          <LevelStepper
+                            level={l.level}
+                            onSet={(lv) => void setTitleLevel(l.id, lv ?? 1)
+                              .catch((e: any) => setSaveError(e.message))}
+                            miniStyle={miniStyle}
+                            title="Heading level"
+                          />
                           {l.text_id != null && <span className="px-1.5 rounded-full bg-cream">this booklet only</span>}
                           <button
                             type="button"
@@ -752,6 +871,36 @@ export const TranslateView: React.FC = () => {
                 );
               }
 
+              // ── ORIGIN emptied by a move: every syllable was picked up, so there is
+              //    nothing left to translate here — a grayed read-only placeholder. The
+              //    translation is done at the destination (undo lives on ITS badge).
+              if (u.movedOutAll != null) {
+                return (
+                  <React.Fragment key={u.key}>
+                    {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`)}
+                    <div
+                      data-link-key={u.startOffset}
+                      className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/60 p-4"
+                      style={{ border: '1px dashed var(--cline)' }}
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft">
+                          <span className="font-mono">#{i + 1}</span>
+                          <span className="px-1.5 rounded-full bg-gold/20 text-amber-robe"
+                                title="This segment was picked up in full — it is translated at its new place">
+                            moved from here
+                          </span>
+                        </div>
+                        {tibetanTokens(u, false)}
+                      </div>
+                      <div className="min-w-0 self-center text-xs italic text-ink-soft">
+                        Translated at its new place.
+                      </div>
+                    </div>
+                  </React.Fragment>
+                );
+              }
+
               // ── Regular chunk row ──
               const match = row.match;
               const existing = translationOf(match, targetLang);
@@ -773,13 +922,18 @@ export const TranslateView: React.FC = () => {
               const trLines = splitParagraphs(effectiveBody).length;
               const showParity = u.tagType !== 'mantra';
               const parityOk = boLines === trLines;
+              // A relocated row sits where its layout row says, not where its syllables live,
+              // so the bar above it must reuse that anchor.
+              const barAnchor = u.movedLayoutId != null
+                ? u.movedAnchorId ?? null
+                : u.sylIds[0] ?? null;
               return (
                 <React.Fragment key={u.key}>
-                  {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`)}
+                  {placeBar(barAnchor, `bar-${u.key}`)}
                   <div
                     data-link-key={u.startOffset}
                     className="grid grid-cols-2 gap-4 rounded-xl bg-white p-4"
-                    style={{ border: '1px solid var(--cline)' }}
+                    style={{ border: `2px solid ${u.tagType === 'mantra' ? 'var(--cline)' : (u.tagColor ?? 'var(--cline)')}` }}
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft flex-wrap">
@@ -803,67 +957,69 @@ export const TranslateView: React.FC = () => {
                         >
                           {u.tagType}
                         </span>
-                        {(u.tagType === 'sapche' || u.tagType === 'title') && (
-                          <span className="flex items-center gap-0.5" title="Title level (whole chunk)">
-                            {[1, 2, 3, 4].map(lv => {
-                              const active = match?.level === lv;
-                              return (
-                                <button
-                                  key={lv}
-                                  type="button"
-                                  onClick={() => void setLevel({
-                                    contextTextId: currentText.id,
-                                    startSylId: canonSyl.start,
-                                    endSylId: canonSyl.end,
-                                    level: active ? null : lv,
-                                  }).catch((e: any) => setSaveError(e.message || 'Level save failed'))}
-                                  className={`px-1 rounded font-mono ${
-                                    active ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'
-                                  }`}
-                                  style={miniStyle}
-                                >
-                                  H{lv}
-                                </button>
-                              );
-                            })}
+                        {(u.tagType === 'sapche' || u.tagType === 'title') && (() => {
+                          // Anchored in the Tibetan sapche outline → level is inherited
+                          // (read-only). Otherwise it stays manually definable.
+                          const inherited = sapcheDepthBySyl.get(u.startSylId);
+                          if (inherited != null) return (
+                            <span
+                              className="px-1 rounded font-mono bg-cream text-ink-soft"
+                              style={miniStyle}
+                              title="Level inherited from the Tibetan sapche outline"
+                            >
+                              H{inherited + 1} · sapche
+                            </span>
+                          );
+                          return (
+                            <LevelStepper
+                              level={match?.level ?? null}
+                              onSet={(lv) => void setLevel({
+                                contextTextId: currentText.id,
+                                startSylId: canonSyl.start,
+                                endSylId: canonSyl.end,
+                                level: lv,
+                              }).catch((e: any) => setSaveError(e.message || 'Level save failed'))}
+                              miniStyle={miniStyle}
+                              allowClear
+                              title="Title level (whole chunk)"
+                            />
+                          );
+                        })()}
+                        {u.movedLayoutId != null && (
+                          <span
+                            className="px-1.5 rounded-full bg-lapis/15 text-lapis flex items-center gap-1"
+                            title="This segment was relocated here for the translation flow (display only — the Tibetan is untouched)"
+                          >
+                            moved here
+                            <button type="button" onClick={() => void removeLayout(u.movedLayoutId!)
+                              .catch((e: any) => setSaveError(e.message))}
+                              className="underline underline-offset-2" title="Undo the move">undo</button>
                           </span>
                         )}
-                        {[...new Set(u.tokens.map(t => movedBy.get(t.id)).filter((x): x is number => x != null))]
+                        {[...new Set(u.tokens.filter(t => t.movedIn != null).map(t => t.movedIn!))]
                           .map(layoutId => (
                             <span
-                              key={`mv-${layoutId}`}
+                              key={`mvin-${layoutId}`}
                               className="px-1.5 rounded-full bg-lapis/15 text-lapis flex items-center gap-1"
-                              title="Syllables moved here for translation flow — their original place is elsewhere in the Tibetan"
+                              title="Text moved here from elsewhere for translation flow (display only — the Tibetan is untouched)"
                             >
-                              {layoutId === u.movedLayoutId ? 'moved here' : 'moved in'}
-                              <button
-                                type="button"
-                                onClick={() => void removeLayout(layoutId)
-                                  .catch((e: any) => setSaveError(e.message))}
-                                className="underline underline-offset-2"
-                                title="Undo the move"
-                              >
-                                undo
-                              </button>
+                              moved in
+                              <button type="button" onClick={() => void removeLayout(layoutId)
+                                .catch((e: any) => setSaveError(e.message))}
+                                className="underline underline-offset-2" title="Undo the move">undo</button>
                             </span>
                           ))}
-                        {[...new Set(u.tokens.map(t => movedFromBy.get(t.id)).filter((x): x is number => x != null))]
+                        {[...new Set(u.tokens.filter(t => t.movedAway != null).map(t => t.movedAway!))]
                           .map(layoutId => (
                             <span
-                              key={`mvf-${layoutId}`}
+                              key={`mvaway-${layoutId}`}
                               className="px-1.5 rounded-full bg-gold/20 text-amber-robe flex items-center gap-1"
-                              title="Part of this segment was moved elsewhere for translation flow"
+                              title="Part of this segment was picked up and integrated elsewhere for translation"
                             >
-                              moved from here
-                              <button
-                                type="button"
-                                onClick={() => void removeLayout(layoutId)
-                                  .catch((e: any) => setSaveError(e.message))}
-                                className="underline underline-offset-2"
-                                title="Undo the move"
-                              >
-                                undo
-                              </button>
+                              moved out
+                              <button type="button" onClick={() => void removeLayout(layoutId)
+                                .catch((e: any) => setSaveError(e.message))}
+                                className="underline underline-offset-2" title="Undo the move">undo</button>
                             </span>
                           ))}
                         {(u.tagType === 'small' || u.tagType === 'sapche') && !u.movedLayoutId && !armedMove && (
@@ -1079,25 +1235,6 @@ export const TranslateView: React.FC = () => {
         </div>
       </div>
 
-      {/* Floating "move selection" button over a syllable-snapped selection. */}
-      {selMove && !armedMove && (
-        <button
-          type="button"
-          className="fixed z-50 px-2 py-1 rounded-md text-xs bg-lapis text-cream-hi shadow-lg flex items-center gap-1"
-          style={{ left: selMove.x, top: selMove.y + 6, transform: 'translateX(-50%)' }}
-          onClick={() => {
-            setArmedMove({
-              srcStart: selMove.startSylId, srcEnd: selMove.endSylId,
-              bookletOnly: false, label: selMove.label,
-            });
-            setSelMove(null);
-            window.getSelection()?.removeAllRanges();
-          }}
-          title="Move the selected syllables — place them anywhere in another small/sapche chunk (display only; translated once at their new place)"
-        >
-          <MoveRight size={11} /> move selection
-        </button>
-      )}
     </div>
   );
 };

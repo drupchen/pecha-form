@@ -300,8 +300,8 @@ class ChunkLevelIn(BaseModel):
 def set_chunk_level(payload: ChunkLevelIn):
     """Set/clear a chunk's title level (language-independent; whole chunk). The
     chunk is created if it does not exist yet — a level can precede any translation."""
-    if payload.level is not None and not (1 <= payload.level <= 9):
-        raise HTTPException(400, "level must be 1..9 or null")
+    if payload.level is not None and not (1 <= payload.level <= 99):
+        raise HTTPException(400, "level must be 1..99 or null")
     conn = get_db()
     try:
         chunk_id = _find_or_create_chunk(
@@ -578,7 +578,11 @@ class LayoutIn(BaseModel):
     kind: str                       # 'move' | 'title'
     src_start_syl_id: Optional[str] = None
     src_end_syl_id: Optional[str] = None
-    anchor_syl_id: Optional[str] = None   # lands BEFORE the chunk starting here; NULL = end
+    # 'segment'/'title': lands BEFORE the chunk starting here. 'inline': lands beside this
+    # very syllable, inside its chunk (after it when anchor_after). NULL = end of stream.
+    anchor_syl_id: Optional[str] = None
+    move_mode: str = "inline"       # 'inline' (hairline) | 'segment' (bar between chunks)
+    anchor_after: bool = False      # 'inline' only: place after the anchor syllable
     level: Optional[int] = None
 
 class LayoutOut(BaseModel):
@@ -588,6 +592,8 @@ class LayoutOut(BaseModel):
     src_start_syl_id: Optional[str] = None
     src_end_syl_id: Optional[str] = None
     anchor_syl_id: Optional[str] = None
+    move_mode: str = "inline"
+    anchor_after: bool = False
     level: Optional[int] = None
     disabled: bool = False
     position: int = 0
@@ -599,7 +605,11 @@ def _layout_out(conn, r) -> LayoutOut:
         "SELECT lang, body FROM layout_titles WHERE layout_id = ?", (r["id"],)).fetchall()}
     return LayoutOut(id=r["id"], text_id=r["text_id"], kind=r["kind"],
                      src_start_syl_id=r["src_start_syl_id"], src_end_syl_id=r["src_end_syl_id"],
-                     anchor_syl_id=r["anchor_syl_id"], level=r["level"],
+                     anchor_syl_id=r["anchor_syl_id"],
+                     # Legacy rows predate the gesture split; their anchor already meant
+                     # "before the chunk starting here", which is what 'segment' means.
+                     move_mode=r["move_mode"] or "segment",
+                     anchor_after=bool(r["anchor_after"]), level=r["level"],
                      disabled=bool(r["disabled"]), position=r["position"], titles=titles)
 
 
@@ -637,15 +647,19 @@ def create_layout(payload: LayoutIn):
         raise HTTPException(400, "kind must be 'move' or 'title'")
     if payload.kind == "move" and not (payload.src_start_syl_id and payload.src_end_syl_id):
         raise HTTPException(400, "move requires a source range")
+    if payload.move_mode not in ("inline", "segment"):
+        raise HTTPException(400, "move_mode must be 'inline' or 'segment'")
     conn = get_db()
     try:
         pos = conn.execute("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM chunk_layouts"
                            ).fetchone()["p"]
         cur = conn.execute(
             "INSERT INTO chunk_layouts (text_id, kind, src_start_syl_id, src_end_syl_id, "
-            "anchor_syl_id, level, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "anchor_syl_id, move_mode, anchor_after, level, position) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (payload.text_id, payload.kind, payload.src_start_syl_id, payload.src_end_syl_id,
-             payload.anchor_syl_id, payload.level, pos))
+             payload.anchor_syl_id, payload.move_mode, int(payload.anchor_after),
+             payload.level, pos))
         conn.commit()
         r = conn.execute("SELECT * FROM chunk_layouts WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _layout_out(conn, r)
