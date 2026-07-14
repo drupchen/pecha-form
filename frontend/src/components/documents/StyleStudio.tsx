@@ -86,13 +86,57 @@ const DEFAULT_BLOCKS: Block[] = [
   { id: uid(), kind: "integrated", parts: ["མི་ཕྱེད་དད་པས་སྐྱབས་སུ་མཆི༔", "miché dépé kyab sou chi", "Avec une foi inébranlable, je prends refuge.   X3"] },
 ];
 
+/** The specimen carries CONTENT, never typography: the roles own font/size/weight, so the
+ *  specimen previews them faithfully. contentEditable, left alone, disagrees — it freezes the
+ *  computed font into an inline `<span style="font-size: …">` when a block is edited, and an
+ *  inline style beats every role rule, so that line stops responding to its style forever.
+ *  Keep the marks the studio's own B/I buttons produce (and line breaks), drop everything else
+ *  — every attribute included. */
+const KEEP: Record<string, string> = { STRONG: 'strong', B: 'strong', EM: 'em', I: 'em' };
+
+export function cleanSpecimenHtml(html: string): string {
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+  const walk = (node: Node): Node[] => {
+    const out: Node[] = [];
+    node.childNodes.forEach(child => {
+      if (child.nodeType === Node.TEXT_NODE) { out.push(doc.importNode(child, false)); return; }
+      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      const el = child as HTMLElement;
+      if (el.tagName === 'BR') { out.push(doc.createElement('br')); return; }
+      const inner = walk(el);
+      const keep = KEEP[el.tagName];
+      if (keep) {
+        const wrap = doc.createElement(keep);          // re-created: no attributes survive
+        inner.forEach(n => wrap.appendChild(n));
+        out.push(wrap);
+      } else {
+        out.push(...inner);                            // unwrap (div/span/font/…)
+      }
+    });
+    return out;
+  };
+  const host = doc.createElement('div');
+  walk(doc.body).forEach(n => host.appendChild(n));
+  return host.innerHTML;
+}
+
+/** Strip the attributes contentEditable just added, IN PLACE — removing an attribute leaves the
+ *  nodes (and so the caret) alone, whereas re-writing innerHTML would jump it. The stored copy is
+ *  sanitized properly (spans unwrapped) by `cleanSpecimenHtml`; this only stops the freeze from
+ *  showing in the live specimen. */
+function stripAttrs(root: HTMLElement): void {
+  root.querySelectorAll('*').forEach(el => {
+    for (const a of [...el.attributes]) el.removeAttribute(a.name);
+  });
+}
+
 /** An uncontrolled editable region — innerHTML is set once so the caret never jumps. */
 const Editable: React.FC<{ className: string; html: string; onChange: (h: string) => void }> =
   ({ className, html, onChange }) => {
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => { if (ref.current) ref.current.innerHTML = html; /* once */ }, []); // eslint-disable-line
     return <div ref={ref} className={`${className} bk-editable`} contentEditable suppressContentEditableWarning
-                onInput={() => onChange(ref.current!.innerHTML)} />;
+                onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
   };
 
 export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
@@ -114,7 +158,15 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
         setOrg(o as StyleMap); setDoc(d as StyleMap); setFonts(f);
         try {
           const parsed = JSON.parse(s.content || '[]');
-          if (Array.isArray(parsed) && parsed.length) setBlocks(parsed);
+          if (!Array.isArray(parsed) || !parsed.length) return;
+          // Sanitize what an earlier session stored: any inline typography frozen in by
+          // contentEditable would outrank the roles the specimen exists to preview. Rewrite
+          // the sample once so it stays clean.
+          const clean: Block[] = parsed.map((b: Block) => ({ ...b, parts: b.parts.map(cleanSpecimenHtml) }));
+          setBlocks(clean);
+          if (JSON.stringify(clean) !== JSON.stringify(parsed)) {
+            void putStyleSample(JSON.stringify(clean)).catch(() => {});
+          }
         } catch { /* keep default */ }
       }).catch(() => {});
   }, [documentId]);
@@ -203,7 +255,9 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       case 'tibetan_title': return <div className="bk-line bk-role-title">{E(0, 'bk-tibetan')}</div>;
       case 'tibetan_body': return <div className="bk-line">{E(0, 'bk-tibetan')}</div>;
       case 'tibetan_inline': return <div className="bk-line">{E(0, 'bk-tibetan-inline')}</div>;
-      case 'tibetan_small': return <div className="bk-line">{E(0, 'bk-tibetan-small')}</div>;
+      // The booklet's own markup for a small-letters Tibetan line (bookletRender emits
+      // `.bk-tibetan` under `.bk-role-small`), so the specimen previews what prints.
+      case 'tibetan_small': return <div className="bk-line bk-role-small">{E(0, 'bk-tibetan')}</div>;
       case 'pair': return <div className="bk-line bk-pair">{E(0, 'bk-phonetics')}{E(1, 'bk-translation')}</div>;
       case 'integrated': return <div className="bk-line bk-integrated">{E(0, 'bk-tibetan-inline')}{E(1, 'bk-phonetics')}{E(2, 'bk-translation')}</div>;
       case 'mantra': return <div className="bk-line bk-role-mantra">{E(0, 'bk-phonetics')}</div>;

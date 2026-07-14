@@ -49,8 +49,14 @@ export const ROLE_DEFS: RoleDef[] = [
   // ── Tibetan page (two-page) ──
   { role: 'tibetan_title', label: 'Tibetan (section heading)', selector: '.bk-role-title .bk-tibetan, .booklet-root .bk-role-sapche .bk-tibetan',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '11pt', align: 'left', indent: '4mm' }, place: { twopage: G_TIB } },  // ས་བཅད 11, left, indent (NOT enlarged/centred)
-  { role: 'tibetan_small', label: 'Tibetan (small letters)', selector: '.bk-tibetan-small',
-    def: { fontFamily: 'var(--font-tibetan)', fontSize: '12pt', lineHeight: 'var(--leading)' }, place: { twopage: G_TIB } },  // ཡིག་ཆུང — small inline Tibetan
+  // ཡིག་ཆུང — the Tibetan of a small-letters run. The booklet renders it like every other Tibetan
+  // line (`.bk-tibetan` under `.bk-role-small`), so THAT is what the role must target; the legacy
+  // `.bk-tibetan-small` stays a second alternative (it carries its own `.booklet-root` because
+  // `ruleFor` only prefixes the first selector). Being one class deeper than the body rule
+  // (`.booklet-root .bk-tibetan`), it wins for small runs and leaves the other lines alone.
+  { role: 'tibetan_small', label: 'Tibetan (small letters)',
+    selector: '.bk-role-small .bk-tibetan, .booklet-root .bk-tibetan-small',
+    def: { fontFamily: 'var(--font-tibetan)', fontSize: '12pt', lineHeight: 'var(--leading)' }, place: { twopage: G_TIB } },
   { role: 'tibetan_body', label: 'Tibetan (body)', selector: '.bk-tibetan',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: 'var(--tibetan-pt)', lineHeight: 'var(--leading)' }, place: { twopage: G_TIB } },  // བོད་ཡིག 16, left
   // ── Section titles (shared, three level-based tiers) ──
