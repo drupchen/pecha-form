@@ -21,12 +21,20 @@ DEFAULT_ORG = 1
 # export and the import so a template round-trips transparently.
 ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "tibetan_body":  ("Tibetan Body", ["བོད་ཡིག", "Tibetan"]),
+    # Tibetan integrated on the recto (above the phonetics), not left on the verso.
+    "tibetan_inline": ("Tibetan In Translation",
+                       ["བོད་ཡིག in Translation", "ཡིག་ཆེན།", "ཡིག་ཆེན། in Translation"]),
     "tibetan_title": ("Tibetan Section Title", ["ས་བཅད།", "Tibetan Section"]),
-    "phonetics":     ("Phonetics", ["Phonetics Words"]),
+    "tibetan_small": ("Tibetan Small Letters", ["ཡིག་ཆུང་།", "ཡིག་ཆུང"]),
+    "phonetics":     ("Phonetics", ["Phonetics Words", "Phonetics With-Tib"]),
     "translation":   ("Translation", ["Translation Words", "Translation With-Tib"]),
     "mantra":        ("Mantras", ["Mantra", "Mantras Words"]),
     "small":         ("Small Letters", ["Small Words", "Small"]),
-    "section":       ("Sections", ["Section"]),
+    # Section titles by outline level (three tiers). Legacy single "Sections"/"Section"
+    # imports onto level 1.
+    "section_1":     ("Section Title 1", ["Sections", "Section", "Section Title"]),
+    "section_2":     ("Section Title 2", []),
+    "section_3":     ("Section Title 3", []),
     "title_tib":     ("Title Tibetan", ["ཁ་བྱང་།", "ཁ་བྱང"]),
     "title_main":    ("Title", ["Text Title", "Book Title", "Main Title"]),
     "title_sub":     ("Subtitle", ["Sub Title"]),
@@ -40,12 +48,16 @@ ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
 # styles (font/size/bold/italic/indent pt), used when neither org nor document has a value.
 _TEMPLATE_DEFAULTS: dict[str, dict] = {
     "tibetan_body":  {"font": "Chogyal", "size": 16},
+    "tibetan_inline": {"font": "Chogyal", "size": 16},                          # བོད་ཡིག in Translation
     "tibetan_title": {"font": "Chogyal", "size": 11, "indent": 11.3},           # ས་བཅད
+    "tibetan_small": {"font": "Chogyal", "size": 12},                            # ཡིག་ཆུང
     "phonetics":     {"font": "Raleway SemiBold", "size": 10, "indent": 28.4},   # Phonetics
     "translation":   {"font": "Gentium Basic", "size": 11, "indent": 42.5},      # Translation
     "mantra":        {"font": "Gentium Basic", "size": 12, "bold": True, "indent": 28.4},  # Mantras (Words)
     "small":         {"font": "Libertinus Serif Display", "size": 9},            # Small Letters
-    "section":       {"font": "Libertinus Serif Display", "size": 15},           # Sections (upright)
+    "section_1":     {"font": "Libertinus Serif Display", "size": 15},           # Sections L1 (upright)
+    "section_2":     {"font": "Libertinus Serif Display", "size": 13.5},         # Sections L2
+    "section_3":     {"font": "Libertinus Serif Display", "size": 12},           # Sections L3
     "title_tib":     {"font": "Chogyal", "size": 24},                            # ཁ་བྱང
     "title_main":    {"font": "Libertinus Serif Semibold", "size": 18},          # Title
     "title_sub":     {"font": "Calibri", "size": 12, "italic": True},            # Subtitle

@@ -274,7 +274,7 @@ export const PhoneticsView: React.FC = () => {
           </div>
         ) : (
           <div className="flex flex-col divide-y" style={{ borderColor: 'var(--cline)' }}>
-            {shown.map(l => {
+            {shown.map((l, i) => {
               const m = matchFor(l);
               const body = bodyOf(l, m);
               const status = m?.status ?? 'auto';
@@ -291,8 +291,12 @@ export const PhoneticsView: React.FC = () => {
                       </span>
                     ))}
                   </div>
-                  {/* Phonetics field */}
+                  {/* Phonetics field — with a per-line number like the translation input */}
                   <div className="flex-1 flex items-start gap-2">
+                    <span className="shrink-0 pt-1.5 text-right tabular-nums select-none"
+                          style={{ width: '1.6em', color: '#A28348', opacity: 0.5, fontSize: '0.7rem' }}>
+                      {i + 1}
+                    </span>
                     <textarea
                       value={body}
                       onChange={e => setDraft(l.key, e.target.value)}

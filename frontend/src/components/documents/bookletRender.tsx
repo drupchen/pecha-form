@@ -16,6 +16,12 @@ import { sanitizeTranslationHtml } from '../translate/sanitize';
 
 export const MM_PX = 96 / 25.4;
 
+/** Map a section heading's outline depth (`DocLine.level`, 0-based from the sapche tree;
+ *  null → top) to one of the three section-title style tiers (`.bk-section-l1/-l2/-l3`).
+ *  Depth 0 → tier 1, depth 1 → tier 2, depth ≥2 → tier 3. Bump the `3` to add more tiers. */
+export const LEVEL_SECTION_STYLE = (level: number | null): number =>
+  Math.min(3, Math.max(1, (level ?? 0) + 1));
+
 export function rootVars(c: LayoutConfig): React.CSSProperties {
   return {
     ['--page-w' as any]: `${c.page_width_mm}mm`,
@@ -107,7 +113,9 @@ export const Recto: React.FC<{
     const isTrans = l.translation != null;
     const text = isTrans ? plainTextOf(l.translation!) : l.phonetics;
     const words = text.split(/\s+/).filter(Boolean);
-    const cls = isTrans ? (isSection ? 'bk-section' : 'bk-translation') : 'bk-phonetics';
+    const cls = isTrans
+      ? (isSection ? `bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}` : 'bk-translation')
+      : 'bk-phonetics';
     return (
       <div className={`bk-line bk-pair bk-role-${l.role}`}>
         <div className={`${cls} bk-wordsplit`}>
@@ -123,9 +131,7 @@ export const Recto: React.FC<{
     <div className={`bk-line bk-pair bk-role-${l.role}`}>
       {isSection ? (
         l.translation != null && (
-          <div className="bk-section"
-               // Step the heading size down by outline depth (top = 15pt, floor 10.5pt).
-               style={l.level != null ? { fontSize: `${Math.max(10.5, 15 - l.level * 1.5)}pt` } : undefined}
+          <div className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
                dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
         )
       ) : (

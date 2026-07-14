@@ -8,7 +8,8 @@ import {
   getStyleSample, putStyleSample, type OrgFont,
 } from '../../api/client';
 import {
-  ROLE_DEFS, BUNDLED_FONTS, resolveStyles, compileStyleCss, type StyleProps,
+  ROLE_DEFS, BUNDLED_FONTS, resolveStyles, compileStyleCss,
+  type StyleProps, type RoleDef, type StudioFormat,
 } from './bookletStyles';
 import '../../styles/booklet.css';
 
@@ -26,10 +27,15 @@ interface Block { id: string; kind: string; parts: string[] }
 /** Specimen block kinds — each mirrors a role's real booklet DOM so the styles apply. */
 const KINDS: { kind: string; label: string; roles: string[]; parts: number }[] = [
   { kind: 'title', label: 'Title page', roles: ['title_tib', 'title_main', 'title_sub'], parts: 3 },
-  { kind: 'section', label: 'Section heading', roles: ['section'], parts: 1 },
+  { kind: 'section_1', label: 'Section title 1', roles: ['section_1'], parts: 1 },
+  { kind: 'section_2', label: 'Section title 2', roles: ['section_2'], parts: 1 },
+  { kind: 'section_3', label: 'Section title 3', roles: ['section_3'], parts: 1 },
   { kind: 'tibetan_title', label: 'Tibetan section title', roles: ['tibetan_title'], parts: 1 },
-  { kind: 'tibetan_body', label: 'Tibetan body', roles: ['tibetan_body'], parts: 1 },
+  { kind: 'tibetan_body', label: 'Tibetan body (verso)', roles: ['tibetan_body'], parts: 1 },
+  { kind: 'tibetan_inline', label: 'Tibetan (above phonetics)', roles: ['tibetan_inline'], parts: 1 },
+  { kind: 'tibetan_small', label: 'Tibetan small letters', roles: ['tibetan_small'], parts: 1 },
   { kind: 'pair', label: 'Phonetics + translation', roles: ['phonetics', 'translation'], parts: 2 },
+  { kind: 'integrated', label: 'Tibetan + phonetics + translation', roles: ['tibetan_inline', 'phonetics', 'translation'], parts: 3 },
   { kind: 'mantra', label: 'Mantra', roles: ['mantra'], parts: 1 },
   { kind: 'small', label: 'Small letters / homage', roles: ['small'], parts: 1 },
   { kind: 'copyright', label: 'Copyright', roles: ['copyright'], parts: 1 },
@@ -41,18 +47,43 @@ const KIND = Object.fromEntries(KINDS.map(k => [k.kind, k]));
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()));
 
+/** Selectable point sizes for the role size dropdown (an existing off-list value is
+ *  preserved as its own option so imported/legacy sizes are never silently dropped). */
+const SIZES = ['8pt', '9pt', '10pt', '11pt', '12pt', '13pt', '14pt', '16pt', '18pt',
+  '20pt', '24pt', '28pt', '32pt', '36pt', '48pt'];
+
+/** Selectable left-indents for the role indent dropdown (an off-list value is likewise
+ *  preserved as its own option). */
+const INDENTS = ['0', '2mm', '4mm', '6mm', '8mm', '10mm', '12mm', '15mm', '20mm', '25mm', '30mm'];
+
+// The FULL content of the reference template.docx, mapped to specimen blocks so every
+// style is exercised on real liturgical text (verso pairs and integrated Tibetan+phonetics
+// +translation are grouped; standalone Tibetan/sections/mantra/small map one-to-one).
 const DEFAULT_BLOCKS: Block[] = [
-  { id: uid(), kind: 'title', parts: ['རྩ་གསུམ་ཀུན་འདུས།', 'Essence of Accomplishment', 'A Method to Accomplish the Guru'] },
-  { id: uid(), kind: 'section', parts: ['I. The Preliminary'] },
-  { id: uid(), kind: 'tibetan_title', parts: ['ས་བཅད་དང་པོ།'] },
-  { id: uid(), kind: 'tibetan_body', parts: ['རང་བྱུང་རྩ་གསུམ་ལྷ་ལ་འདུད༔'] },
-  { id: uid(), kind: 'pair', parts: ['rang jung tsa sum lha la dü', 'I bow to the natural deities of the <strong>three roots</strong>,'] },
-  { id: uid(), kind: 'mantra', parts: ['oṃ āḥ hūṃ badzra guru pema siddhi hūṃ'] },
-  { id: uid(), kind: 'small', parts: ['This instruction is <em>recited three times</em> with devotion.'] },
-  { id: uid(), kind: 'copyright', parts: ['Translated by Sean Price · © 2025 Shechen Publications'] },
-  { id: uid(), kind: 'toc', parts: ['A Supplication for All Times', '1'] },
-  { id: uid(), kind: 'folio', parts: ['1'] },
-  { id: uid(), kind: 'image_caption', parts: ['The seal of the lineage'] },
+  { id: uid(), kind: "title", parts: ["༄༅། རང་བྱུང་པདྨའི་སྙིང་ཐིག་ལས། ཕྲིན་ལས་འབྲིང་པོ་དངོས་གྲུབ་ཀུན་འབྱུང་བཞུགས་སོ།།", "", ""] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཧཱུྃ༔ ཨོ་རྒྱན་ཡུལ་གྱི་ནུབ་བྱང་མཚམས༔\nཔདྨ་གེ་སར་སྡོང་པོ་ལ༔\nཡ་མཚན་མཆོག་གི་དངོས་གྲུབ་བརྙེས༔\nཔདྨ་འབྱུང་གནས་ཞེས་སུ་གྲགས༔"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["\nའཁོར་དུ་མཁའ་འགྲོ་མང་པོས་བསྐོར༔\nཁྱེད་ཀྱི་རྗེས་སུ་བདག་སྒྲུབ་ཀྱིས༔\nབྱིན་གྱིས་བརླབ་ཕྱིར་གཤེགས་སུ་གསོལ༔"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["གུ་རུ་པདྨ་སིདྡྷི་ཧཱུྃ༔"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཨོཾ་ཨཱཿཧཱུྃ་བཛྲ་གུ་རུ་པདྨ་དྷེ་ཝ་དྷཱ་ཀི་ནི་དྷརྨ་པཱ་ལ་མཎྜ་ལ་ས་པ་རི་ཝཱ་ར་བཛྲ་ས་མ་ཛ་ཛཿ ཛཿཧཱུྃ་བཾ་ཧོཿ ཞེས་བརྗོད་པས་ཡེ་ཤེས་ཀྱི་འཁོར་ལོ་མདུན་དུ་བྱོན་པ་ལ།"] },
+  { id: uid(), kind: "tibetan_title", parts: ["གསུམ་པ་ཡན་ལག་བརྒྱད་པ་ནི།"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["བླ་མ་རྩ་གསུམ་ལྷ་ཚོགས་ལ༔\nསྒོ་གསུམ་གུས་པས་ཕྱག་འཚལ་ལོ༔\nཀུན་བཟང་སྒྱུ་འཕྲུལ་དྲྭ་བས་མཆོད༔\nསྡིག་ལྟུང་ཉེས་པར་བྱས་ཀུན་བཤགས༔\nརྣམ་གྲོལ་དགེ་ལ་རྗེས་ཡི་རང༔\nཟབ་རྒྱས་ཆོས་འཁོར་བསྐོར་བར་བསྐུལ༔\nམྱ་ངན་མི་འདའ་བཞུགས་གསོལ་འདེབས༔\nདགེ་ཚོགས་བྱང་ཆུབ་ཆེན་པོར་བསྔོ༔\nཀུན་ཀྱང་བླ་མའི་གནས་ཐོབ་ཤོག༔ །ལན་གསུམ།"] },
+  { id: uid(), kind: "tibetan_title", parts: ["བཞི་པ་བཀའ་བསྒོ་བ་ནི།"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཧྲཱིཿ ང་ནི་དབང་ཆེན་ཧེ་རུ་ཀ༔\nའཁོར་འདས་ཡོངས་ཀྱི་སྤྱི་དཔལ་ཡིན༔\nཉོན་ཅིག་བགེགས་དང་ལོག་འདྲེན་ཚོགས༔\nཆོས་ཉིད་སྐྱེ་མེད་དབྱིངས་སུ་སོང༔"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཧཱུྃ་བཞིའི་སྔགས་བརྗོད།"] },
+  { id: uid(), kind: "tibetan_title", parts: ["ལྔ་པ་སྲུང་འཁོར་ནི།"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཧྲཱིཿ དཔལ་གྱི་ཐུགས་ལས་ཡེ་ཤེས་འོད༔\nམཚོན་ཆ་རྣམ་ལྔའི་སྤྲིན་དུ་སྤྲོས༔\nཕྱོགས་མཚམས་སྟེང་འོག་སྲུང་བའི་གུར༔\nགཞོམ་གཞིག་བྲལ་བར་ལྷུན་གྱིས་གྲུབ༔"] },
+  { id: uid(), kind: "tibetan_inline", parts: ["ཛྙཱ་ན་བཛྲ་རཀྵ་བྷྲཱུྃ༔"] },
+  { id: uid(), kind: "section_1", parts: ["Concluding Activities.\nThe Preliminary. One, refuge:"] },
+  { id: uid(), kind: "pair", parts: ["namo lama sangye rinpoche", "5Namo To the Lama, precious Buddha,"] },
+  { id: uid(), kind: "pair", parts: ["kyabné gyatsö yeshe ku", "Wisdom kaya of myriad refuges,"] },
+  { id: uid(), kind: "pair", parts: ["khyen tsé nü pé daknyi la", "The very embodiment of knowledge, love, and capability,"] },
+  { id: uid(), kind: "pair", parts: ["miché depé kyab su chi", "With unshakable faith, I go for refuge. X3"] },
+  { id: uid(), kind: "small", parts: ["Le refuge, qui commence la préparation."] },
+  { id: uid(), kind: "integrated", parts: ["ན་མོ༔ བླ་མ་སངས་རྒྱས་རིན་པོ་ཆེ༔", "namo lama sangyé rinpoché", "Namo ! Lama, précieux Bouddha,"] },
+  { id: uid(), kind: "integrated", parts: ["སྐྱབས་གནས་རྒྱ་མཚོའི་ཡེ་ཤེས་སྐུ༔", "kyabné gyatsö yéshé kou", "Corps de sagesse de l’océan des objets de refuge,"] },
+  { id: uid(), kind: "mantra", parts: ["Om Ah Hung Vajra Guru Padma Thotrengsal Vajra Samaya Dza Siddhi Phala Hung Ah"] },
+  { id: uid(), kind: "integrated", parts: ["མཁྱེན་བརྩེ་ནུས་པའི་བདག་ཉིད་ལ༔", "k'yen tsé nu pé daknyi la", "Personnification de la connaissance, de l'amour et des capacités,"] },
+  { id: uid(), kind: "integrated", parts: ["མི་ཕྱེད་དད་པས་སྐྱབས་སུ་མཆི༔", "miché dépé kyab sou chi", "Avec une foi inébranlable, je prends refuge.   X3"] },
 ];
 
 /** An uncontrolled editable region — innerHTML is set once so the caret never jumps. */
@@ -66,6 +97,7 @@ const Editable: React.FC<{ className: string; html: string; onChange: (h: string
 
 export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
   const [scope, setScope] = useState<Scope>('doc');
+  const [layout, setLayout] = useState<StudioFormat>('twopage');
   const [org, setOrg] = useState<StyleMap>({});
   const [doc, setDoc] = useState<StyleMap>({});
   const [fonts, setFonts] = useState<OrgFont[]>([]);
@@ -104,6 +136,10 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     b.parts[i] = html; saveBlocks(blocks);
   };
   const mutate = (next: Block[]) => { setBlocks(next); saveBlocks(next); };
+  // Replace the (persisted) specimen with the built-in template content — fresh ids +
+  // copied parts so the module-level DEFAULT_BLOCKS are never mutated in place.
+  const resetSpecimen = () =>
+    mutate(DEFAULT_BLOCKS.map(b => ({ id: uid(), kind: b.kind, parts: [...b.parts] })));
   const retag = (id: string, kind: string) => mutate(blocks.map(b =>
     b.id === id ? { ...b, kind, parts: Array.from({ length: KIND[kind].parts }, (_, i) => b.parts[i] ?? 'Sample text') } : b));
   const addAfter = (id: string) => {
@@ -161,10 +197,15 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       <Editable key={i} className={cls} html={b.parts[i] ?? ''} onChange={h => editPart(b.id, i, h)} />;
     switch (b.kind) {
       case 'title': return <div className="bk-titlepage"><div className="bk-seal">ༀ</div>{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}</div>;
-      case 'section': return <div className="bk-line">{E(0, 'bk-section')}</div>;
+      case 'section_1': return <div className="bk-line">{E(0, 'bk-section bk-section-l1')}</div>;
+      case 'section_2': return <div className="bk-line">{E(0, 'bk-section bk-section-l2')}</div>;
+      case 'section_3': return <div className="bk-line">{E(0, 'bk-section bk-section-l3')}</div>;
       case 'tibetan_title': return <div className="bk-line bk-role-title">{E(0, 'bk-tibetan')}</div>;
       case 'tibetan_body': return <div className="bk-line">{E(0, 'bk-tibetan')}</div>;
+      case 'tibetan_inline': return <div className="bk-line">{E(0, 'bk-tibetan-inline')}</div>;
+      case 'tibetan_small': return <div className="bk-line">{E(0, 'bk-tibetan-small')}</div>;
       case 'pair': return <div className="bk-line bk-pair">{E(0, 'bk-phonetics')}{E(1, 'bk-translation')}</div>;
+      case 'integrated': return <div className="bk-line bk-integrated">{E(0, 'bk-tibetan-inline')}{E(1, 'bk-phonetics')}{E(2, 'bk-translation')}</div>;
       case 'mantra': return <div className="bk-line bk-role-mantra">{E(0, 'bk-phonetics')}</div>;
       case 'small': return <div className="bk-line bk-role-small">{E(0, 'bk-translation')}</div>;
       case 'copyright': return E(0, 'bk-copyright');
@@ -186,12 +227,19 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
         <span className="text-ink-soft">
           {scope === 'org' ? 'editing the org-wide template' : 'editing this booklet’s overrides'}
         </span>
+        {/* format — which layout's roles the panel groups by */}
+        <div className="flex rounded-md overflow-hidden" style={border} title="Group the styles by booklet layout">
+          <button type="button" onClick={() => setLayout('twopage')} className={`px-2 py-0.5 ${layout === 'twopage' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>Two-page</button>
+          <button type="button" onClick={() => setLayout('running')} className={`px-2 py-0.5 ${layout === 'running' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>Running</button>
+        </div>
         {/* inline formatting */}
         <div className="flex items-center gap-1" onMouseDown={e => e.preventDefault()}>
           <button type="button" onClick={() => fmt('bold')} className="p-1 rounded hover:bg-cream" style={border} title="Bold selection"><Bold size={13} /></button>
           <button type="button" onClick={() => fmt('italic')} className="p-1 rounded hover:bg-cream" style={border} title="Italic selection"><Italic size={13} /></button>
         </div>
         <div className="flex-1" />
+        <button type="button" onClick={resetSpecimen} className="px-2 py-1 rounded-md hover:bg-cream" style={border}
+                title="Replace the specimen with the built-in template content (from template.docx)">Reset content</button>
         <button type="button" onClick={onClose} className="px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream" style={border}><X size={13} /> done</button>
       </div>
 
@@ -240,8 +288,18 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
             {msg && <div className="text-[10px] text-ink-soft">{msg}</div>}
           </div>
 
-          <div className="flex-1 overflow-auto px-3 py-2 flex flex-col gap-2">
-            {ROLE_DEFS.map(rd => {
+          <div className="flex-1 overflow-auto px-3 py-2 flex flex-col gap-3">
+            {(() => {
+              // Group the selected format's roles by their header, preserving ROLE_DEFS order.
+              const groups: { header: string; roles: RoleDef[] }[] = [];
+              for (const rd of ROLE_DEFS) {
+                const header = rd.place[layout];
+                if (!header) continue;
+                let g = groups.find(x => x.header === header);
+                if (!g) { g = { header, roles: [] }; groups.push(g); }
+                g.roles.push(rd);
+              }
+              const card = (rd: RoleDef) => {
               const p = own(rd.role);
               const dirty = Object.keys(p).length > 0;
               const active = activeRoles.includes(rd.role);
@@ -257,7 +315,11 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                       <option value="">font: inherit</option>
                       {fontOptions.map(f => <option key={f} value={f}>{f}</option>)}
                     </select>
-                    <input className={sel} style={border} value={p.fontSize ?? ''} placeholder="size (e.g. 12pt)" onChange={e => void setProp(rd.role, 'fontSize', e.target.value)} />
+                    <select className={sel} style={border} value={p.fontSize ?? ''} onChange={e => void setProp(rd.role, 'fontSize', e.target.value)}>
+                      <option value="">size: inherit</option>
+                      {p.fontSize && !SIZES.includes(p.fontSize) && <option value={p.fontSize}>{p.fontSize}</option>}
+                      {SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
                     <select className={sel} style={border} value={p.fontWeight ?? ''} onChange={e => void setProp(rd.role, 'fontWeight', e.target.value ? Number(e.target.value) : '')}>
                       <option value="">weight: inherit</option>
                       {[300, 400, 500, 600, 700, 800].map(w => <option key={w} value={w}>{w}</option>)}
@@ -270,11 +332,22 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                       {['left', 'center', 'right', 'justify'].map(a => <option key={a} value={a}>{a}</option>)}
                     </select>
                     <input className={sel} style={border} value={p.color ?? ''} placeholder="colour (#hex)" onChange={e => void setProp(rd.role, 'color', e.target.value)} />
-                    <input className={sel} style={border} value={p.indent ?? ''} placeholder="indent (e.g. 10mm)" onChange={e => void setProp(rd.role, 'indent', e.target.value)} />
+                    <select className={sel} style={border} value={p.indent ?? ''} onChange={e => void setProp(rd.role, 'indent', e.target.value)}>
+                      <option value="">indent: inherit</option>
+                      {p.indent && !INDENTS.includes(p.indent) && <option value={p.indent}>{p.indent}</option>}
+                      {INDENTS.map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
                   </div>
                 </div>
               );
-            })}
+              };
+              return groups.map(g => (
+                <div key={g.header} className="flex flex-col gap-2">
+                  <div className="text-[10px] uppercase tracking-wide text-ink-soft font-medium px-0.5">{g.header}</div>
+                  {g.roles.map(card)}
+                </div>
+              ));
+            })()}
           </div>
         </div>
       </div>

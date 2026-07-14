@@ -139,6 +139,21 @@
 }
 .bk-role-title .bk-tibetan,
 .bk-role-sapche .bk-tibetan { font-size: calc(var(--tibetan-pt) * 1.4); text-align: center; }
+/* Tibetan integrated on the recto, sitting ABOVE its phonetics (not left on the verso). */
+.bk-tibetan-inline {
+  font-family: var(--font-tibetan);
+  font-size: var(--tibetan-pt);
+  line-height: var(--leading);
+  white-space: pre-wrap;
+}
+
+/* Tibetan small letters (ཡིག་ཆུང) — small inline Tibetan instructions / annotations. */
+.bk-tibetan-small {
+  font-family: var(--font-tibetan);
+  font-size: 12pt;
+  line-height: var(--leading);
+  white-space: pre-wrap;
+}
 
 /* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic), indented under the verse. */
 .bk-phonetics {
@@ -179,13 +194,18 @@
   margin-left: 0;
 }
 
-/* Section heading = `Sections` (Libertinus Serif Display 15, bold+italic), at the margin. */
+/* Section heading = `Sections` (Libertinus Serif Display, at the margin). Structure lives
+   on `.bk-section`; the per-level SIZE lives on `.bk-section-l1/-l2/-l3` (the heading gets
+   a tier class chosen from its sapche outline depth). */
 .bk-section {
   font-family: var(--font-small);
-  font-size: 15pt; font-weight: 600; font-style: italic;
+  font-weight: 400; font-style: normal;
   line-height: 1.2;
   margin: 19.2pt 0 7.8pt 0;
 }
+.bk-section-l1 { font-size: 15pt; }
+.bk-section-l2 { font-size: 13.5pt; }
+.bk-section-l3 { font-size: 12pt; }
 
 /* The empty-line gap between chunks — the balancing lever (height set inline). */
 .bk-gap { height: calc(var(--translation-pt) * var(--leading)); position: relative; }
@@ -269,6 +289,16 @@
 .style-specimen .bk-foliobox { text-align: right; }
 .style-specimen .bk-section { margin: 5pt 0; }
 .style-specimen .bk-line { margin: 1mm 0; }
+/* The specimen grows past one page: at least one A5 page tall, with a faint guide line
+   at each 210 mm page boundary so long content reads as stacked pages. */
+.style-specimen {
+  min-height: 210mm;
+  background-image: repeating-linear-gradient(to bottom,
+    transparent 0, transparent calc(210mm - 1px),
+    var(--cline) calc(210mm - 1px), var(--cline) 210mm);
+}
+/* Integrated block: Tibetan sits directly above its phonetics + translation. */
+.style-specimen .bk-integrated { margin: 1.5mm 0; }
 .specimen-block { position: relative; padding: 1px 0; }
 .specimen-block:hover { background: rgba(47, 111, 159, 0.04); }
 .specimen-gutter {
