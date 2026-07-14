@@ -80,6 +80,35 @@ def test_markers_notes_passages_inherit_live():
     assert len(own) == 1 and own[0]["syl_id"] == syls[7]["id"]
 
 
+def test_display_breaks_inherit_live_and_own_shadows():
+    from app.routers.texts import derive_secondary_text
+    from app.routers.display_breaks import list_display_breaks
+
+    conn = get_db()
+    p = _mk_primary(conn, "BreakP", "break_p", RAW)
+    syls = load_syllables(conn, p)
+    conn.close()
+
+    child = derive_secondary_text(p, {})["id"]
+
+    # Nothing copied at derive; a parent override added AFTER derive surfaces live.
+    conn = get_db()
+    assert conn.execute("SELECT COUNT(*) c FROM display_breaks WHERE text_id=?", (child,)).fetchone()["c"] == 0
+    conn.execute("INSERT INTO display_breaks (text_id, syl_id, count) VALUES (?, ?, 0)", (p, syls[4]["id"]))
+    conn.commit()
+    conn.close()
+    bs = {b["syl_id"]: b["count"] for b in list_display_breaks(child)}
+    assert bs.get(syls[4]["id"]) == 0  # inherited from the parent
+
+    # The child's OWN break at the same syllable shadows the inherited one.
+    conn = get_db()
+    conn.execute("INSERT INTO display_breaks (text_id, syl_id, count) VALUES (?, ?, 2)", (child, syls[4]["id"]))
+    conn.commit()
+    conn.close()
+    bs = {b["syl_id"]: b["count"] for b in list_display_breaks(child)}
+    assert bs.get(syls[4]["id"]) == 2  # own (2) wins over inherited (0)
+
+
 def test_tree_inherits_live_and_own_nests_under_inherited():
     from app.routers.texts import derive_secondary_text
     from app.routers.tree_nodes import list_tree_nodes

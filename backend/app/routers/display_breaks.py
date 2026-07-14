@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..db import get_db
 from ..derivation import base_tokens
+from ..inherit import source_texts
 from ..schemas import DisplayBreakIn, DisplayBreakOut
 
 router = APIRouter(prefix="/api", tags=["display-breaks"])
@@ -22,11 +23,28 @@ router = APIRouter(prefix="/api", tags=["display-breaks"])
 
 @router.get("/texts/{text_id}/display-breaks", response_model=List[DisplayBreakOut])
 def list_display_breaks(text_id: int):
+    """This text's OWN break overrides plus those INHERITED from its source chain
+    (parent + transclusion sources), resolved onto this text's composed stream. A source
+    override applies wherever its anchor syllable appears here — so re-lineating a primary
+    ripples into every secondary live. The child's own break at a syllable shadows an
+    inherited one (and stays editable)."""
     conn = get_db()
     try:
-        return [dict(r) for r in conn.execute(
-            "SELECT syl_id, count FROM display_breaks WHERE text_id = ?", (text_id,)
-        ).fetchall()]
+        valid = {t["id"] for t in base_tokens(conn, text_id)}
+        cursor = conn.cursor()
+        by_syl: dict = {}  # syl_id -> {"count", "own"}
+        for origin in [text_id] + source_texts(cursor, text_id):
+            own = origin == text_id
+            for r in cursor.execute(
+                "SELECT syl_id, count FROM display_breaks WHERE text_id = ?", (origin,)
+            ).fetchall():
+                syl = r["syl_id"]
+                if syl not in valid:
+                    continue  # dead/foreign anchor — graceful dangling floor
+                if syl in by_syl and by_syl[syl]["own"]:
+                    continue  # the child's own break already claims this syllable
+                by_syl[syl] = {"count": r["count"], "own": own}
+        return [{"syl_id": syl, "count": v["count"]} for syl, v in by_syl.items()]
     finally:
         conn.close()
 
