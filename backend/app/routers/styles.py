@@ -298,11 +298,9 @@ def _props_from_docx_style(style) -> dict:
         props["fontWeight"] = 700
     if f.italic is not None:
         props["italic"] = bool(f.italic)
-    try:
-        if f.color and f.color.rgb is not None:
-            props["color"] = f"#{str(f.color.rgb).lower()}"
-    except (AttributeError, ValueError):
-        pass
+    # COLOUR IS NOT IMPORTED. The booklet prints black by default (see bookletStyles.ts);
+    # a docx's screen colours (Word's blue heading tints) would otherwise arrive as org-wide
+    # defaults nobody chose. Any other ink is set by hand in the Style Studio.
     # Paragraph styles carry alignment/spacing/indent; character styles don't.
     pf = getattr(style, "paragraph_format", None)
     if pf is not None:
@@ -403,7 +401,7 @@ async def import_style_template(
 
     # Merge every style matching a role: a CHARACTER style ("… Words") wins on the run's
     # font attrs; the PARAGRAPH style supplies indent/align/line-height. So we get both.
-    FONT_KEYS = ("fontFamily", "fontSize", "fontWeight", "italic", "color")
+    FONT_KEYS = ("fontFamily", "fontSize", "fontWeight", "italic")   # never colour — see above
     PARA_KEYS = ("align", "lineHeight", "indent")
     applied: dict[str, dict] = {}
     for style in d.styles:

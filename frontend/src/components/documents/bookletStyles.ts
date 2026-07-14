@@ -42,7 +42,12 @@ const G_MATTER = 'Covers & matter';  // furniture, shown under every format
 
 /** The editable roles, their selectors, and defaults matching booklet.css. Array order is
  *  the display order WITHIN each Style Studio group. */
-export const ROLE_DEFS: RoleDef[] = [
+/** Every role prints BLACK by default — the greys booklet.css carries (phonetics #222,
+ *  copyright #333, caption #444, folio #666) are screen habits that muddy an offset print.
+ *  A designer can still tint any role; an org/document override wins over this. */
+const INK = '#000000';
+
+const RAW_ROLE_DEFS: RoleDef[] = [
   // Defaults GROUNDED in the reference docx's named styles (font/size/weight/italic/indent),
   // not Western assumptions: e.g. small letters are SMALLER than translation, and the
   // phonetics/mantra/section styles are UPRIGHT (the body runs carry no direct italic).
@@ -86,14 +91,19 @@ export const ROLE_DEFS: RoleDef[] = [
   { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub',
     def: { fontFamily: 'Calibri', fontSize: '12pt', italic: true, align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Subtitle Calibri 12 italic
   { role: 'copyright', label: 'Copyright', selector: '.bk-copyright',
-    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', color: '#333' }, place: { twopage: G_MATTER, running: G_MATTER } },  // no docx style — Normal-ish
+    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt' }, place: { twopage: G_MATTER, running: G_MATTER } },  // no docx style — Normal-ish
   { role: 'toc', label: 'Table of contents', selector: '.bk-toc',
     def: { fontFamily: 'var(--font-translation)', fontSize: '11pt' }, place: { twopage: G_MATTER, running: G_MATTER } },  // toc file separate; Gentium 11
   { role: 'folio', label: 'Page number (folio)', selector: '.booklet-folio',
-    def: { fontFamily: 'Georgia, serif', fontSize: '9pt', fontWeight: 400, lineHeight: '1', color: '#666' }, place: { twopage: G_MATTER, running: G_MATTER } },
+    def: { fontFamily: 'Georgia, serif', fontSize: '9pt', fontWeight: 400, lineHeight: '1' }, place: { twopage: G_MATTER, running: G_MATTER } },
   { role: 'image_caption', label: 'Image caption', selector: '.bk-image-caption',
-    def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', italic: true, color: '#444' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Caption 12 italic
+    def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', italic: true }, place: { twopage: G_MATTER, running: G_MATTER } },  // Caption 12 italic
 ];
+
+/** The editable roles. Black is applied last, so it also replaces the greys the docx-derived
+ *  defaults above used to carry. */
+export const ROLE_DEFS: RoleDef[] = RAW_ROLE_DEFS.map(
+  rd => ({ ...rd, def: { ...rd.def, color: INK } }));
 
 /** Bundled font families (booklet.css @font-face) selectable in the designer, plus the
  *  role-var stacks and generic fallbacks. Org-uploaded families extend this at runtime. */
