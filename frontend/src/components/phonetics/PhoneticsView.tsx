@@ -82,6 +82,15 @@ export const PhoneticsView: React.FC = () => {
     return deriveLines(tokens, markerOffsets, spans, breakOverrides);
   }, [tokens, markers, spans, breakOverrides]);
 
+  // Default to the tab that actually has content (a mantra-only text has no `bo` lines,
+  // so open it on Sanskrit); leave a mixed-kind text on whatever the user picked.
+  useEffect(() => {
+    const hasBo = lines.some(l => l.kind === 'bo');
+    const hasSkt = lines.some(l => l.kind === 'skt');
+    if (!hasBo && hasSkt) setTab('skt');
+    else if (hasBo && !hasSkt) setTab('bo');
+  }, [lines]);
+
   // Server rows keyed by kind+range; plus an interval index for overlap fallback.
   const { byRange, pos, intervals } = useMemo(() => {
     const byRange = new Map<string, Phonetic>();
