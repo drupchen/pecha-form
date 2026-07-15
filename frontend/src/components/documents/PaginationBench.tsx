@@ -19,6 +19,11 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import '../../styles/booklet.css';
 
+/** One edition's compiled stream, awaiting measurement. Every edition indexes the same
+ *  line for line (the stream is cut by the Tibetan, not by the translation), which is what
+ *  lets a single shared break set be flowed against all of them. */
+interface EditionStream { lang: string; lines: DocLine[] }
+
 /**
  * Pagination bench (Phase D2). Compiles a document's text pages into the SHARED line
  * stream and flows it into facing pages (Tibetan verso / phonetics+translation recto).
@@ -58,6 +63,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // A seed that refused to run has to say so — silence would read as "the pagination is
   // fine", which is the failure this whole pass exists to end.
   const [msg, setMsg] = useState('');
+  // The compiled editions awaiting measurement. Non-null = the measure DOM is mounted and
+  // the effect below may read it.
+  const [measure, setMeasure] = useState<EditionStream[] | null>(null);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -121,11 +129,39 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Auto-suggest pagination: the heavy full-stream measure container is mounted ONLY
   // while `measuring`, measured once, then unmounted (keeps the steady-state DOM light).
   const pendingReplace = useRef(false);
-  const requestSeed = (replace: boolean) => {
-    if (!lines.length || seeding) return;
+  /**
+   * Ask for a re-flow. The breaks are SHARED by every edition — that is what makes the four
+   * page-align — so they have to be measured against ALL of them, not just the one on
+   * screen: a German recto runs longer than an English one, and breaks seeded from `en`
+   * alone overfill `de`. Compile each edition first; the effect below then measures them
+   * together and breaks where the TALLEST demands.
+   */
+  const requestSeed = async (replace: boolean) => {
+    if (!lines.length || seeding || !doc) return;
     pendingReplace.current = replace;
     setMsg('');
     setSeeding(true);
+    try {
+      const data: EditionStream[] = [];
+      for (const lg of doc.languages) {
+        const c = await compileDocument(doc.items, lg);
+        // Through deriveBooklet, so each edition's stream carries the same mid-line splits
+        // and therefore indexes identically to the one on screen.
+        const d = deriveBooklet(doc.items, rows, c.lines, c.titleByItem, furniture, lg,
+                                false, c.headingsByItem);
+        data.push({ lang: lg, lines: d.lines });
+      }
+      const odd = data.filter((d) => d.lines.length !== renderLines.length).map((d) => d.lang);
+      if (odd.length) {
+        // The editions are supposed to share the stream line for line; if one does not, its
+        // heights cannot be compared index by index, so say so rather than quietly drop it.
+        setMsg(`Editions out of step with ${lang}: ${odd.join(', ')} — flowed without them.`);
+      }
+      setMeasure(data.filter((d) => d.lines.length === renderLines.length));
+    } catch (e) {
+      setMsg(`Could not compile the editions: ${(e as Error).message}`.slice(0, 160));
+      setSeeding(false);
+    }
   };
 
   /**
@@ -140,7 +176,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    * the auto-seed below fires and the font cache is coldest.
    */
   useEffect(() => {
-    if (!seeding || !measureRef.current || !config) return;
+    if (!measure || !measureRef.current || !config) return;
     const el = measureRef.current;
     let alive = true;
     (async () => {
@@ -153,8 +189,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         }
         if (!alive) return;
 
-        const V = readStream(el, '[data-side="verso"] .bk-linewrap');
-        const R = readStream(el, '[data-side="recto"] .bk-linewrap');
+        // The verso is the Tibetan — identical in every edition, so it is measured once.
+        // Each edition's recto is measured on its own; a spread must fit all of them.
+        const sides = [
+          readStream(el, '[data-side="verso"] .bk-linewrap'),
+          ...measure.map((m) => readStream(el, `[data-recto="${m.lang}"] .bk-linewrap`)),
+        ];
 
         // A break is stored as (item, syllable) and read back by looking that pair up in the
         // stream. Two things make a line unable to carry one, and choosing it anyway would
@@ -174,7 +214,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           if (l.splitAnchor != null && l.startSylId === l.splitAnchor) unbreakable.add(i);
         });
 
-        const { starts } = flowPages([V, R], {
+        const { starts, overfull } = flowPages(sides, {
           n: renderLines.length,
           // The flow fills the runs between the starts it may not touch: text boundaries and
           // split tails (which deriveBooklet forces anyway, so a seeded row there would be
@@ -206,17 +246,24 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         })));
         if (!alive) return;
         setRows((await getDocumentLayout(documentId)).rows);
+        // A page the flow could not make fit holds ONE line that is taller than the text
+        // block in some edition — it has nowhere else to go, so the flow leaves it and says
+        // so rather than pretending. The remedy is the user's: split the line, or narrow it.
+        if (overfull.length) {
+          setMsg(`${overfull.length} page${overfull.length > 1 ? 's hold' : ' holds'} a single ` +
+                 `line too tall for the page in some edition — split it, or narrow it.`);
+        }
       } finally {
-        if (alive) setSeeding(false);
+        if (alive) { setMeasure(null); setSeeding(false); }
       }
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seeding]);
+  }, [measure]);
 
   // Seed an initial pagination the first time a document is opened with no breaks yet.
   useEffect(() => {
-    if (config && lines.length && !hasStoredBreaks && !seeding) requestSeed(false);
+    if (config && lines.length && !hasStoredBreaks && !seeding) void requestSeed(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, lines, hasStoredBreaks]);
 
@@ -321,9 +368,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
     translation: 'width_translation', section: 'width_section',
   };
-  // The Tibetan is language-independent; the recto's translated text is per-edition.
-  const widthLang = (t: WidthTarget) => (t === 'tibetan' ? '' : lang);
-  const widthOf = (l: DocLine, t: WidthTarget) => rowVal(l, WIDTH_KIND[t], widthLang(t)) ?? 0;
+  // The Tibetan is language-independent; the recto's translated text is per-edition. `forLang`
+  // lets the seed read another edition's widths while measuring it — the widths are part of
+  // that edition's height, so a flow that ignored them would mis-measure it.
+  const widthLang = (t: WidthTarget, forLang = lang) => (t === 'tibetan' ? '' : forLang);
+  const widthOf = (l: DocLine, t: WidthTarget, forLang = lang) =>
+    rowVal(l, WIDTH_KIND[t], widthLang(t, forLang)) ?? 0;
   const setWidth = (l: DocLine, t: WidthTarget, mm: number | null) => {
     mm == null ? void delRow(l, WIDTH_KIND[t], widthLang(t))
                : void putRow(l, WIDTH_KIND[t], mm, widthLang(t));
@@ -336,12 +386,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     maxRecto: config ? config.margin_outer_mm : 10,
   }), [config, contentWmm]);
 
-  const adjFor = (l: DocLine, interactive: boolean): LineAdj => ({
+  const adjFor = (l: DocLine, interactive: boolean, forLang = lang): LineAdj => ({
     gapDeltaMm: rowVal(l, 'line_space') ?? 0,
     noSpace: rowHas(l, 'line_nospace'),
     widths: {
-      tibetan: widthOf(l, 'tibetan'), phonetics: widthOf(l, 'phonetics'),
-      translation: widthOf(l, 'translation'), section: widthOf(l, 'section'),
+      tibetan: widthOf(l, 'tibetan', forLang), phonetics: widthOf(l, 'phonetics', forLang),
+      translation: widthOf(l, 'translation', forLang), section: widthOf(l, 'section', forLang),
     },
     widthRange,
     ...(interactive ? {
@@ -476,7 +526,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           ))}
           {doc.languages.length === 0 && <span className="text-vermilion">set languages first</span>}
         </div>
-        <button type="button" onClick={() => requestSeed(true)} disabled={seeding}
+        <button type="button" onClick={() => void requestSeed(true)} disabled={seeding}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
                 style={{ border: '1px solid var(--cline)' }}
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
@@ -568,7 +618,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           CSS so the stream runs to its natural length.
           The `.bk-linewrap` mirrors the bench's own per-line wrapper, so the boxes being
           measured are the boxes being rendered. */}
-      {seeding && (
+      {measure && (
         <div ref={measureRef} className="booklet-measure" aria-hidden>
           <div className="booklet-page verso" data-side="verso">
             <div className="booklet-content">
@@ -577,13 +627,20 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               ))}
             </div>
           </div>
-          <div className="booklet-page recto" data-side="recto">
-            <div className="booklet-content">
-              {renderLines.map((l) => (
-                <div className="bk-linewrap" key={l.key}><Recto l={l} adj={adjFor(l, false)} /></div>
-              ))}
+          {/* One recto per edition, each with ITS OWN text and widths. The breaks are shared,
+              so they have to be measured against all four at once — a `de` recto runs longer
+              than an `en` one, and the page has to hold whichever is tallest. */}
+          {measure.map((m) => (
+            <div className="booklet-page recto" data-recto={m.lang} key={m.lang}>
+              <div className="booklet-content">
+                {m.lines.map((l) => (
+                  <div className="bk-linewrap" key={l.key}>
+                    <Recto l={l} adj={adjFor(l, false, m.lang)} />
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          ))}
           {/* Two stacks differing only by a continuation rule: subtracted, they give the
               rule's true advance including how its margins collapse — which arithmetic on
               `1.2mm + 0.4pt + 1.2mm` cannot. */}
