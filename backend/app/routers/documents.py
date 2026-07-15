@@ -41,10 +41,11 @@ DEFAULT_LAYOUT_CONFIG = {
     "margin_bind_mm": 16.0, "margin_outer_mm": 20.0,   # bind side (spine) vs outer edge (slack)
     "tibetan_pt": 16.0, "phonetics_pt": 10.0, "translation_pt": 11.0,
     "leading": 1.2,
-    # How many CHANGED SYLLABLES the automatic breaks may drift before the bench re-flows
-    # them by itself (see `documents.pagination_sig`). Not geometry, but per-document user
-    # config, which is what this JSON already is.
-    "reflow_threshold": 50,
+    # SECONDS of quiet before the automatic breaks re-flow themselves. The clock restarts on
+    # every upstream change, so a working session never repaginates under the cursor — it
+    # settles once you stop. Not geometry, but per-document user config, which is what this
+    # JSON already is.
+    "reflow_delay_s": 20,
 }
 
 

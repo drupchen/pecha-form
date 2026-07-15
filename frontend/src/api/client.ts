@@ -480,7 +480,7 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
 export type DocumentLayoutKind =
   | 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut'
   | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section'
-  | 'gap_fill' | 'width_furniture';
+  | 'gap_fill_verso' | 'gap_fill_recto' | 'width_furniture';
 
 export interface DocumentLayoutRow {
   id: number;
@@ -500,9 +500,10 @@ export interface LayoutConfig {
   margin_bind_mm: number; margin_outer_mm: number;
   tibetan_pt: number; phonetics_pt: number; translation_pt: number;
   leading: number;
-  /** Changed syllables the automatic breaks may drift before the bench re-flows them by
-   *  itself. Not geometry, but per-document user config — which is what this already is. */
-  reflow_threshold: number;
+  /** Seconds of quiet before the automatic breaks re-flow themselves — the clock restarts on
+   *  every upstream change. Not geometry, but per-document user config, which is what this
+   *  already is. */
+  reflow_delay_s: number;
 }
 
 export interface DocumentLayout {

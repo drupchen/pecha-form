@@ -552,7 +552,7 @@ CREATE TABLE IF NOT EXISTS document_layout (
     kind         TEXT NOT NULL CHECK (kind IN
                      ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
                       'width_tibetan','width_phonetics','width_translation','width_section',
-                      'gap_fill','width_furniture')),
+                      'gap_fill_verso','gap_fill_recto','width_furniture')),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -763,15 +763,15 @@ def _add_missing_columns(conn) -> None:
 
 def _rebuild_document_layout_kinds(conn) -> None:
     """Widen `document_layout.kind`'s CHECK to include newer kinds ('hairline', then
-    'recto_cut', the per-block 'width_*' set, 'gap_fill', 'width_furniture'). SQLite cannot
-    alter a CHECK in
+    'recto_cut', the per-block 'width_*' set, 'width_furniture', the two 'gap_fill_*').
+    SQLite cannot alter a CHECK in
     place, so rebuild the table when an older one predates the newest kind. The sentinel is
     the LAST kind added — bump it whenever the CHECK grows. No-op on fresh DBs (SCHEMA lists
     them). `document_layout` is a leaf (nothing references it), so the drop/rename is safe."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
     ).fetchone()
-    if not row or "'width_furniture'" in row["sql"]:
+    if not row or "'gap_fill_recto'" in row["sql"]:
         return
     conn.execute("""
         CREATE TABLE document_layout_new (
@@ -782,17 +782,23 @@ def _rebuild_document_layout_kinds(conn) -> None:
             kind         TEXT NOT NULL CHECK (kind IN
                              ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
                               'width_tibetan','width_phonetics','width_translation','width_section',
-                              'gap_fill','width_furniture')),
+                              'gap_fill_verso','gap_fill_recto','width_furniture')),
             char_offset  INTEGER,
             value        REAL,
             lang         TEXT,
             UNIQUE(document_id, item_id, anchor_syl_id, kind, lang)
         )""")
+    # Carry over only what the new CHECK still allows. A kind can be RETIRED as well as added
+    # — 'gap_fill' lived for one commit before splitting into the verso/recto pair — and
+    # without this the copy would fail the constraint on a database that had written one.
     conn.execute("""
         INSERT INTO document_layout_new
             (id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang)
         SELECT id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang
-        FROM document_layout""")
+        FROM document_layout
+        WHERE kind IN ('page_break','line_space','line_nospace','wrap_extend','hairline',
+                       'recto_cut','width_tibetan','width_phonetics','width_translation',
+                       'width_section','gap_fill_verso','gap_fill_recto','width_furniture')""")
     conn.execute("DROP TABLE document_layout")
     conn.execute("ALTER TABLE document_layout_new RENAME TO document_layout")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_id)")

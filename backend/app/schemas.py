@@ -631,13 +631,17 @@ class TocEntry(BaseModel):
 # a BLOCK KEY instead: '#title_main', '#copyright', … The column is TEXT and no syllable uuid
 # can begin with '#', so the two cannot be confused, and the unique key
 # (document, item, anchor, kind, lang) still yields exactly one row per block per edition.
-# `gap_fill`: extra height added to EVERY empty-line gap on one page, in mm, per edition —
-# the leftover the tallest edition's break left behind, spent on making the short editions
-# look balanced. Anchored on the page's first line.
+# `gap_fill_verso` / `gap_fill_recto`: extra height added to EVERY empty-line gap on ONE
+# page, in mm — the leftover a shared break left behind, spent on balancing that page.
+# Anchored on the page's first line. Two kinds because the two facing pages have nothing to
+# do with each other: the Tibetan verso is far denser and wants far more air than the
+# translation across from it. They split by edition the way everything else here does — the
+# verso is the same Tibetan in all four booklets, so its fill is SHARED (lang ''); the
+# recto's text is per edition (lang = the edition).
 DocumentLayoutKind = Literal[
     'page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline', 'recto_cut',
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
-    'gap_fill', 'width_furniture',
+    'gap_fill_verso', 'gap_fill_recto', 'width_furniture',
 ]
 
 class DocumentLayoutRow(BaseModel):

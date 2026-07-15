@@ -9,9 +9,9 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars,
+  deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars, gapFillLang, GAP_FILL_KIND,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
-  type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf,
+  type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
 } from './bookletRender';
 import {
   awaitBookletFonts, readStream, readHairlineAdvance, flowPages,
@@ -28,39 +28,45 @@ import '../../styles/booklet.css';
  *  lets a single shared break set be flowed against all of them. */
 interface EditionStream { lang: string; lines: DocLine[] }
 
-/** Changed syllables the pagination may drift before re-flowing itself — roughly a few
- *  edited lines, so a working session re-flows now and then rather than at every keystroke.
- *  Per document, in `layout_config`. */
-const DEFAULT_REFLOW_THRESHOLD = 50;
+/** Seconds of quiet before the pagination re-flows itself. The clock RESTARTS on every
+ *  upstream change, so the pages never move while you are still working — they settle once
+ *  you stop. Per document, in `layout_config`. */
+const DEFAULT_REFLOW_DELAY_S = 20;
 
 /**
- * The page's "fill it out" control: every empty line on this page, in this edition, grows by
- * the same number of mm.
+ * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
  *
- * It exists because the breaks are SHARED. The tallest edition decides where a page ends, so
- * the shorter ones are left with slack at the foot through no fault of their own. Each
- * edition is its own printed booklet, so each may spend that slack its own way.
+ * It exists because the breaks are SHARED — the tallest edition decides where a page ends,
+ * so every other page is left with slack at the foot through no fault of its own.
  *
- * `max` is the slack actually measured on the page right now, divided among its gaps, so the
- * slider cannot be dragged into an overflow. That is an affordance, not a guarantee: the
+ * One per PAGE, not per spread: the Tibetan verso is far denser than the translation across
+ * from it and wants far more air, so a single control would force one of the two to be
+ * wrong. The verso's setting is shared by every edition (same Tibetan in each booklet); the
+ * recto's belongs to its edition.
+ *
+ * `max` is the slack actually measured on that page right now, divided among its gaps, so
+ * the slider cannot be dragged into an overflow. That is an affordance, not a guarantee: the
  * stored value is plain mm, and if a later re-flow puts more on the page, the mm stay and the
  * overfull badge is what says so. A ratio-of-slack would self-correct, but only by measuring
  * the page again at PRINT time too — and a PDF that silently re-measures is a worse bargain
  * than a number that means exactly what it says.
  */
-const GapFillSlider: React.FC<{ value: number; max: number; onChange: (mm: number) => void }> = ({
-  value, max, onChange,
-}) => {
+const GapFillSlider: React.FC<{
+  side: PageSide; value: number; max: number; onChange: (mm: number) => void;
+}> = ({ side, value, max, onChange }) => {
   const cap = Math.max(0, Math.round(max * 10) / 10);
   if (cap <= 0.5 && !value) return null;   // a full page has nothing to spend
+  const scope = side === 'verso'
+    ? 'The Tibetan page only — every edition prints the same one, so this is set once.'
+    : 'This edition’s translation page only.';
   return (
-    <div className="bk-gapfill" title={
-      `Open out every empty line on this page by the same amount, to use up the space the `
-      + `tallest edition's page break left here. Up to ${cap.toFixed(1)}mm each before this `
-      + `page overflows. This edition only.`}>
+    <div className={`bk-gapfill bk-gapfill-${side}`} title={
+      `Open out every empty line on this ${side === 'verso' ? 'Tibetan' : 'translation'} page `
+      + `by the same amount, to use up the space the shared page break left here. Up to `
+      + `${cap.toFixed(1)}mm each before this page overflows. ${scope}`}>
       <input type="range" min={0} max={Math.max(cap, value)} step={0.1} value={value}
              onChange={(e) => onChange(Number(e.target.value))} />
-      <span>{value ? `+${value.toFixed(1)}mm` : 'fill'}</span>
+      <span>{value ? `+${value.toFixed(1)}mm` : (side === 'verso' ? 'fill བོད' : 'fill')}</span>
     </div>
   );
 };
@@ -131,9 +137,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // style/geometry fingerprint. Both empty until a flow records them.
   const [stamp, setStamp] = useState<{ sig: Record<string, string> | null; fp: string | null }>(
     { sig: null, fp: null });
-  // How many changed syllables the pagination is allowed to drift before it re-flows itself.
-  // The user's dial: small keeps the pages honest, large keeps them still while you work.
-  const [threshold, setThreshold] = useState(DEFAULT_REFLOW_THRESHOLD);
+  // Seconds of quiet before the pagination re-flows itself. The user's dial: short settles
+  // sooner, long leaves more room to keep working.
+  const [delayS, setDelayS] = useState(DEFAULT_REFLOW_DELAY_S);
+  // Seconds left in the current quiet period; null = nothing has drifted, nothing pending.
+  const [countdown, setCountdown] = useState<number | null>(null);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -152,10 +160,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
-      // The threshold rides in layout_config — it is per-document user config, which is
-      // exactly what that JSON already is, so it needs no column of its own.
-      setThreshold(lay.config.reflow_threshold > 0
-        ? Math.round(lay.config.reflow_threshold) : DEFAULT_REFLOW_THRESHOLD);
+      // The delay rides in layout_config — it is per-document user config, which is exactly
+      // what that JSON already is, so it needs no column of its own.
+      setDelayS(lay.config.reflow_delay_s > 0
+        ? Math.round(lay.config.reflow_delay_s) : DEFAULT_REFLOW_DELAY_S);
       setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
@@ -206,8 +214,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // flowed against. Editing a translation moves a few lines; changing a font moves all of
   // them. Those are different questions, so they are asked separately.
   const sigLines: SigLine[] = useMemo(() => toSigLines(renderLines), [renderLines]);
-  const styleFp = useMemo(
-    () => hash(`${styleCss} ${JSON.stringify(config ?? {})}`), [styleCss, config]);
+  // Only what actually LAYS THE PAGE OUT belongs in the fingerprint. `layout_config` is also
+  // where per-document preferences live, and `reflow_delay_s` is one of them — leaving it in
+  // meant that nudging the re-flow delay counted as a change to the booklet and started the
+  // very re-flow you were trying to postpone.
+  const styleFp = useMemo(() => {
+    const c = (config ?? {}) as unknown as Record<string, unknown>;
+    const layout = Object.keys(c).filter((k) => k !== 'reflow_delay_s').sort()
+      .map((k) => `${k}=${c[k]}`).join(' ');
+    return hash(`${styleCss} ${layout}`);
+  }, [styleCss, config]);
   // Per EDITION, and it has to be: the stream carries each edition's own translation, so
   // `en`'s signature and `de`'s differ completely. One shared signature would read "the whole
   // booklet changed" the moment you clicked another edition chip, and re-flow the lot for
@@ -222,7 +238,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // A style or geometry change moves EVERY line at once, so counting syllables says nothing
   // useful about it — re-flow straight away rather than sit at "0 of 50".
   const styleStale = !!stamp.fp && stamp.fp !== styleFp;
-  const remaining = Math.max(0, threshold - dirty);
+  const drifted = styleStale || dirty > 0;
 
   // Auto-suggest pagination: the heavy full-stream measure container is mounted ONLY
   // while `measuring`, measured once, then unmounted (keeps the steady-state DOM light).
@@ -371,25 +387,44 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   /**
    * Keep the automatic breaks where they belong, without making a nuisance of it.
    *
-   * Three ways in:
-   *  - no breaks at all — a document opened for the first time;
-   *  - the styles or the page geometry moved, which relays out EVERY line, so counting
-   *    syllables would be theatre;
-   *  - enough syllables have changed upstream to spend the budget. The chip counts it down,
-   *    so a re-flow is never a surprise.
+   * A document with no breaks at all seeds immediately — there is nothing to disturb. After
+   * that, drift starts a QUIET PERIOD rather than an immediate re-flow, and the clock
+   * restarts on every further change: the pages therefore never move while you are still
+   * working, only once you have stopped. That is the whole point of measuring the delay in
+   * seconds and not in edits — an edit budget spends itself mid-sentence, under the cursor.
    *
-   * Deliberately NOT triggered by the balancing (gaps, widths, the gap fill): those are
-   * local decisions about a page you are looking at, and re-flowing under them would move
-   * the page while you tune it. If one pushes a page past its block, the overfull badge says
-   * so — that is a better answer than repaginating the booklet under the user's hands.
+   * The drift itself is still measured by the stream signature and the style fingerprint —
+   * that is what NOTICES a change, and what stops the timer running on a booklet nothing has
+   * happened to. It just does not decide when.
+   *
+   * Deliberately NOT started by the balancing (gaps, widths, the gap fill): those are local
+   * decisions about a page you are looking at, and re-flowing under them would move the page
+   * while you tune it. If one pushes a page past its block, the overfull badge says so —
+   * a better answer than repaginating the booklet under the user's hands.
    */
   useEffect(() => {
-    if (!config || !lines.length || seeding || !streamReady) return;
-    if (!hasStoredBreaks) { void requestSeed(false); return; }
-    if (!stamp.sig) return;                      // never stamped: nothing to compare against
-    if (styleStale || dirty >= threshold) void requestSeed(true);
+    // Every path that is NOT counting has to say so. Bailing out silently leaves whatever
+    // number was last painted frozen on the chip — which reads as a clock that has stopped,
+    // and is exactly as untrustworthy as no clock at all.
+    if (!config || !lines.length || seeding || !streamReady) { setCountdown(null); return; }
+    if (!hasStoredBreaks) { setCountdown(null); void requestSeed(false); return; }
+    if (!stamp.sig) { setCountdown(null); return; }   // never stamped: nothing to compare to
+    if (!drifted) { setCountdown(null); return; }
+    // This effect re-runs whenever the drift changes — i.e. on every upstream edit — and its
+    // cleanup drops the pending clock. So each change restarts the quiet period; idling lets
+    // it run down, because an unchanged `dirty` leaves the deps alone.
+    setCountdown(delayS);
+    const started = performance.now();
+    const tick = window.setInterval(() => {
+      const left = Math.ceil(delayS - (performance.now() - started) / 1000);
+      if (left > 0) { setCountdown(left); return; }
+      window.clearInterval(tick);
+      setCountdown(null);
+      void requestSeed(true);
+    }, 250);
+    return () => window.clearInterval(tick);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, lines, streamReady, hasStoredBreaks, styleStale, dirty, threshold, stamp.sig]);
+  }, [config, lines, streamReady, hasStoredBreaks, drifted, styleStale, dirty, delayS, stamp.sig]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
@@ -488,23 +523,28 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     else void putRow(l, 'line_nospace', 1);
   };
 
-  // ── The page's gap fill: spend the slack a shared break left this edition ──
-  // Anchored on the page's first line, stored per edition (the Tibetan verso is the same
-  // lines in every edition, but each edition is its own booklet and may breathe its own way).
-  const gapFillOf = (start: number) => {
+  // ── Each page's gap fill: spend the slack a shared break left it ──
+  // Anchored on the page's first line, and kept per SIDE: the Tibetan verso is far denser
+  // than the translation facing it and wants far more air, so one control for the spread
+  // would force one of the two to be wrong. The verso's fill is shared across editions (it
+  // is the same Tibetan in every booklet); the recto's is the edition's own.
+  const gapFillOf = (start: number, side: PageSide) => {
     const l = renderLines[start];
-    return l ? (rowVal(l, 'gap_fill', lang) ?? 0) : 0;
+    return l ? (rowVal(l, GAP_FILL_KIND[side], gapFillLang(side, lang)) ?? 0) : 0;
   };
-  const setGapFill = (start: number, mm: number) => {
+  const setGapFill = (start: number, side: PageSide, mm: number) => {
     const l = renderLines[start];
     if (!l) return;
-    mm <= 0 ? void delRow(l, 'gap_fill', lang) : void putRow(l, 'gap_fill', mm, lang);
+    const kind = GAP_FILL_KIND[side];
+    const rowLang = gapFillLang(side, lang);
+    mm <= 0 ? void delRow(l, kind, rowLang) : void putRow(l, kind, mm, rowLang);
   };
-  // How far each of a page's gaps could still open before the page overflows. Measured off
+  // How far each of a page's gaps could still open before THAT page overflows. Measured off
   // the mounted page, so it answers for what is actually on screen; the slider uses it only
-  // to know where to stop.
-  const [slackByUnit, setSlackByUnit] = useState<Map<number, number>>(new Map());
-  const slackOf = (si: number) => slackByUnit.get(si) ?? 0;
+  // to know where to stop. Keyed `${unit}:${side}` — the two sides are measured apart, which
+  // is the whole point of splitting them.
+  const [slackByPage, setSlackByPage] = useState<Map<string, number>>(new Map());
+  const slackOf = (si: number, side: PageSide) => slackByPage.get(`${si}:${side}`) ?? 0;
 
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
@@ -611,20 +651,22 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           page.removeAttribute('title');
         }
       }
-      // How much MORE each gap on a spread could open before its tighter page overflows —
-      // the slider's stop. Both pages carry the same fill, so the binding side wins.
-      const next = new Map<number, number>();
+      // How much MORE each gap could open before ITS OWN page overflows — the slider's stop.
+      // Per side: the two pages fill independently, so a shared stop would hold the roomier
+      // one back to the tighter one's limit.
+      const next = new Map<string, number>();
       for (const sp of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-spread[data-unit]')) {
-        let room = Infinity;
-        for (const c of Array.from(sp.querySelectorAll<HTMLElement>('.booklet-content'))) {
+        for (const side of ['verso', 'recto'] as PageSide[]) {
+          const c = sp.querySelector<HTMLElement>(`.booklet-page.${side} > .booklet-content`);
+          if (!c) continue;
           const gaps = c.querySelectorAll('.bk-gap').length;
-          room = Math.min(room, gaps ? slackOfContent(c) / gaps / MM_PX : 0);
+          const room = gaps ? slackOfContent(c) / gaps / MM_PX : 0;
+          next.set(`${sp.dataset.unit}:${side}`, Math.max(0, room));
         }
-        next.set(Number(sp.dataset.unit), Number.isFinite(room) ? Math.max(0, room) : 0);
       }
       // This effect runs on every render, so only disturb state when the answer moved —
       // otherwise setting it would schedule the render that runs it again.
-      setSlackByUnit((prev) => {
+      setSlackByPage((prev) => {
         if (prev.size === next.size
             && Array.from(next).every(([k, v]) => Math.abs((prev.get(k) ?? -1) - v) < 0.05)) {
           return prev;
@@ -796,25 +838,30 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
-        {/* The re-flow budget, counted in changed syllables so it tracks the work rather than
-            the clock. It only appears once there is a stamp to measure drift against. */}
+        {/* The quiet period before the automatic breaks re-flow themselves. Counted in
+            SECONDS and restarted by every upstream change, so the pages hold still while you
+            work and settle once you stop. Only shown once there is a stamp to measure drift
+            against. */}
         {stamp.sig && !seeding && (
           <span className={`px-2 py-1 rounded-md flex items-center gap-1 ${
-                  remaining === 0 ? 'text-vermilion' : 'text-ink-soft'}`}
+                  countdown != null ? 'text-lapis' : 'text-ink-soft'}`}
                 style={{ border: '1px solid var(--cline)' }}
-                title={'The automatic breaks re-flow themselves once this many changed '
-                     + 'syllables pile up upstream. Your own breaks and splits are kept. '
-                     + 'Balancing a page never triggers it.'}>
+                title={'After an upstream change, the automatic breaks re-flow once this many '
+                     + 'seconds have passed with nothing else changing — the clock restarts on '
+                     + 'every edit, so nothing moves while you are still working. Your own '
+                     + 'breaks and splits are kept. Balancing a page never starts it.'}>
             re-flow after
             <input
-              type="number" min={1} step={10} value={threshold}
-              onChange={(e) => setThreshold(Math.max(1, Number(e.target.value) || 1))}
+              type="number" min={1} step={5} value={delayS}
+              onChange={(e) => setDelayS(Math.max(1, Number(e.target.value) || 1))}
               onBlur={(e) => void putLayoutConfig(documentId,
-                { reflow_threshold: Math.max(1, Number(e.target.value) || 1) } as Partial<LayoutConfig>)}
-              className="w-12 px-1 py-0 rounded bg-white text-xs text-center"
+                { reflow_delay_s: Math.max(1, Number(e.target.value) || 1) } as Partial<LayoutConfig>)}
+              className="w-11 px-1 py-0 rounded bg-white text-xs text-center"
               style={{ border: '1px solid var(--cline)' }} />
-            <span className={remaining === 0 ? '' : 'text-lapis'}>
-              {remaining === 0 ? 'syllables · now' : `syllables · ${remaining} to go`}
+            <span>
+              {countdown != null
+                ? `s quiet · ${countdown}s${dirty ? ` (${dirty} syllables changed)` : ''}`
+                : 's quiet · settled'}
             </span>
           </span>
         )}
@@ -870,20 +917,29 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                   <InternalTitlePage titleLines={u.titleLines}
                                      widthOf={furnitureWidthOf(u.item)} />
                 ) : (
-                  <div className="booklet-spread" data-unit={si}
-                       style={gapFillVars(rows, renderLines[u.s.start], lang)}>
-                    <div className="booklet-page verso">
+                  // Each page carries its OWN fill var and its own slider — the Tibetan is
+                  // much denser than the translation and needs far more air, so the two are
+                  // set apart. The stop is the room LEFT, so the reach is what is already
+                  // spent plus what remains.
+                  <div className="booklet-spread" data-unit={si}>
+                    <div className="booklet-page verso"
+                         style={gapFillVars(rows, renderLines[u.s.start], lang, 'verso')}>
                       <div className="booklet-content">{renderPageLines(u.s, Verso)}</div>
+                      <GapFillSlider
+                        side="verso"
+                        value={gapFillOf(u.s.start, 'verso')}
+                        max={gapFillOf(u.s.start, 'verso') + slackOf(si, 'verso')}
+                        onChange={(mm) => setGapFill(u.s.start, 'verso', mm)} />
                     </div>
-                    <div className="booklet-page recto">
+                    <div className="booklet-page recto"
+                         style={gapFillVars(rows, renderLines[u.s.start], lang, 'recto')}>
                       <div className="booklet-content">{renderPageLines(u.s, Recto)}</div>
                       <div className="booklet-folio">{si + 1}</div>
-                      {/* The stop is the room LEFT, so the reach is what is already spent
-                          plus what remains. */}
                       <GapFillSlider
-                        value={gapFillOf(u.s.start)}
-                        max={gapFillOf(u.s.start) + slackOf(si)}
-                        onChange={(mm) => setGapFill(u.s.start, mm)} />
+                        side="recto"
+                        value={gapFillOf(u.s.start, 'recto')}
+                        max={gapFillOf(u.s.start, 'recto') + slackOf(si, 'recto')}
+                        onChange={(mm) => setGapFill(u.s.start, 'recto', mm)} />
                     </div>
                   </div>
                 )}

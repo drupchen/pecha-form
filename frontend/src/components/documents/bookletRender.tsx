@@ -490,24 +490,40 @@ export const BREAK_MANUAL = 1;
 export const isManualBreak = (r: DocumentLayoutRow) =>
   r.kind === 'page_break' && !(r.char_offset ?? 0) && (r.value ?? 0) === BREAK_MANUAL;
 
+/** The two facing pages fill their slack INDEPENDENTLY — they are not two views of one
+ *  thing. The Tibetan verso is far denser than the translation across from it and wants far
+ *  more air; a single control would force one of them to be wrong. */
+export type PageSide = 'verso' | 'recto';
+export const GAP_FILL_KIND = { verso: 'gap_fill_verso', recto: 'gap_fill_recto' } as const;
+
 /**
- * How much every empty line on one page grows, in mm — the page's `gap_fill`, anchored on
- * its first line and stored per edition.
+ * Which edition a side's fill belongs to.
  *
- * The breaks are shared, so the tallest edition drives them and the shorter ones are left
- * with slack at the foot. Each edition is its own printed booklet, though, so each may spend
- * that slack its own way: the Tibetan verso of the English booklet and of the German one hold
- * the same lines on the same page, and are free to breathe differently down it.
+ * The same seam as everything else here: the VERSO is the same Tibetan in all four booklets,
+ * so its fill is shared ('') and set once; the RECTO's text is the edition's own, so its
+ * fill is the edition's own too. (This is exactly why `width_tibetan` is shared while
+ * `width_translation` is not.)
+ */
+export const gapFillLang = (side: PageSide, lang: string) => (side === 'verso' ? '' : lang);
+
+/**
+ * How much every empty line on ONE page grows, in mm — that page's fill, anchored on its
+ * first line.
+ *
+ * The breaks are shared, so the tallest edition drives them and every other page is left with
+ * slack at the foot through no fault of its own. This is what spends it.
  *
  * Returned as a style object so the bench and the print page apply it the one same way — it
  * inherits from the page down to every `.bk-gap` inside (see `booklet.css`).
  */
 export function gapFillVars(
-  rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string,
+  rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string, side: PageSide,
 ): React.CSSProperties {
   if (!line) return {};
-  const r = rows.find((x) => x.kind === 'gap_fill' && x.item_id === line.itemId
-                          && x.anchor_syl_id === line.startSylId && (x.lang ?? '') === lang);
+  const kind = GAP_FILL_KIND[side];
+  const rowLang = gapFillLang(side, lang);
+  const r = rows.find((x) => x.kind === kind && x.item_id === line.itemId
+                          && x.anchor_syl_id === line.startSylId && (x.lang ?? '') === rowLang);
   const mm = r?.value ?? 0;
   return mm ? ({ ['--gap-fill' as string]: `${mm}mm` } as React.CSSProperties) : {};
 }

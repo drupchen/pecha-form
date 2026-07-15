@@ -173,16 +173,18 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
             </div>
           );
         }
-        // The page's gap fill rides as a CSS var, exactly as it does on the bench — the two
-        // read the same rows through the same helper, so they cannot drift apart. Physical
-        // pages here, so it is set on each side rather than on a spread.
-        const fill = gapFillVars(rows, flowLines[u.s.start], lang);
+        // Each page's gap fill rides as a CSS var, exactly as on the bench — the two read the
+        // same rows through the same helper, so they cannot drift apart. The sides fill
+        // independently: the Tibetan is denser and carries its own, shared by every edition.
+        const start = flowLines[u.s.start];
         return (
           <React.Fragment key={`u${i}`}>
-            <div className="booklet-page verso print-page" style={fill}>
+            <div className="booklet-page verso print-page"
+                 style={gapFillVars(rows, start, lang, 'verso')}>
               <div className="booklet-content">{renderLines(u.s, Verso)}</div>
             </div>
-            <div className="booklet-page recto print-page" style={fill}>
+            <div className="booklet-page recto print-page"
+                 style={gapFillVars(rows, start, lang, 'recto')}>
               <div className="booklet-content">{renderLines(u.s, Recto)}</div>
               <div className="booklet-folio">{folio}</div>
             </div>

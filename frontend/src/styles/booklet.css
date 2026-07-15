@@ -301,22 +301,31 @@
 }
 .bk-gap-removed { height: 0; position: relative; }
 
-/* The page's "fill it out" slider: opens every empty line on this page by the same amount,
- * spending the slack the tallest edition's break left behind. Sits in the recto's foot
- * margin, out of the text block; a design control, never ink. */
+/* Each page's "fill it out" slider: opens every empty line on THAT page by the same amount,
+ * spending the slack the shared break left it. One per page, not per spread — the Tibetan
+ * verso is far denser than the translation facing it and wants far more air, so they are set
+ * apart. Each sits in its own page's foot margin, inside the text block's left edge (which
+ * differs by side: the spine is on the right of a verso and the left of a recto). A design
+ * control, never ink. */
 .bk-gapfill {
   position: absolute;
-  left: var(--m-bind);
   bottom: 1mm;
   z-index: 3;
   display: none;
   align-items: center;
   gap: 4px;
 }
-.booklet-page.recto:hover .bk-gapfill,
+.bk-gapfill-verso { left: var(--m-outer); }
+.bk-gapfill-recto { left: var(--m-bind); }
+.booklet-page:hover > .bk-gapfill,
 .bk-gapfill:focus-within { display: flex; }
-.bk-gapfill input[type='range'] { width: 42mm; accent-color: var(--jade, #3a7d5f); height: 10px; }
-.bk-gapfill span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f); }
+.bk-gapfill input[type='range'] { width: 38mm; accent-color: var(--jade, #3a7d5f); height: 10px; }
+.bk-gapfill span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
+                   white-space: nowrap; }
+/* The Tibetan side reads in the darker ink — it is the shared page, set once for all four
+   editions, and worth telling apart from the per-edition one facing it. */
+.bk-gapfill-verso input[type='range'] { accent-color: var(--lapis, #2f6f9f); }
+.bk-gapfill-verso span { color: var(--lapis, #2f6f9f); }
 @media print { .bk-gapfill { display: none !important; } }
 
 /* Gap controls (−/+/× and restore) — revealed on hover of the gap. */
