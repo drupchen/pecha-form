@@ -133,13 +133,19 @@ function stripAttrs(root: HTMLElement): void {
   });
 }
 
-/** An uncontrolled editable region — innerHTML is set once so the caret never jumps. */
-const Editable: React.FC<{ className: string; html: string; onChange: (h: string) => void }> =
-  ({ className, html, onChange }) => {
-    const ref = useRef<HTMLDivElement>(null);
+/** An uncontrolled editable region — innerHTML is set once so the caret never jumps.
+ *  `tag` because a role whose real shape is an inline RUN has to be previewed as one: as a
+ *  block it would take an `align` and an `indent` that do something quite different — or
+ *  nothing at all — where it actually prints. */
+const Editable: React.FC<{
+  className: string; html: string; onChange: (h: string) => void; tag?: 'div' | 'span';
+}> = ({ className, html, onChange, tag = 'div' }) => {
+    const ref = useRef<HTMLElement>(null);
     useEffect(() => { if (ref.current) ref.current.innerHTML = html; /* once */ }, []); // eslint-disable-line
-    return <div ref={ref} className={`${className} bk-editable`} contentEditable suppressContentEditableWarning
-                onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
+    const T = tag as 'div';
+    return <T ref={ref as React.RefObject<HTMLDivElement>}
+              className={`${className} bk-editable`} contentEditable suppressContentEditableWarning
+              onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
   };
 
 export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
@@ -336,8 +342,9 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   };
 
   const renderBlock = (b: Block) => {
-    const E = (i: number, cls: string) =>
-      <Editable key={i} className={cls} html={b.parts[i] ?? ''} onChange={h => editPart(b.id, i, h)} />;
+    const E = (i: number, cls: string, tag?: 'div' | 'span') =>
+      <Editable key={i} className={cls} tag={tag}
+                html={b.parts[i] ?? ''} onChange={h => editPart(b.id, i, h)} />;
     switch (b.kind) {
       case 'title': return <div className="bk-titlepage">{sealSlot()}{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}</div>;
       case 'section_1': return <div className="bk-line">{E(0, 'bk-section bk-section-l1')}</div>;
@@ -346,9 +353,21 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       case 'tibetan_title': return <div className="bk-line bk-role-title">{E(0, 'bk-tibetan')}</div>;
       case 'tibetan_body': return <div className="bk-line">{E(0, 'bk-tibetan')}</div>;
       case 'tibetan_inline': return <div className="bk-line">{E(0, 'bk-tibetan-inline')}</div>;
-      // The booklet's own markup for a small-letters Tibetan line (bookletRender emits
-      // `.bk-tibetan` under `.bk-role-small`), so the specimen previews what prints.
-      case 'tibetan_small': return <div className="bk-line bk-role-small">{E(0, 'bk-tibetan')}</div>;
+      // A MIXED line — body Tibetan with a small run inside it — because that is the shape
+      // this role mostly meets. Both of its selectors are live (a wholly-small line is real
+      // too), but only this one shows what the props actually do: on an inline span `align`
+      // silently won't take, and `indent` becomes a horizontal margin that injects white
+      // space into the middle of the line. Previewing the block shape alone would let both
+      // look like they worked here and misbehave only in the booklet.
+      case 'tibetan_small': return (
+        <div className="bk-line bk-role-verse">
+          <div className="bk-tibetan">
+            <span>བོད་ཡིག་ </span>
+            {E(0, 'bk-tibetan-small', 'span')}
+            <span> བོད་ཡིག</span>
+          </div>
+        </div>
+      );
       case 'pair': return <div className="bk-line bk-pair">{E(0, 'bk-phonetics')}{E(1, 'bk-translation')}</div>;
       case 'integrated': return <div className="bk-line bk-integrated">{E(0, 'bk-tibetan-inline')}{E(1, 'bk-phonetics')}{E(2, 'bk-translation')}</div>;
       case 'mantra': return <div className="bk-line bk-role-mantra">{E(0, 'bk-phonetics')}</div>;

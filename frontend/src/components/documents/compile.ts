@@ -20,7 +20,17 @@ export interface DocLine {
   role: string;                // verse | prose | mantra | title | small | plain
   startSylId: string;
   endSylId: string;
-  tokens: { id: string; render: string }[];   // Tibetan render (with its line breaks)
+  /**
+   * The Tibetan render (carrying its own line breaks).
+   *
+   * `small` marks a syllable inside a MINOR run — small letters (ཡིག་ཆུང) or an inline
+   * sapche topic. It is a property of the RUN, not of the line: a line commonly holds body
+   * Tibetan and a small run together, and keeps a single `role` (it is one translation unit)
+   * while its type sizes differ mid-line. That is a character style, and this flag is the
+   * only thing that survives to say so — `deriveChunks` computes it per token and the line's
+   * own `tagType` deliberately forgets it.
+   */
+  tokens: { id: string; render: string; small?: boolean }[];
   /** The derivation op that emitted this line's ANCHOR syllable, or null for the text's own.
    *  A syllable id is position-unique within a text, but a text that transcludes the same
    *  source twice repeats its uuids — so `(startSylId, opId)` is what actually names the

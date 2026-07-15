@@ -35,6 +35,23 @@ interface EditionStream { lang: string; lines: DocLine[] }
 const DEFAULT_REFLOW_DELAY_S = 20;
 
 /**
+ * Bump when a RENDERER change moves line geometry without moving `styleCss` or
+ * `layout_config`.
+ *
+ * The two drift detectors watch the document: the signature watches its content, the
+ * fingerprint watches its styles and geometry. Neither watches the CODE — so a change to how
+ * a line is drawn leaves every booklet holding a pagination measured against type that is no
+ * longer what prints, and says nothing. This is the fingerprint's way of saying "the renderer
+ * moved, so every line may have": one integer, routed to the same immediate re-flow a font
+ * change takes, which is exactly the right path — a renderer change moves all of them at once,
+ * so counting changed syllables would say nothing useful about it.
+ *
+ * 2: small runs began printing at their own size inside a body line (a character style), which
+ *    re-wraps every line that holds one.
+ */
+const RENDER_EPOCH = 2;
+
+/**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
  *
  * It exists because the breaks are SHARED — the tallest edition decides where a page ends,
@@ -284,7 +301,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const c = (config ?? {}) as unknown as Record<string, unknown>;
     const layout = Object.keys(c).filter((k) => k !== 'reflow_delay_s').sort()
       .map((k) => `${k}=${c[k]}`).join(' ');
-    return hash(`${styleCss} ${layout}`);
+    return hash(`${RENDER_EPOCH} ${styleCss} ${layout}`);
   }, [styleCss, config]);
   // Per EDITION, and it has to be: the stream carries each edition's own translation, so
   // `en`'s signature and `de`'s differ completely. One shared signature would read "the whole

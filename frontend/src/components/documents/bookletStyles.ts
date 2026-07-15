@@ -54,12 +54,23 @@ const RAW_ROLE_DEFS: RoleDef[] = [
   // ── Tibetan page (two-page) ──
   { role: 'tibetan_title', label: 'Tibetan (section heading)', selector: '.bk-role-title .bk-tibetan, .booklet-root .bk-role-sapche .bk-tibetan',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '11pt', align: 'left', indent: '4mm' }, place: { twopage: G_TIB } },  // ས་བཅད 11, left, indent (NOT enlarged/centred)
-  // ཡིག་ཆུང — the Tibetan of a small-letters run. The booklet renders it like every other Tibetan
-  // line (`.bk-tibetan` under `.bk-role-small`), so THAT is what the role must target; the legacy
-  // `.bk-tibetan-small` stays a second alternative (it carries its own `.booklet-root` because
-  // `ruleFor` only prefixes the first selector). Being one class deeper than the body rule
-  // (`.booklet-root .bk-tibetan`), it wins for small runs and leaves the other lines alone.
-  { role: 'tibetan_small', label: 'Tibetan (small letters)',
+  // ཡིག་ཆུང — small letters, and inline sapche topics (the chunker calls them one thing: runs
+  // "rendered SMALL in the Tibetan", and both editors draw them so).
+  //
+  // TWO shapes, both live, and the second is the one that matters:
+  //   `.bk-role-small .bk-tibetan`  — a line that is WHOLLY small. A block.
+  //   `.bk-tibetan-small`           — a run INSIDE a line of any role. An inline span.
+  // The second carries its own `.booklet-root` because `ruleFor` only prefixes the first
+  // selector of a list. It was written as "legacy" and left unwired, which is why a line
+  // holding body Tibetan and a small run printed wholly at body size.
+  //
+  // Mind what that means for the props here, because `ruleFor` cannot emit one to only one of
+  // the two: `align` does nothing on an inline span (it silently won't take), `indent` becomes
+  // a horizontal margin and would inject white space into the MIDDLE of every mixed line, and
+  // a large `lineHeight` would inflate the mixed line's box (the line box is the max over its
+  // inline boxes, so at 12pt this otherwise leaves the body's alone). The Style Studio
+  // specimen shows the inline shape, so all three misbehave in front of whoever sets them.
+  { role: 'tibetan_small', label: 'Tibetan (small letters, inline topics)',
     selector: '.bk-role-small .bk-tibetan, .booklet-root .bk-tibetan-small',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '12pt', lineHeight: 'var(--leading)' }, place: { twopage: G_TIB } },
   { role: 'tibetan_body', label: 'Tibetan (body)', selector: '.bk-tibetan',

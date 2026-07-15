@@ -119,7 +119,8 @@ describe('flowPages', () => {
 describe('streamSignature / dirtySyllables', () => {
   const L = (i: number, over: Partial<SigLine> = {}): SigLine => ({
     itemId: 1, startSylId: `syl${i}`, role: 'verse', level: null,
-    tokenCount: 7, phonetics: `phon ${i}`, translation: `trans ${i}`, emptyAfter: false, ...over,
+    tokenCount: 7, phonetics: `phon ${i}`, translation: `trans ${i}`, emptyAfter: false,
+    smallMask: '', ...over,
   });
   const ten = Array.from({ length: 10 }, (_, i) => L(i));
 
@@ -174,6 +175,28 @@ describe('streamSignature / dirtySyllables', () => {
     expect(s.length).toBeLessThan(25_000);
   });
 
+  // A small run prints at its own size mid-line, so re-tagging one re-wraps the line while
+  // its role, token count and text all stay put. Nothing else in the signature can see it.
+  it('notices a sub-run being tagged small', () => {
+    const now = ten.map((l, i) => (i === 4 ? { ...l, smallMask: '0011100' } : l));
+    expect(dirtySyllables(streamSignature(ten), now)).toBe(7);
+  });
+
+  it('notices a small run MOVING within the line', () => {
+    // Same count, different place: [small, body] and [body, small] wrap differently.
+    const a = ten.map((l, i) => (i === 4 ? { ...l, smallMask: '1100000' } : l));
+    const b = ten.map((l, i) => (i === 4 ? { ...l, smallMask: '0000011' } : l));
+    expect(dirtySyllables(streamSignature(a), b)).toBe(7);
+  });
+
+  it('leaves a booklet with no small runs hashing exactly as it did', () => {
+    // The field is appended only when a line HAS one. A booklet without any must not be told
+    // its pagination moved — the fingerprint carries a renderer change, not this.
+    const noSmall = streamSignature(ten);
+    expect(noSmall.split(' ')).toHaveLength(10);
+    expect(dirtySyllables(noSmall, ten.map((l) => ({ ...l, smallMask: '' })))).toBe(0);
+  });
+
   it('separates its fields, so no two lines can be confused', () => {
     // Without a separator, ('ab','c') and ('a','bc') would hash alike.
     const a = streamSignature([L(0, { phonetics: 'ab', translation: 'c' })]);
@@ -189,8 +212,23 @@ describe('toSigLines', () => {
       tokens: [{}, {}, {}], phonetics: 'p', translation: 't', emptyAfter: true,
     }])).toEqual([{
       itemId: 2, startSylId: 's', role: 'sapche', level: 1,
-      tokenCount: 3, phonetics: 'p', translation: 't', emptyAfter: true,
+      tokenCount: 3, phonetics: 'p', translation: 't', emptyAfter: true, smallMask: '',
     }]);
+  });
+
+  it('reads the small run off the tokens, by position', () => {
+    expect(toSigLines([{
+      itemId: 1, startSylId: 's', role: 'verse', level: null,
+      tokens: [{}, { small: true }, { small: true }, {}],
+      phonetics: 'p', translation: 't', emptyAfter: false,
+    }])[0].smallMask).toBe('0110');
+  });
+
+  it('leaves the mask empty when nothing is small', () => {
+    expect(toSigLines([{
+      itemId: 1, startSylId: 's', role: 'verse', level: null,
+      tokens: [{}, {}], phonetics: 'p', translation: 't', emptyAfter: false,
+    }])[0].smallMask).toBe('');
   });
 });
 

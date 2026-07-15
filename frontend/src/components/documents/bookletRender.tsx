@@ -240,9 +240,18 @@ export const Verso: React.FC<{
       {/* Split mode owns the syllable clicks — no width grip competing for the pointer. */}
       <WidthLine className="bk-tibetan" {...widthProps(adj, 'tibetan', true)}
                  onCommit={onSplit ? undefined : widthProps(adj, 'tibetan', true).onCommit}>
+        {/* `bk-tibetan-small` goes on the SYLLABLE, not the line. Small letters (ཡིག་ཆུང) and
+            inline sapche topics are runs INSIDE a line: the line keeps one role, because it is
+            one translation unit, while its type sizes differ mid-way. That is a character
+            style — which is what it is in the source docx. `deriveChunks` has always flagged
+            the tokens; the booklet was the one Tibetan renderer throwing that away, so a line
+            holding both printed wholly at body size. Both editors already class the span this
+            way. One span per token, never grouped: `onSplit` indexes `l.tokens` by position,
+            and grouping would split lines at the wrong syllable. */}
         {l.tokens.map((t, i) => (
           <span key={i}
-                className={onSplit ? 'bk-syl' : undefined}
+                className={[onSplit ? 'bk-syl' : '', t.small ? 'bk-tibetan-small' : '']
+                            .filter(Boolean).join(' ') || undefined}
                 onClick={onSplit ? () => onSplit(split ? -1 : i) : undefined}>
             {t.render}
           </span>
@@ -370,6 +379,10 @@ export const TitleContent: React.FC<{
           // A real line out of the text: anchored on its own syllable, like any body line,
           // and so shared by every edition.
           <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(anchorOf(t))}>
+            {/* No `bk-tibetan-small` here, deliberately. The role speaks in absolute points,
+                so the class would pin a title's small run to 12pt inside 24pt type, where it
+                wants roughly 18. The vocabulary cannot say "proportionally smaller", so the
+                title abstains rather than be confidently wrong. */}
             {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
           </WidthLine>
         ))}

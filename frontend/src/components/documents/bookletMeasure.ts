@@ -23,6 +23,19 @@ export function hash(s: string): string {
 export interface SigLine {
   itemId: number; startSylId: string; role: string; level?: number | null;
   tokenCount: number; phonetics: string; translation: string | null; emptyAfter: boolean;
+  /**
+   * Which of the line's syllables are SMALL runs — '1'/'0' by position, or '' when it has
+   * none.
+   *
+   * A small run prints at its own size inside an otherwise body-sized line, so re-tagging
+   * one re-wraps the line — while its role, its token count and its text all stay exactly
+   * as they were. Every other field here would swear nothing had happened.
+   *
+   * A bitmap and not a count, because position is the whole point: [small, body, small] and
+   * [small, small, body] share a count and wrap differently. It costs nothing to be right —
+   * the signature's size budget is on its OUTPUT, and `hash` returns 8 chars for any input.
+   */
+  smallMask: string;
 }
 
 /**
@@ -39,8 +52,14 @@ export function streamSignature(lines: SigLine[]): string {
   // control byte in the source would be invisible to the next reader.
   const SEP = '\u0000';
   return lines.map((l) => {
+    // `smallMask` is appended only when the line HAS a small run. Joining an empty field
+    // unconditionally would be the cleaner encoding and would re-hash every line of every
+    // booklet — telling each one its whole stream had changed, which is a lie, and one that
+    // would bury the real edits sitting in the drift count. A renderer change announces
+    // itself through the style fingerprint instead; this field is about small runs.
     const body = [l.itemId, l.startSylId, l.role, l.level ?? '',
-                  l.phonetics, l.translation ?? '', l.emptyAfter ? 1 : 0].join(SEP);
+                  l.phonetics, l.translation ?? '', l.emptyAfter ? 1 : 0,
+                  ...(l.smallMask ? [l.smallMask] : [])].join(SEP);
     return `${hash(body)}:${l.tokenCount}`;
   }).join(' ');
 }
@@ -49,13 +68,15 @@ export function streamSignature(lines: SigLine[]): string {
  *  purpose: this module stays free of the render types, so it can be tested without a DOM. */
 export function toSigLines(lines: readonly {
   itemId: number; startSylId: string; role: string; level?: number | null;
-  tokens: readonly unknown[]; phonetics: string; translation: string | null;
+  tokens: readonly { small?: boolean }[]; phonetics: string; translation: string | null;
   emptyAfter: boolean;
 }[]): SigLine[] {
   return lines.map((l) => ({
     itemId: l.itemId, startSylId: l.startSylId, role: l.role, level: l.level ?? null,
     tokenCount: l.tokens.length, phonetics: l.phonetics, translation: l.translation,
     emptyAfter: l.emptyAfter,
+    smallMask: l.tokens.some((t) => t.small)
+      ? l.tokens.map((t) => (t.small ? '1' : '0')).join('') : '',
   }));
 }
 

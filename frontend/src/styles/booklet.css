@@ -240,11 +240,24 @@
 }
 
 /* Tibetan small letters (ཡིག་ཆུང) — small inline Tibetan instructions / annotations. */
+/* Tibetan small letters (ཡིག་ཆུང) — and inline sapche topics, which the chunker calls the same
+ * thing: runs "rendered SMALL in the Tibetan".
+ *
+ * INLINE, on a syllable span inside `.bk-tibetan`, not on a line. A line commonly holds body
+ * Tibetan and a small run together and keeps ONE role (it is one translation unit) while its
+ * type sizes differ mid-way — a character style, as it is in the source docx.
+ *
+ * It does not compete with the body rule: that matches the `.bk-tibetan` DIV, this matches the
+ * SPAN inside it, so there is no cascade between them at all — a value set on the element beats
+ * one it would have inherited, whatever the specificity. `font-family` is inherited from the
+ * parent and `white-space` too (`pre-wrap`, already there), and `--leading` is UNITLESS, so a
+ * `line-height` here would compute `12pt × leading` exactly as inheriting the number does.
+ * Only the size has to be said.
+ *
+ * The mixed line keeps the BODY's line box: it is the max over the inline boxes, and 16pt's is
+ * taller. So this changes where the line WRAPS, not how tall it sets. */
 .bk-tibetan-small {
-  font-family: var(--font-tibetan);
   font-size: 12pt;
-  line-height: var(--leading);
-  white-space: pre-wrap;
 }
 
 /* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic), indented under the verse.
