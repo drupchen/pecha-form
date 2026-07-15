@@ -48,8 +48,10 @@ const DEFAULT_REFLOW_DELAY_S = 20;
  *
  * 2: small runs began printing at their own size inside a body line (a character style), which
  *    re-wraps every line that holds one.
+ * 3: consecutive ས་བཅད topics began sharing a line on the verso, which shortens every Tibetan
+ *    page that has a pair.
  */
-const RENDER_EPOCH = 2;
+const RENDER_EPOCH = 3;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.

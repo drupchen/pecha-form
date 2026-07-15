@@ -231,6 +231,28 @@
 }
 .bk-role-title .bk-tibetan,
 .bk-role-sapche .bk-tibetan { font-size: calc(var(--tibetan-pt) * 1.4); text-align: center; }
+
+/* Consecutive ས་བཅད topics share a line instead of each taking one of their own.
+ *
+ * A topic run is a few syllables — 92px and 77px of ink in a 423px text block, in this
+ * booklet — so stacking two of them spends a whole line of a dense page on white space.
+ *
+ * `inline-block` does it with no special-casing anywhere: each shrinks to its own ink, they
+ * flow side by side, and they wrap by themselves once a row of them runs out of measure. The
+ * gap between them is the role's own indent, already on each `.bk-tibetan`. They keep their
+ * baselines (the default `vertical-align`), which is what puts them on one LINE rather than
+ * merely in one row.
+ *
+ * The Tibetan side only: the recto's headings are sentences, and belong one per line.
+ *
+ * Both selectors are the same rule. The bench wraps every line in `.bk-linewrap` and the
+ * print page does not, so the wrapper has to go inline too — otherwise they would sit side by
+ * side in the PDF and stack on the bench, which is the one thing these two renderers may
+ * never do. */
+.booklet-page.verso .bk-line.bk-role-sapche,
+.booklet-page.verso .bk-linewrap:has(> .bk-line.bk-role-sapche) {
+  display: inline-block;
+}
 /* Tibetan integrated on the recto, sitting ABOVE its phonetics (not left on the verso). */
 .bk-tibetan-inline {
   font-family: var(--font-tibetan);
