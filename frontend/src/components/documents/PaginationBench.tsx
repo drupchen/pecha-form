@@ -10,7 +10,7 @@ import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars, gapFillLang, GAP_FILL_KIND,
-  anchorOf, splitAnchorOf,
+  anchorOf, splitAnchorOf, TIBETAN_LANG,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
 } from './bookletRender';
@@ -713,7 +713,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const furnitureWidthOf = (item: DocumentItem): BlockWidthOf => (key: string) => {
     const furn = key.startsWith('#');
     const kind: DocumentLayoutKind = furn ? 'width_furniture' : 'width_tibetan';
-    const rowLang = furn ? lang : '';
+    // A '#title_tib' block is the booklet's own TIBETAN, so it is shared like the text's own
+    // — the same string prints in every edition. Every other '#block' is that edition's text.
+    const rowLang = furn && !key.startsWith('#title_tib') ? lang : '';
     const k = `${item.id}:${key}:${kind}:${rowLang}`;
     return {
       valueMm: layoutByKey.get(k)?.value ?? 0,
@@ -734,7 +736,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     <FurniturePage key={`f${item.id}`} item={item}
       titleLines={item.kind === 'cover' ? mainTitleLines : []}
       body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
-      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)} />
+      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
+      tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)} />
   );
 
   if (!doc || !config) {
@@ -929,7 +932,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                                      display: 'flex', justifyContent: 'center' }}>
                 {u.kind === 'title' ? (
                   <InternalTitlePage titleLines={u.titleLines}
-                                     widthOf={furnitureWidthOf(u.item)} />
+                                     widthOf={furnitureWidthOf(u.item)}
+                                     tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)} />
                 ) : (
                   // Each page carries its OWN fill var and its own slider — the Tibetan is
                   // much denser than the translation and needs far more air, so the two are

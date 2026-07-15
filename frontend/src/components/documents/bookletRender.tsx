@@ -338,7 +338,18 @@ export const TitleContent: React.FC<{
   titleLines: DocLine[]; seal?: boolean; image?: React.ReactNode;
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
   widthOf?: BlockWidthOf;
-}> = ({ titleLines, seal, image, widthOf = NO_WIDTH }) => {
+  /**
+   * This booklet's own Tibetan for the title, if it has been given one — one line per line,
+   * newline-separated. Empty or absent falls back to the text's, which is where the string
+   * comes from in the first place: the field is seeded from it, so an override starts life as
+   * a copy and diverges only where the editor says so. Clearing it returns to following the
+   * text.
+   */
+  tibetan?: string | null;
+}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, tibetan }) => {
+  // The booklet's own lines, or the text's. An override is plain text — it has no syllables,
+  // so its lines anchor their widths on a block key instead (see `anchorOf`).
+  const ownLines = (tibetan ?? '').split('\n').map((t) => t.trim()).filter(Boolean);
   // The translated title's parts: the first is the main title, the rest the subtitle.
   // Prefer the title chunk's `<p>` structure (carried on any title line); fall back to
   // one entry per title line.
@@ -348,13 +359,20 @@ export const TitleContent: React.FC<{
     <div className="bk-titlepage">
       {image}
       {seal && !image && <div className="bk-seal">ༀ</div>}
-      {titleLines.map((t, i) => (
-        // A real line out of the text: anchored on its own syllable, like any body line,
-        // and so shared by every edition.
-        <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(t.startSylId)}>
-          {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
-        </WidthLine>
-      ))}
+      {ownLines.length
+        ? ownLines.map((line, i) => (
+          <WidthLine key={`o${i}`} className="bk-tibetan bk-title-tib"
+                     {...widthOf(`#title_tib${i}`)}>
+            {line}
+          </WidthLine>
+        ))
+        : titleLines.map((t, i) => (
+          // A real line out of the text: anchored on its own syllable, like any body line,
+          // and so shared by every edition.
+          <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(anchorOf(t))}>
+            {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
+          </WidthLine>
+        ))}
       {trans[0] && (
         <WidthLine className="bk-title-main" {...widthOf('#title_main')}>
           <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
@@ -409,7 +427,9 @@ export const FurnitureContent: React.FC<{
   orgSeal?: OrgSeal | null;
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
   widthOf?: BlockWidthOf;
-}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH }) => {
+  /** This booklet's own Tibetan for the cover title (see `TitleContent`). */
+  tibetan?: string | null;
+}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan }) => {
   // The imported image, sized from the stored width/height (mm); null = natural.
   const sized = item.image_width_mm != null || item.image_height_mm != null;
   const imgStyle: React.CSSProperties = {
@@ -428,7 +448,7 @@ export const FurnitureContent: React.FC<{
              style={{ width: orgSeal.width_mm ? `${orgSeal.width_mm}mm` : undefined,
                       height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
       : undefined;
-    return <TitleContent titleLines={titleLines} seal widthOf={widthOf}
+    return <TitleContent titleLines={titleLines} seal widthOf={widthOf} tibetan={tibetan}
                         image={item.has_image ? bkImage : sealImage} />;
   }
   if (item.kind === 'copyright') {
@@ -493,6 +513,7 @@ export const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
   orgSeal?: OrgSeal | null;
   widthOf?: BlockWidthOf;
+  tibetan?: string | null;
 }> = (props) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
@@ -503,12 +524,12 @@ export const FurniturePage: React.FC<{
 
 /** A text's internal title page as a facing-page mock (bench use). */
 export const InternalTitlePage: React.FC<{
-  titleLines: DocLine[]; widthOf?: BlockWidthOf;
-}> = ({ titleLines, widthOf }) => (
+  titleLines: DocLine[]; widthOf?: BlockWidthOf; tibetan?: string | null;
+}> = ({ titleLines, widthOf, tibetan }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content">
-        <TitleContent titleLines={titleLines} widthOf={widthOf} />
+        <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan} />
       </div>
     </div>
   </div>
@@ -925,6 +946,16 @@ export function deriveBooklet(
 }
 
 /** The per-language authored body of a furniture item (copyright text etc.). */
+/**
+ * The furniture slot the TIBETAN lives in.
+ *
+ * `document_furniture` is keyed by (item, lang), and every other body in it belongs to an
+ * edition. The Tibetan belongs to none of them — it is the same string in all four booklets —
+ * so it takes the one key that is not an edition. The document's own languages can never
+ * collide with it: a language code is never empty.
+ */
+export const TIBETAN_LANG = '';
+
 export function furnitureBodyOf(
   furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string,
 ): string | null {

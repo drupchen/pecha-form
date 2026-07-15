@@ -14,7 +14,7 @@ import {
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
 import { compileDocument } from './compile';
-import { deriveBooklet, type NavNode } from './bookletRender';
+import { deriveBooklet, TIBETAN_LANG, type NavNode } from './bookletRender';
 
 /** Furniture kinds that carry per-language authored text and/or an image. */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
@@ -87,6 +87,9 @@ export const DocumentsView: React.FC = () => {
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
   const [navPreview, setNavPreview] = useState<NavNode[]>([]);
+  // Per cover item: the Tibetan its text supplies. What the cover shows when the booklet has
+  // no Tibetan of its own, and what the editor's field is seeded from.
+  const [sourceTibetan, setSourceTibetan] = useState<Map<number, string>>(new Map());
   const [navLang, setNavLang] = useState<string>('');
   const [navLoading, setNavLoading] = useState(false);
   const pickRef = useRef<HTMLDivElement>(null);
@@ -125,6 +128,18 @@ export const DocumentsView: React.FC = () => {
         const d = deriveBooklet(current.items, layout.rows, compiled.lines, compiled.titleByItem,
                                furn, edition, false, compiled.headingsByItem);
         setNavPreview(d.navOutline);
+        // The Tibetan the cover shows when this booklet has not been given its own — the
+        // string the editor's field is SEEDED from, so an override starts as a copy of what
+        // is already on the page rather than as an empty box to retype it into.
+        // One line per LINE. The cover draws each title line as its own block, so joining
+        // them into one string would seed the field with a flattened title — and saving that
+        // back would collapse the cover to a single line.
+        const tibOf = (ls: { tokens: { render: string }[] }[]) =>
+          ls.map((l) => l.tokens.map((t) => t.render).join('').trim())
+            .filter(Boolean).join('\n');
+        setSourceTibetan(new Map(current.items
+          .filter((it) => it.kind === 'cover')
+          .map((it) => [it.id, tibOf(d.mainTitleLines)])));
       } catch { if (alive) setNavPreview([]); }
       finally { if (alive) setNavLoading(false); }
     })();
@@ -135,6 +150,19 @@ export const DocumentsView: React.FC = () => {
 
   const furnitureBody = (itemId: number, langCode: string) =>
     furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
+
+  /**
+   * The cover's Tibetan, when this booklet has been given its own.
+   *
+   * Left equal to the text's, nothing is stored and the cover goes on FOLLOWING the text —
+   * so a blur on an untouched field does not quietly freeze a copy of it, and clearing the
+   * box hands it back. That is the difference between seeding a field and forking the data.
+   */
+  const saveTibetan = async (itemId: number, body: string) => {
+    const source = (sourceTibetan.get(itemId) ?? '').trim();
+    const next = body.trim();
+    await saveFurniture(itemId, TIBETAN_LANG, next === source ? '' : next);
+  };
   const saveFurniture = async (itemId: number, langCode: string, body: string) => {
     if (!current) return;
     if (body === furnitureBody(itemId, langCode)) return;
@@ -416,6 +444,37 @@ export const DocumentsView: React.FC = () => {
                                 </div>
                               )}
                             </div>
+                          </div>
+                        )}
+                        {it.kind === 'cover' && (
+                          <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            <div className="text-[11px] text-ink-soft flex items-center gap-2">
+                              <span>Tibetan title — one line per line. Every edition prints it.</span>
+                              {furnitureBody(it.id, TIBETAN_LANG) ? (
+                                <button type="button"
+                                        onClick={() => void saveFurniture(it.id, TIBETAN_LANG, '')}
+                                        className="text-lapis hover:underline"
+                                        title="Discard this booklet's own Tibetan and follow the text again">
+                                  reset to the text’s
+                                </button>
+                              ) : (
+                                <span className="text-jade">following the text</span>
+                              )}
+                            </div>
+                            <textarea
+                              // Re-seed when the override appears or goes: the box is
+                              // uncontrolled, so without this "reset" would leave the old
+                              // text sitting in it, contradicting the page.
+                              key={`tib-${it.id}-${furnitureBody(it.id, TIBETAN_LANG) ? 'own' : 'src'}`}
+                              defaultValue={furnitureBody(it.id, TIBETAN_LANG)
+                                            || (sourceTibetan.get(it.id) ?? '')}
+                              onBlur={e => void saveTibetan(it.id, e.target.value)}
+                              rows={2} spellCheck={false}
+                              placeholder="The text has no Tibetan title yet"
+                              className="flex-1 px-2 py-1 rounded bg-white text-sm resize-y"
+                              style={{ border: '1px solid var(--cline)',
+                                       fontFamily: "'Chogyal', 'Jomolhari', serif", lineHeight: 1.6 }} />
                           </div>
                         )}
                         <div className="text-[11px] text-ink-soft">

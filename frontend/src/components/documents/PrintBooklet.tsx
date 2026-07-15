@@ -7,7 +7,7 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, gapFillVars, anchorOf,
+  deriveBooklet, furnitureBodyOf, gapFillVars, anchorOf, TIBETAN_LANG,
   type LineAdj, type WidthTarget, type BlockWidthOf,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -131,7 +131,10 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   const furnitureWidthOf = (item: DocumentItem): BlockWidthOf => (key: string) => {
     const furn = key.startsWith('#');
     const kind = furn ? 'width_furniture' : 'width_tibetan';
-    const r = rowByKey.get(`${item.id}:${key}:${kind}:${furn ? lang : ''}`);
+    // Keyed exactly as the bench writes them — including that the booklet's own Tibetan
+    // ('#title_tib') is shared across editions, like the text's own.
+    const rowLang = furn && !key.startsWith('#title_tib') ? lang : '';
+    const r = rowByKey.get(`${item.id}:${key}:${kind}:${rowLang}`);
     return { valueMm: r?.value ?? 0, min: 0, max: 0 };
   };
 
@@ -145,7 +148,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           body={furnitureBodyOf(furniture, item, lang)}
           toc={item.kind === 'toc' ? tocRows : []}
           orgSeal={orgSeal}
-          widthOf={furnitureWidthOf(item)} />
+          widthOf={furnitureWidthOf(item)}
+          tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)} />
       </div>
     </div>
   );
@@ -171,7 +175,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           return (
             <div key={`u${i}`} className="booklet-page furniture print-page">
               <div className="booklet-content">
-                <TitleContent titleLines={u.titleLines} widthOf={furnitureWidthOf(u.item)} />
+                <TitleContent titleLines={u.titleLines} widthOf={furnitureWidthOf(u.item)}
+                              tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)} />
               </div>
             </div>
           );
