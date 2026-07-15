@@ -4,7 +4,7 @@ import {
   type DocumentItem, type LayoutConfig, type DocumentLayoutRow, type DocumentFurnitureRow,
   type OrgSeal,
 } from '../../api/client';
-import { type DocLine, type OutlineHeading } from './compile';
+import { splitParagraphs, type DocLine, type OutlineHeading } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
 
 /**
@@ -291,6 +291,9 @@ export const Recto: React.FC<{
 export interface TocRow {
   title: string;
   page: number;
+  /** The text item this entry points at — the entry's stable identity, so its width survives
+   *  another text being added above it. */
+  itemId?: number;
   /** Indent depth (0 = flush). Text headers and top sapche sections are 0; nested
    *  sapche sections step in by their outline depth. */
   level: number;
@@ -337,6 +340,37 @@ export const TitleContent: React.FC<{
   );
 };
 
+/**
+ * A furniture body's authored LINES, each independently resizable.
+ *
+ * "Every line in the PDF" means every line the author wrote: a `<p>` of the copyright, of a
+ * caption, of the back cover. Visually wrapped lines are not elements and cannot carry a
+ * control; the paragraph is the finest thing that can.
+ *
+ * They sit inside ONE wrapper rather than becoming children of the page directly, and that
+ * is load-bearing twice over. `.bk-copyright` and `.bk-backcover` are flex columns: flex
+ * items do NOT margin-collapse, so paragraphs made into items would space themselves twice
+ * as far apart; inside the wrapper they are ordinary blocks and collapse as they always did.
+ * And a flex item shrinks to fit, which leaves a width control nothing to say — the wrapper
+ * stretches instead, so each line spans the text block and narrowing one actually rewraps it.
+ * Centred text stays centred: `text-align` does that, not the box's width.
+ */
+const FurnitureLines: React.FC<{
+  body: string; block: string; widthOf: BlockWidthOf; className?: string;
+}> = ({ body, block, widthOf, className }) => {
+  const paras = splitParagraphs(body);
+  if (!paras.length) return null;
+  return (
+    <div className="bk-fbody">
+      {paras.map((para, i) => (
+        <WidthLine key={i} className={className} {...widthOf(`#${block}${i}`)}>
+          <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(para) }} />
+        </WidthLine>
+      ))}
+    </div>
+  );
+};
+
 /** The inner content of a furniture page (cover/copyright/toc/image), WITHOUT the page
  *  frame — so the bench (facing-page mock) and the print page (physical sheet) can each
  *  wrap it in their own page element. */
@@ -376,29 +410,26 @@ export const FurnitureContent: React.FC<{
     return (
       <div className="bk-copyright">
         {item.has_image && bkImage}
-        {body && (
-          <WidthLine {...widthOf('#copyright')}>
-            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
-          </WidthLine>
-        )}
+        {body && <FurnitureLines body={body} block="copyright" widthOf={widthOf} />}
       </div>
     );
   }
   if (item.kind === 'toc') {
     return (
-      <WidthLine className="bk-toc" {...widthOf('#toc')}>
+      <div className="bk-toc">
         {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
         {toc.map((e, i) => (
-          <div key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
-               style={{ paddingLeft: `${e.level * 5}mm` }}>
+          <WidthLine key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
+                     style={{ paddingLeft: `${e.level * 5}mm` }}
+                     {...widthOf(`#toc:${e.itemId ?? i}`)}>
             {/* Inner HTML (block tags already flattened) so entities/emphasis render as
                 on the body headings, not as raw &#x27; text. */}
             <span className="bk-toc-title" dangerouslySetInnerHTML={{ __html: e.title }} />
             <span className="bk-toc-dots" />
             <span className="bk-toc-page">{e.page}</span>
-          </div>
+          </WidthLine>
         ))}
-      </WidthLine>
+      </div>
     );
   }
   if (item.kind === 'image_page') {
@@ -407,9 +438,8 @@ export const FurnitureContent: React.FC<{
         <div className="bk-imagepage">
           {bkImage}
           {body && (
-            <WidthLine className="bk-image-caption" {...widthOf('#caption')}>
-              <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
-            </WidthLine>
+            <FurnitureLines body={body} block="caption" widthOf={widthOf}
+                            className="bk-image-caption" />
           )}
         </div>
       )
@@ -421,11 +451,8 @@ export const FurnitureContent: React.FC<{
     return (
       <div className="bk-backcover">
         {item.has_image && bkImage}
-        {body && (
-          <WidthLine className="bk-copyright" {...widthOf('#backcover')}>
-            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
-          </WidthLine>
-        )}
+        {body && <FurnitureLines body={body} block="backcover" widthOf={widthOf}
+                                 className="bk-copyright" />}
       </div>
     );
   }
@@ -792,7 +819,7 @@ export function deriveBooklet(
     const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
     const startLine = itemStartLine.get(it.id);
     const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
-    return { title, page, level: 0 };
+    return { title, page, level: 0, itemId: it.id };
   });
   const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
 

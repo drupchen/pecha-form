@@ -105,6 +105,15 @@
 .bk-backcover .bk-image.bk-image-nat { max-width: 55mm; max-height: 45mm; }
 .bk-image-caption { font-family: var(--font-translation); font-size: 9.5pt; font-style: italic;
   color: #444; text-align: center; }
+/* A furniture body's authored lines (see `FurnitureLines`). The wrapper STRETCHES across the
+   text block: its parents are flex columns that centre their items, and a shrink-to-fit item
+   gives a width control nothing to bite on — narrowing it would not rewrap anything. Centred
+   text stays centred because `text-align` does that, not the box's width. The wrapper also
+   keeps the lines out of the flex layout, so their paragraph margins collapse as they always
+   did (flex items do not collapse, and would space themselves twice as far apart). */
+.bk-fbody { align-self: stretch; }
+.bk-fbody > * > p { margin: 0 0 0.55em; }
+.bk-fbody > *:last-child > p:last-child { margin-bottom: 0; }
 .bk-backcover { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 6mm; }
 
