@@ -59,7 +59,13 @@
 .booklet-page.verso { padding: var(--m-top) var(--m-bind) var(--m-bottom) var(--m-outer); }
 .booklet-page.recto { padding: var(--m-top) var(--m-outer) var(--m-bottom) var(--m-bind); }
 
-.booklet-content { height: 100%; }
+/* `flow-root` makes the text block a REAL box. Without it the first line's top margin
+   collapses straight THROUGH this element and out onto it, sliding the box down while its
+   height stays `--page-h - m-top - m-bottom` — so the box's foot ends up that margin BELOW
+   the text block, invisibly. The ink lands in the same place either way; what changes is
+   that the page now has a statable budget (its height) and that child rects mean what they
+   say, which is what the flow measurement and the overfull check both stand on. */
+.booklet-content { height: 100%; display: flow-root; }
 
 /* Furniture pages (title / copyright / toc / blank / backcover) — single, symmetric. */
 .booklet-page.furniture { padding: var(--m-top) var(--m-outer) var(--m-bottom); }
@@ -177,6 +183,19 @@
 
 /* ── Line roles (mapped to the reference docx named styles) ── */
 .bk-line { break-inside: avoid; }
+/* Space-above is suppressed at the top of a page — the typesetter's convention (InDesign
+ * ignores space-before at a frame top; Word calls it "suppress space before after a hard
+ * page break"). A section heading that happens to fall at a page top sits ON the text
+ * block, not 6.8mm below it.
+ *
+ * It also makes the pagination exact: the flow measures ONE continuous stream, where a
+ * line's top margin has already collapsed with its predecessor's bottom margin and so sits
+ * ABOVE the line's border box — outside the measurement. Suppressing it at render means
+ * the page reproduces the measured distance exactly, with a correction term of zero. The
+ * margin lives on the nested block (`.bk-section`, 19.2pt), not on `.bk-line`, hence the
+ * first-child step. */
+.bk-atpagetop,
+.bk-atpagetop > :first-child { margin-top: 0; }
 /* A recto unit is an unbreakable pair (phonetics + its translation stay together). */
 .bk-pair { break-inside: avoid; }
 
@@ -420,10 +439,24 @@
 .bk-editable { min-height: 1em; }
 .bk-editable:focus { outline: 1px dashed var(--lapis, #2f6f9f); outline-offset: 2px; }
 
-/* Measurement container: off-screen, same widths as the real pages. */
+/* Measurement container: off-screen (still laid out — `visibility`, not `display`), holding
+ * the line stream inside REAL `.booklet-page > .booklet-content` boxes. The page ancestry is
+ * not decoration: it is what makes the measured content width equal the printed one
+ * (`--page-w` minus the two margins, whichever side they fall on) without restating the
+ * arithmetic, and what makes any selector keyed on those classes — Style Studio scopes its
+ * roles under `.booklet-root` — match here exactly as it does on the page. Only the page's
+ * height cap is lifted, so the stream can run to its natural length and be read off. */
 .booklet-measure {
   position: absolute;
   visibility: hidden;
   left: -9999px;
   top: 0;
 }
+.booklet-measure .booklet-page {
+  height: auto;
+  overflow: visible;
+  box-shadow: none;
+}
+/* `flow-root` so the probe's height CONTAINS its children's margins — otherwise they
+   collapse out through it and the two probes measure the same. */
+.bk-hairprobe { display: flow-root; }

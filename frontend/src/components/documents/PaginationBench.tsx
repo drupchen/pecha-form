@@ -9,9 +9,10 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, isSplittable,
+  deriveBooklet, furnitureBodyOf, isSplittable, BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange,
 } from './bookletRender';
+import { awaitBookletFonts, readStream, readHairlineAdvance, flowPages } from './bookletMeasure';
 import { loadBookletStyleCss } from './bookletStyles';
 import { StyleStudio } from './StyleStudio';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
@@ -54,6 +55,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [guides, setGuides] = useState(true);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
+  // A seed that refused to run has to say so — silence would read as "the pagination is
+  // fine", which is the failure this whole pass exists to end.
+  const [msg, setMsg] = useState('');
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -105,8 +109,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Page structure (breaks, spreads, body page-units, front/back matter, TOC) —
   // computed by the SHARED `deriveBooklet` so the bench and the print/PDF page lay out
   // identically. The bench layers interactive break/balancing controls on top.
-  const { lines: renderLines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter,
-          backMatter, tocRows, mainTitleLines } = useMemo(
+  const { lines: renderLines, breakSet, hairlineSet, forcedStarts, manualBreaks,
+          spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines } = useMemo(
     () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang, splitMode,
                         headingsByItem),
     [doc, rows, lines, titleByItem, headingsByItem, furniture, lang, splitMode],
@@ -120,36 +124,93 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const requestSeed = (replace: boolean) => {
     if (!lines.length || seeding) return;
     pendingReplace.current = replace;
+    setMsg('');
     setSeeding(true);
   };
 
-  useLayoutEffect(() => {
+  /**
+   * Seed the pagination: measure the mounted stream, flow it, write the auto breaks.
+   *
+   * A plain effect, not a LAYOUT effect, because the first thing this has to do is WAIT. The
+   * measure DOM has only just mounted and the booklet's faces are big and `font-display:
+   * swap` (Chogyal 627KB, Jomolhari 2.2MB), so reading heights straight away reads Tibetan
+   * laid out in the serif fallback: every verso line measures far too tall, the budget blows
+   * on line after line, and the seeder writes a break every line or two. That is what left
+   * pages 80% empty — and it bit hardest on a document's FIRST open, which is precisely when
+   * the auto-seed below fires and the font cache is coldest.
+   */
+  useEffect(() => {
     if (!seeding || !measureRef.current || !config) return;
     const el = measureRef.current;
+    let alive = true;
     (async () => {
       try {
-        const hV = Array.from(el.querySelectorAll<HTMLElement>('[data-verso]'), (e) => e.offsetHeight);
-        const hR = Array.from(el.querySelectorAll<HTMLElement>('[data-recto]'), (e) => e.offsetHeight);
-        const idxs: number[] = [];
-        let start = 0, accV = 0, accR = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const nv = accV + (hV[i] || 0), nr = accR + (hR[i] || 0);
-          if (i > start && (nv > contentHpx || nr > contentHpx)) {
-            idxs.push(i); start = i; accV = hV[i] || 0; accR = hR[i] || 0;
-          } else { accV = nv; accR = nr; }
+        if (!(await awaitBookletFonts(el, config.tibetan_pt))) {
+          // Measuring now would write garbage into state every edition shares. A skipped
+          // seed is recoverable — a corrupt one is not.
+          if (alive) setMsg('Pagination not re-flowed: the Tibetan font never loaded.');
+          return;
         }
+        if (!alive) return;
+
+        const V = readStream(el, '[data-side="verso"] .bk-linewrap');
+        const R = readStream(el, '[data-side="recto"] .bk-linewrap');
+
+        // A break is stored as (item, syllable) and read back by looking that pair up in the
+        // stream. Two things make a line unable to carry one, and choosing it anyway would
+        // paginate the page somewhere other than where it was measured:
+        //  - an AMBIGUOUS anchor: transcluded text repeats its source's syllable ids, so the
+        //    same pair occurs more than once and the lookup returns the FIRST one — a line
+        //    the flow never picked;
+        //  - a SPLIT HEAD: the head keeps the line's original `startSylId`, which the split's
+        //    own row already owns, so writing a break there would upsert over it and null its
+        //    `char_offset`, destroying the split.
+        const keys = renderLines.map((l) => `${l.itemId}:${l.startSylId}`);
+        const firstOf = new Map<string, number>();
+        keys.forEach((k, i) => { if (!firstOf.has(k)) firstOf.set(k, i); });
+        const unbreakable = new Set<number>();
+        renderLines.forEach((l, i) => {
+          if (firstOf.get(keys[i]) !== i) unbreakable.add(i);                     // ambiguous
+          if (l.splitAnchor != null && l.startSylId === l.splitAnchor) unbreakable.add(i);
+        });
+
+        const { starts } = flowPages([V, R], {
+          n: renderLines.length,
+          // The flow fills the runs between the starts it may not touch: text boundaries and
+          // split tails (which deriveBooklet forces anyway, so a seeded row there would be
+          // redundant), plus the breaks the user placed by hand.
+          forced: new Set<number>([...forcedStarts, ...manualBreaks]),
+          hairlines: hairlineSet,
+          contentHpx,
+          hairHpx: readHairlineAdvance(el),
+          unbreakable,
+        });
+
+        const autoStarts = starts.filter((i) =>
+          i > 0 && !forcedStarts.has(i) && !manualBreaks.has(i) && !unbreakable.has(i));
+
         if (pendingReplace.current) {
-          await Promise.all(rows.filter((r) => r.kind === 'page_break').map((r) =>
-            deleteLayoutRow(documentId, { item_id: r.item_id, anchor_syl_id: r.anchor_syl_id, kind: 'page_break' })));
+          // Delete only what we own. Splits (`char_offset > 0`) and hand-placed breaks are
+          // the user's; wiping them was destroying mid-line splits outright and orphaning
+          // their `recto_cut` companions with no way back.
+          await Promise.all(rows
+            .filter((r) => r.kind === 'page_break'
+                        && !(r.char_offset != null && r.char_offset > 0)
+                        && !isManualBreak(r))
+            .map((r) => deleteLayoutRow(documentId,
+              { item_id: r.item_id, anchor_syl_id: r.anchor_syl_id, kind: 'page_break' })));
         }
-        await Promise.all(idxs.map((i) => putLayoutRow(documentId, {
-          item_id: lines[i].itemId, anchor_syl_id: lines[i].startSylId, kind: 'page_break',
+        await Promise.all(autoStarts.map((i) => putLayoutRow(documentId, {
+          item_id: renderLines[i].itemId, anchor_syl_id: renderLines[i].startSylId,
+          kind: 'page_break', value: BREAK_AUTO,   // explicit: legacy rows have NULL here
         })));
+        if (!alive) return;
         setRows((await getDocumentLayout(documentId)).rows);
       } finally {
-        setSeeding(false);
+        if (alive) setSeeding(false);
       }
     })();
+    return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seeding]);
 
@@ -169,7 +230,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       if (hairlineSet.has(i))
         await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
     } else {
-      await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
+      // Flagged as the user's: a re-flow keeps it and flows around it, instead of treating
+      // it as one of its own suggestions and sweeping it away.
+      await putLayoutRow(documentId, {
+        item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', value: BREAK_MANUAL });
     }
     const lay = await getDocumentLayout(documentId);
     setRows(lay.rows);
@@ -184,8 +248,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     if (hairlineSet.has(i)) {
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
     } else {
+      // Also the user's break — and easy to miss, because a hairline writes its page break
+      // through this path, not `toggleBreak`. Unflagged, a re-flow would delete the break and
+      // strand the hairline row on a boundary that no longer exists, drawing nothing.
       if (!breakSet.has(i))
-        await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', value: BREAK_MANUAL });
       await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline', value: 1 });
     }
     setRows((await getDocumentLayout(documentId)).rows);
@@ -331,7 +399,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                         onClose={() => { setShowStyles(false); reloadStyles(); }} />;
   }
 
-  const renderPageLines = (s: { start: number; end: number }, Comp: React.FC<{ l: DocLine; adj?: LineAdj }>) => {
+  const renderPageLines = (s: { start: number; end: number },
+                          Comp: React.FC<{ l: DocLine; adj?: LineAdj; atPageTop?: boolean }>) => {
+    // Space-above is suppressed on whatever opens the page — the continuation rule if there
+    // is one, else the first line. This is also what makes the page reproduce the measured
+    // height exactly (see `.bk-atpagetop`).
+    const opensWithRule = hairlineSet.has(s.start);
     const els = renderLines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
       return (
@@ -362,7 +435,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
             ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
             : splitMode && isSplittable(l) && Comp === Recto
             ? <Recto l={l} onWordSplit={(w) => void setRectoCut(l, w)} />
-            : <Comp l={l} adj={adjFor(l, true)} />}
+            : <Comp l={l} adj={adjFor(l, true)} atPageTop={k === 0 && !opensWithRule} />}
         </div>
       );
     });
@@ -371,7 +444,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // does (content runs on). Only on the recto text column.
     return (
       <>
-        {hairlineSet.has(s.start) && <div className="bk-hairline" />}
+        {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
         {els}
         {hairlineSet.has(s.end) && <div className="bk-hairline" />}
       </>
@@ -406,9 +479,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         <button type="button" onClick={() => requestSeed(true)} disabled={seeding}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
                 style={{ border: '1px solid var(--cline)' }}
-                title="Discard breaks and auto-suggest a fresh pagination for this edition">
+                title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
+        {msg && (
+          <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
+        )}
         <a href={`${API_BASE}/documents/${documentId}/pdf?lang=${lang}`}
            className="px-2 py-1 rounded-md flex items-center gap-1 text-jade hover:bg-cream"
            style={{ border: '1px solid var(--cline)' }}
@@ -482,11 +558,44 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       </div>
       </div>
 
-      {/* Measurement container — mounted only during a seed/re-flow pass. */}
+      {/* Measurement container — mounted only during a seed/re-flow pass.
+          It renders `renderLines`, NOT `lines`: everything downstream (spreads, the rows we
+          write) indexes the post-split stream, so measuring the pre-split one silently
+          paginates a different document than the one on screen.
+          Each side sits in a real `.booklet-page > .booklet-content`, which is what makes
+          the measured content width equal the printed one and any `.booklet-root`-scoped
+          role rule match here exactly as it does on the page — the height cap is lifted in
+          CSS so the stream runs to its natural length.
+          The `.bk-linewrap` mirrors the bench's own per-line wrapper, so the boxes being
+          measured are the boxes being rendered. */}
       {seeding && (
-        <div ref={measureRef} className="booklet-measure" style={{ width: `${contentWmm}mm` }} aria-hidden>
-          <div>{lines.map((l, i) => <div data-verso key={i}><Verso l={l} adj={adjFor(l, false)} /></div>)}</div>
-          <div>{lines.map((l, i) => <div data-recto key={i}><Recto l={l} adj={adjFor(l, false)} /></div>)}</div>
+        <div ref={measureRef} className="booklet-measure" aria-hidden>
+          <div className="booklet-page verso" data-side="verso">
+            <div className="booklet-content">
+              {renderLines.map((l) => (
+                <div className="bk-linewrap" key={l.key}><Verso l={l} adj={adjFor(l, false)} /></div>
+              ))}
+            </div>
+          </div>
+          <div className="booklet-page recto" data-side="recto">
+            <div className="booklet-content">
+              {renderLines.map((l) => (
+                <div className="bk-linewrap" key={l.key}><Recto l={l} adj={adjFor(l, false)} /></div>
+              ))}
+            </div>
+          </div>
+          {/* Two stacks differing only by a continuation rule: subtracted, they give the
+              rule's true advance including how its margins collapse — which arithmetic on
+              `1.2mm + 0.4pt + 1.2mm` cannot. */}
+          <div className="bk-hairprobe" data-hairprobe="1">
+            <div className="bk-line">&nbsp;</div>
+            <div className="bk-hairline" />
+            <div className="bk-line">&nbsp;</div>
+          </div>
+          <div className="bk-hairprobe" data-hairprobe="0">
+            <div className="bk-line">&nbsp;</div>
+            <div className="bk-line">&nbsp;</div>
+          </div>
         </div>
       )}
     </div>

@@ -168,13 +168,16 @@ export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
 
 export const Verso: React.FC<{
   l: DocLine; adj?: LineAdj;
+  /** This line opens a page: suppress its space-above (see `.bk-atpagetop`). */
+  atPageTop?: boolean;
   /** Split mode (bench): click a syllable to split the line before it (`k` = token index).
    *  On a line that is already a split half, any click clears the split (`k` = -1). */
   onSplit?: (k: number) => void;
-}> = ({ l, adj = NO_ADJ, onSplit }) => {
+}> = ({ l, adj = NO_ADJ, atPageTop, onSplit }) => {
   const split = l.splitAnchor != null;
   return (
-    <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`}>
+    <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`
+                    + (atPageTop ? ' bk-atpagetop' : '')}>
       {/* Split mode owns the syllable clicks — no width grip competing for the pointer. */}
       <WidthLine className="bk-tibetan" {...widthProps(adj, 'tibetan', true)}
                  onCommit={onSplit ? undefined : widthProps(adj, 'tibetan', true).onCommit}>
@@ -198,12 +201,15 @@ export const Verso: React.FC<{
  *    kept together (the whole `.bk-line` has break-inside: avoid). */
 export const Recto: React.FC<{
   l: DocLine; adj?: LineAdj;
+  /** This line opens a page: suppress its space-above (see `.bk-atpagetop`). */
+  atPageTop?: boolean;
   /** Split mode (bench): render the single recto text as clickable words; clicking word
    *  `w` sets this edition's recto cut (the tail starts at word `w`). */
   onWordSplit?: (w: number) => void;
-}> = ({ l, adj = NO_ADJ, onWordSplit }) => {
+}> = ({ l, adj = NO_ADJ, atPageTop, onWordSplit }) => {
   const isSection = l.role === 'title' || l.role === 'sapche';
   const isMantra = l.role === 'mantra';
+  const lineCls = `bk-line bk-pair bk-role-${l.role}` + (atPageTop ? ' bk-atpagetop' : '');
 
   // Split mode on a splittable line: show the single recto text as clickable words.
   if (onWordSplit && isSplittable(l) && (l.translation || l.phonetics)) {
@@ -214,7 +220,7 @@ export const Recto: React.FC<{
       ? (isSection ? `bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}` : 'bk-translation')
       : 'bk-phonetics';
     return (
-      <div className={`bk-line bk-pair bk-role-${l.role}`}>
+      <div className={lineCls}>
         <div className={`${cls} bk-wordsplit`}>
           {words.map((w, i) => (
             <span key={i} className="bk-word" onClick={() => onWordSplit(i)}>{w} </span>
@@ -225,7 +231,7 @@ export const Recto: React.FC<{
     );
   }
   return (
-    <div className={`bk-line bk-pair bk-role-${l.role}`}>
+    <div className={lineCls}>
       {isSection ? (
         l.translation != null && (
           <WidthLine className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
@@ -412,12 +418,39 @@ export type PageUnit =
  *  number, for previews), and nested children (a text's sapche sections). */
 export interface NavNode { title: string; pageIndex: number; folio: number; children: NavNode[] }
 
+/**
+ * A `page_break` row's `value` records WHO put it there: 0/absent = the auto-flow seeded it
+ * and a re-flow may move it; 1 = the user placed it by hand, and a re-flow must keep it and
+ * flow around it. Without this the two are indistinguishable in the table and every re-flow
+ * silently eats the user's decisions.
+ *
+ * `value` is this table's per-kind field, not a hack on it — `hairline` already stores a
+ * bare `1` marker, `line_space` stores mm, `width_*` stores mm. A separate `page_break_auto`
+ * KIND would be the hack: the unique key carries the kind, so one line could hold an auto
+ * row and a manual row at once, and every consumer would have to reconcile them.
+ *
+ * Legacy rows predate the flag and read as auto — the same as today's behaviour, where a
+ * re-flow replaced everything.
+ */
+export const BREAK_AUTO = 0;
+export const BREAK_MANUAL = 1;
+/** A break the user placed by hand. Splits (`char_offset > 0`) are a different animal and
+ *  are never manual breaks in this sense — they are forced starts in their own right. */
+export const isManualBreak = (r: DocumentLayoutRow) =>
+  r.kind === 'page_break' && !(r.char_offset ?? 0) && (r.value ?? 0) === BREAK_MANUAL;
+
 export interface DerivedBooklet {
   /** The render line stream — `srcLines` with any mid-line splits applied (head/tail).
    *  Spreads/breakSet index into THIS; consumers render from it. */
   lines: DocLine[];
   breakSet: Set<number>;
   hairlineSet: Set<number>;
+  /** Page starts the auto-flow may not negotiate: text-item boundaries and split tails.
+   *  The seeder fills the runs between them. */
+  forcedStarts: Set<number>;
+  /** Breaks the user placed by hand — also hard starts for the seeder, and the rows a
+   *  re-flow must not delete. */
+  manualBreaks: Set<number>;
   spreads: { start: number; end: number }[];
   bodyUnits: PageUnit[];
   frontMatter: DocumentItem[];
@@ -578,25 +611,39 @@ export function deriveBooklet(
     }
   }
 
-  const findIdx = (r: DocumentLayoutRow) =>
-    lines.findIndex((l) => l.itemId === r.item_id && l.startSylId === r.anchor_syl_id);
+  // One pass to index the stream — a row's anchor resolves by lookup, not by scanning every
+  // line for every row (this runs on each `rows` change, and both are in the thousands).
+  const idxOf = new Map<string, number>();
+  lines.forEach((l, i) => {
+    const k = `${l.itemId}:${l.startSylId}`;
+    if (!idxOf.has(k)) idxOf.set(k, i);
+  });
+  const findIdx = (r: DocumentLayoutRow) => idxOf.get(`${r.item_id}:${r.anchor_syl_id}`) ?? -1;
   const breakSet = new Set<number>();
   const hairlineSet = new Set<number>();
+  const manualBreaks = new Set<number>();
   for (const r of rows) {
     if (r.kind === 'page_break') {
       if (r.char_offset != null && r.char_offset > 0) continue;   // applied as a split
-      const i = findIdx(r); if (i > 0) breakSet.add(i);
+      const i = findIdx(r);
+      if (i > 0) { breakSet.add(i); if (isManualBreak(r)) manualBreaks.add(i); }
     } else if (r.kind === 'hairline') { const i = findIdx(r); if (i > 0) hairlineSet.add(i); }
   }
   // A split forces a break + hairline between its head and tail.
   for (const i of splitTails) { breakSet.add(i); hairlineSet.add(i); }
 
-  // Each text always starts a fresh spread (so its internal title page sits cleanly
-  // before its first body page — no two texts share a spread).
+  // Page starts nothing may negotiate: a text always begins a fresh spread (so its internal
+  // title page sits cleanly before its first body page — no two texts share a spread), and a
+  // split's tail begins the page it continues onto. The auto-flow fills the runs BETWEEN
+  // these; it never invents or overrides one, which is why it has to be told about them.
+  const forcedStarts = new Set<number>(splitTails);
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].itemId !== lines[i - 1].itemId) forcedStarts.add(i);
+  }
+
   const spreads: { start: number; end: number }[] = [];
   if (lines.length) {
-    const forced = new Set<number>(breakSet);
-    for (let i = 1; i < lines.length; i++) if (lines[i].itemId !== lines[i - 1].itemId) forced.add(i);
+    const forced = new Set<number>([...breakSet, ...forcedStarts]);
     const starts = [0, ...Array.from(forced).sort((a, b) => a - b)];
     starts.forEach((s, i) => spreads.push({ start: s, end: i + 1 < starts.length ? starts[i + 1] : lines.length }));
   }
@@ -705,7 +752,8 @@ export function deriveBooklet(
     return { title: plainTextOf(titleSrc), pageIndex, folio, children };
   });
 
-  return { lines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,
+  return { lines, breakSet, hairlineSet, forcedStarts, manualBreaks,
+           spreads, bodyUnits, frontMatter, backMatter, tocRows,
            mainTitleLines, folioOfLine, navOutline };
 }
 

@@ -78,36 +78,48 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   const vars = rootVars(config);
   const outlineJson = JSON.stringify(navOutline);
 
-  // Per-block widths, read back exactly as the bench stores them (Tibetan shared at '',
-  // the translated recto blocks per edition) and applied with NO handlers — the printed
-  // page must carry the widths the user set without offering to change them.
-  const widthByKey = new Map<string, number>();
-  for (const r of rows) {
-    if (r.value != null && r.kind.startsWith('width_')) {
-      widthByKey.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r.value);
-    }
-  }
-  const widthOf = (l: DocLine, kind: string, rowLang: string) =>
-    widthByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`) ?? 0;
+  // Every balancing row the bench stores, read back and applied with NO handlers — the
+  // printed page must CARRY what the user set without offering to change it. Keyed exactly
+  // as the bench writes them: the empty-line gaps and the Tibetan width are shared (lang
+  // ''), the translated recto blocks are per edition.
+  const rowByKey = new Map<string, DocumentLayoutRow>();
+  for (const r of rows) rowByKey.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r);
+  const val = (l: DocLine, kind: string, rowLang = '') =>
+    rowByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`)?.value ?? null;
+  const has = (l: DocLine, kind: string, rowLang = '') =>
+    rowByKey.has(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
   const adjFor = (l: DocLine): LineAdj => ({
-    gapDeltaMm: 0, noSpace: false,
+    // These two were hardcoded to 0/false, so the PDF quietly ignored the empty-line
+    // balancing and printed every gap at full height — pages the bench had measured as
+    // fitting then ran past the text block. The pagination is flowed against these values;
+    // the print has to render against them too or it is paginating a different document.
+    gapDeltaMm: val(l, 'line_space') ?? 0,
+    noSpace: has(l, 'line_nospace'),
     widths: {
-      tibetan: widthOf(l, 'width_tibetan', ''),
-      phonetics: widthOf(l, 'width_phonetics', lang),
-      translation: widthOf(l, 'width_translation', lang),
-      section: widthOf(l, 'width_section', lang),
+      tibetan: val(l, 'width_tibetan', '') ?? 0,
+      phonetics: val(l, 'width_phonetics', lang) ?? 0,
+      translation: val(l, 'width_translation', lang) ?? 0,
+      section: val(l, 'width_section', lang) ?? 0,
     } as Partial<Record<WidthTarget, number>>,
   });
 
   // A page's lines, with the reference's thin continuation rule at a hairline boundary
   // (top if continued from the previous page, bottom if it runs on to the next).
-  const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) => (
-    <>
-      {hairlineSet.has(s.start) && <div className="bk-hairline" />}
-      {flowLines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} adj={adjFor(l)} />)}
-      {hairlineSet.has(s.end) && <div className="bk-hairline" />}
-    </>
-  );
+  // `atPageTop` suppresses space-above on whatever opens the page, exactly as the bench does
+  // — the PDF and the bench must agree line for line, and this is the rule the pagination
+  // was measured against.
+  const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) => {
+    const opensWithRule = hairlineSet.has(s.start);
+    return (
+      <>
+        {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
+        {flowLines.slice(s.start, s.end).map((l, k) => (
+          <Comp key={l.key} l={l} adj={adjFor(l)} atPageTop={k === 0 && !opensWithRule} />
+        ))}
+        {hairlineSet.has(s.end) && <div className="bk-hairline" />}
+      </>
+    );
+  };
 
   // A single physical page (front/back matter furniture item).
   const FurniturePageSheet: React.FC<{ item: DocumentItem }> = ({ item }) => (
