@@ -154,7 +154,12 @@ export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
     ) : null;
   }
   return (
-    <div className="bk-gap" style={{ height: `calc(var(--translation-pt) * var(--leading) + ${adj.gapDeltaMm}mm)` }}>
+    // The height is authored here, inline, so it beats the stylesheet — which means the
+    // page's `--gap-fill` has to be part of THIS sum, not a rule it would silently outrank.
+    // Three terms: the natural blank line, this line's own tuning, and the page's fill.
+    <div className="bk-gap"
+         style={{ height: 'calc(var(--translation-pt) * var(--leading)'
+                        + ` + ${adj.gapDeltaMm}mm + var(--gap-fill, 0mm))` }}>
       {adj.onGap && (
         <span className="bk-gapctl-group">
           <button type="button" className="bk-gapctl" title="Less space" onClick={() => adj.onGap!(-1)}>−</button>
@@ -438,6 +443,28 @@ export const BREAK_MANUAL = 1;
  *  are never manual breaks in this sense — they are forced starts in their own right. */
 export const isManualBreak = (r: DocumentLayoutRow) =>
   r.kind === 'page_break' && !(r.char_offset ?? 0) && (r.value ?? 0) === BREAK_MANUAL;
+
+/**
+ * How much every empty line on one page grows, in mm — the page's `gap_fill`, anchored on
+ * its first line and stored per edition.
+ *
+ * The breaks are shared, so the tallest edition drives them and the shorter ones are left
+ * with slack at the foot. Each edition is its own printed booklet, though, so each may spend
+ * that slack its own way: the Tibetan verso of the English booklet and of the German one hold
+ * the same lines on the same page, and are free to breathe differently down it.
+ *
+ * Returned as a style object so the bench and the print page apply it the one same way — it
+ * inherits from the page down to every `.bk-gap` inside (see `booklet.css`).
+ */
+export function gapFillVars(
+  rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string,
+): React.CSSProperties {
+  if (!line) return {};
+  const r = rows.find((x) => x.kind === 'gap_fill' && x.item_id === line.itemId
+                          && x.anchor_syl_id === line.startSylId && (x.lang ?? '') === lang);
+  const mm = r?.value ?? 0;
+  return mm ? ({ ['--gap-fill' as string]: `${mm}mm` } as React.CSSProperties) : {};
+}
 
 export interface DerivedBooklet {
   /** The render line stream — `srcLines` with any mid-line splits applied (head/tail).

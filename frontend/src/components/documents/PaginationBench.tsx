@@ -9,7 +9,8 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, isSplittable, BREAK_AUTO, BREAK_MANUAL, isManualBreak,
+  deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars,
+  BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange,
 } from './bookletRender';
 import {
@@ -31,6 +32,38 @@ interface EditionStream { lang: string; lines: DocLine[] }
  *  edited lines, so a working session re-flows now and then rather than at every keystroke.
  *  Per document, in `layout_config`. */
 const DEFAULT_REFLOW_THRESHOLD = 50;
+
+/**
+ * The page's "fill it out" control: every empty line on this page, in this edition, grows by
+ * the same number of mm.
+ *
+ * It exists because the breaks are SHARED. The tallest edition decides where a page ends, so
+ * the shorter ones are left with slack at the foot through no fault of their own. Each
+ * edition is its own printed booklet, so each may spend that slack its own way.
+ *
+ * `max` is the slack actually measured on the page right now, divided among its gaps, so the
+ * slider cannot be dragged into an overflow. That is an affordance, not a guarantee: the
+ * stored value is plain mm, and if a later re-flow puts more on the page, the mm stay and the
+ * overfull badge is what says so. A ratio-of-slack would self-correct, but only by measuring
+ * the page again at PRINT time too — and a PDF that silently re-measures is a worse bargain
+ * than a number that means exactly what it says.
+ */
+const GapFillSlider: React.FC<{ value: number; max: number; onChange: (mm: number) => void }> = ({
+  value, max, onChange,
+}) => {
+  const cap = Math.max(0, Math.round(max * 10) / 10);
+  if (cap <= 0.5 && !value) return null;   // a full page has nothing to spend
+  return (
+    <div className="bk-gapfill" title={
+      `Open out every empty line on this page by the same amount, to use up the space the `
+      + `tallest edition's page break left here. Up to ${cap.toFixed(1)}mm each before this `
+      + `page overflows. This edition only.`}>
+      <input type="range" min={0} max={Math.max(cap, value)} step={0.1} value={value}
+             onChange={(e) => onChange(Number(e.target.value))} />
+      <span>{value ? `+${value.toFixed(1)}mm` : 'fill'}</span>
+    </div>
+  );
+};
 
 /** The stored stamp is `{lang: signature}`. Anything else — a stamp from before it was kept
  *  per edition, or junk — reads as "no stamp", which simply means nothing is disturbed. */
@@ -455,6 +488,24 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     else void putRow(l, 'line_nospace', 1);
   };
 
+  // ── The page's gap fill: spend the slack a shared break left this edition ──
+  // Anchored on the page's first line, stored per edition (the Tibetan verso is the same
+  // lines in every edition, but each edition is its own booklet and may breathe its own way).
+  const gapFillOf = (start: number) => {
+    const l = renderLines[start];
+    return l ? (rowVal(l, 'gap_fill', lang) ?? 0) : 0;
+  };
+  const setGapFill = (start: number, mm: number) => {
+    const l = renderLines[start];
+    if (!l) return;
+    mm <= 0 ? void delRow(l, 'gap_fill', lang) : void putRow(l, 'gap_fill', mm, lang);
+  };
+  // How far each of a page's gaps could still open before the page overflows. Measured off
+  // the mounted page, so it answers for what is actually on screen; the slider uses it only
+  // to know where to stop.
+  const [slackByUnit, setSlackByUnit] = useState<Map<number, number>>(new Map());
+  const slackOf = (si: number) => slackByUnit.get(si) ?? 0;
+
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
     translation: 'width_translation', section: 'width_section',
@@ -540,23 +591,46 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const root = scrollRef.current;
     if (!root) return;
     let stop = false;
+    /** A page's foot, and how far its ink falls short of it (negative = past it). */
+    const slackOfContent = (c: HTMLElement) => {
+      let ink = -Infinity;
+      for (const ch of Array.from(c.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
+      return (c.getBoundingClientRect().top + c.clientHeight) - ink;
+    };
     const mark = () => {
       if (stop || !scrollRef.current) return;
       for (const c of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-page > .booklet-content')) {
         const page = c.parentElement;
         if (!page) continue;
-        let ink = -Infinity;
-        for (const ch of Array.from(c.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
-        const foot = c.getBoundingClientRect().top + c.clientHeight;
-        const over = c.children.length > 0 && ink > foot + 0.5;
+        const over = c.children.length > 0 && slackOfContent(c) < -0.5;
         page.classList.toggle('bk-overfull', over);
         if (over) {
-          page.title = `This page runs ${Math.round(ink - foot)}px past the text block — the `
-            + 'printed page will clip it. Break earlier, close a gap, or split the line.';
+          page.title = `This page runs ${Math.round(-slackOfContent(c))}px past the text block — `
+            + 'the printed page will clip it. Break earlier, close a gap, or split the line.';
         } else if (page.title) {
           page.removeAttribute('title');
         }
       }
+      // How much MORE each gap on a spread could open before its tighter page overflows —
+      // the slider's stop. Both pages carry the same fill, so the binding side wins.
+      const next = new Map<number, number>();
+      for (const sp of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-spread[data-unit]')) {
+        let room = Infinity;
+        for (const c of Array.from(sp.querySelectorAll<HTMLElement>('.booklet-content'))) {
+          const gaps = c.querySelectorAll('.bk-gap').length;
+          room = Math.min(room, gaps ? slackOfContent(c) / gaps / MM_PX : 0);
+        }
+        next.set(Number(sp.dataset.unit), Number.isFinite(room) ? Math.max(0, room) : 0);
+      }
+      // This effect runs on every render, so only disturb state when the answer moved —
+      // otherwise setting it would schedule the render that runs it again.
+      setSlackByUnit((prev) => {
+        if (prev.size === next.size
+            && Array.from(next).every(([k, v]) => Math.abs((prev.get(k) ?? -1) - v) < 0.05)) {
+          return prev;
+        }
+        return next;
+      });
     };
     mark();
     // Re-mark once the faces land: measured against fallback metrics every page looks
@@ -761,13 +835,20 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 {u.kind === 'title' ? (
                   <InternalTitlePage titleLines={u.titleLines} />
                 ) : (
-                  <div className="booklet-spread">
+                  <div className="booklet-spread" data-unit={si}
+                       style={gapFillVars(rows, renderLines[u.s.start], lang)}>
                     <div className="booklet-page verso">
                       <div className="booklet-content">{renderPageLines(u.s, Verso)}</div>
                     </div>
                     <div className="booklet-page recto">
                       <div className="booklet-content">{renderPageLines(u.s, Recto)}</div>
                       <div className="booklet-folio">{si + 1}</div>
+                      {/* The stop is the room LEFT, so the reach is what is already spent
+                          plus what remains. */}
+                      <GapFillSlider
+                        value={gapFillOf(u.s.start)}
+                        max={gapFillOf(u.s.start) + slackOf(si)}
+                        onChange={(mm) => setGapFill(u.s.start, mm)} />
                     </div>
                   </div>
                 )}

@@ -551,7 +551,8 @@ CREATE TABLE IF NOT EXISTS document_layout (
     anchor_syl_id TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN
                      ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
-                      'width_tibetan','width_phonetics','width_translation','width_section')),
+                      'width_tibetan','width_phonetics','width_translation','width_section',
+                      'gap_fill')),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -762,14 +763,14 @@ def _add_missing_columns(conn) -> None:
 
 def _rebuild_document_layout_kinds(conn) -> None:
     """Widen `document_layout.kind`'s CHECK to include newer kinds ('hairline', then
-    'recto_cut', then the per-block 'width_*' set). SQLite can't alter a CHECK in place, so
-    rebuild the table when an older one predates the newest kind. The sentinel is the LAST
-    kind added — bump it whenever the CHECK grows. No-op on fresh DBs (SCHEMA lists them).
-    `document_layout` is a leaf (nothing references it), so the drop/rename is safe."""
+    'recto_cut', the per-block 'width_*' set, then 'gap_fill'). SQLite can't alter a CHECK in
+    place, so rebuild the table when an older one predates the newest kind. The sentinel is
+    the LAST kind added — bump it whenever the CHECK grows. No-op on fresh DBs (SCHEMA lists
+    them). `document_layout` is a leaf (nothing references it), so the drop/rename is safe."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
     ).fetchone()
-    if not row or "'width_section'" in row["sql"]:
+    if not row or "'gap_fill'" in row["sql"]:
         return
     conn.execute("""
         CREATE TABLE document_layout_new (
@@ -779,7 +780,8 @@ def _rebuild_document_layout_kinds(conn) -> None:
             anchor_syl_id TEXT NOT NULL,
             kind         TEXT NOT NULL CHECK (kind IN
                              ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
-                              'width_tibetan','width_phonetics','width_translation','width_section')),
+                              'width_tibetan','width_phonetics','width_translation','width_section',
+                              'gap_fill')),
             char_offset  INTEGER,
             value        REAL,
             lang         TEXT,

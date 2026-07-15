@@ -624,9 +624,13 @@ class TocEntry(BaseModel):
 # per rendered block because the unique key is (document, item, anchor_syl_id, kind, lang),
 # so the target has to live in the kind. `wrap_extend` is the superseded, positive-only
 # translation-column predecessor (kept only so legacy rows still parse).
+# `gap_fill`: extra height added to EVERY empty-line gap on one page, in mm, per edition —
+# the leftover the tallest edition's break left behind, spent on making the short editions
+# look balanced. Anchored on the page's first line.
 DocumentLayoutKind = Literal[
     'page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline', 'recto_cut',
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
+    'gap_fill',
 ]
 
 class DocumentLayoutRow(BaseModel):

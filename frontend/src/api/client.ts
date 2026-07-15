@@ -479,7 +479,8 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
  *  kind. `wrap_extend` is the superseded positive-only predecessor (legacy rows only). */
 export type DocumentLayoutKind =
   | 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut'
-  | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section';
+  | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section'
+  | 'gap_fill';
 
 export interface DocumentLayoutRow {
   id: number;

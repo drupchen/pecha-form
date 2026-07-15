@@ -290,9 +290,34 @@
 .bk-section-l2 { font-size: 13.5pt; }
 .bk-section-l3 { font-size: 12pt; }
 
-/* The empty-line gap between chunks — the balancing lever (height set inline). */
-.bk-gap { height: calc(var(--translation-pt) * var(--leading)); position: relative; }
+/* The empty-line gap between chunks — the balancing lever (height set inline).
+ * `--gap-fill` is set on the PAGE and inherits down: every empty line on that page grows by
+ * the same amount, which is the "fill the page out" control. It is per EDITION — the breaks
+ * are shared, so the tallest edition drives them and the shorter ones are left with slack at
+ * the foot; each printed booklet is its own object and may spend that slack its own way. */
+.bk-gap {
+  height: calc(var(--translation-pt) * var(--leading) + var(--gap-fill, 0mm));
+  position: relative;
+}
 .bk-gap-removed { height: 0; position: relative; }
+
+/* The page's "fill it out" slider: opens every empty line on this page by the same amount,
+ * spending the slack the tallest edition's break left behind. Sits in the recto's foot
+ * margin, out of the text block; a design control, never ink. */
+.bk-gapfill {
+  position: absolute;
+  left: var(--m-bind);
+  bottom: 1mm;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  gap: 4px;
+}
+.booklet-page.recto:hover .bk-gapfill,
+.bk-gapfill:focus-within { display: flex; }
+.bk-gapfill input[type='range'] { width: 42mm; accent-color: var(--jade, #3a7d5f); height: 10px; }
+.bk-gapfill span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f); }
+@media print { .bk-gapfill { display: none !important; } }
 
 /* Gap controls (−/+/× and restore) — revealed on hover of the gap. */
 .bk-gapctl-group {

@@ -7,7 +7,7 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, type LineAdj, type WidthTarget,
+  deriveBooklet, furnitureBodyOf, gapFillVars, type LineAdj, type WidthTarget,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
@@ -159,12 +159,16 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
             </div>
           );
         }
+        // The page's gap fill rides as a CSS var, exactly as it does on the bench — the two
+        // read the same rows through the same helper, so they cannot drift apart. Physical
+        // pages here, so it is set on each side rather than on a spread.
+        const fill = gapFillVars(rows, flowLines[u.s.start], lang);
         return (
           <React.Fragment key={`u${i}`}>
-            <div className="booklet-page verso print-page">
+            <div className="booklet-page verso print-page" style={fill}>
               <div className="booklet-content">{renderLines(u.s, Verso)}</div>
             </div>
-            <div className="booklet-page recto print-page">
+            <div className="booklet-page recto print-page" style={fill}>
               <div className="booklet-content">{renderLines(u.s, Recto)}</div>
               <div className="booklet-folio">{folio}</div>
             </div>
