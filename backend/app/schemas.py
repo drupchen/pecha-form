@@ -622,8 +622,8 @@ class TocEntry(BaseModel):
 # `width_*`: a per-line-block width delta in mm (signed) — positive overflows the block
 # toward its page's right physical border, negative narrows it so the text wraps. One kind
 # per rendered block because the unique key is (document, item, anchor_syl_id, kind, lang),
-# so the target has to live in the kind. `wrap_extend` is the superseded, positive-only
-# translation-column predecessor (kept only so legacy rows still parse).
+# so the target has to live in the kind. (Their positive-only, translation-only predecessor
+# `wrap_extend` is retired: nothing wrote or read it any more, and its one row was dead.)
 # `width_furniture`: the width of ONE block on a special page (cover/title/toc/copyright/
 # back cover/caption), in mm, per edition. Those pages have no syllables to anchor to — their
 # Tibetan comes from the texts (and anchors normally, as `width_tibetan`), but their
@@ -639,7 +639,7 @@ class TocEntry(BaseModel):
 # verso is the same Tibetan in all four booklets, so its fill is SHARED (lang ''); the
 # recto's text is per edition (lang = the edition).
 DocumentLayoutKind = Literal[
-    'page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline', 'recto_cut',
+    'page_break', 'line_space', 'line_nospace', 'hairline', 'recto_cut',
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
     'gap_fill_verso', 'gap_fill_recto', 'width_furniture',
 ]

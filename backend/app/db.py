@@ -4,6 +4,25 @@ import re
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "sapche.db")
 
+# The layout kinds, in one place: `SCHEMA` writes this CHECK and
+# `_rebuild_document_layout_kinds` brings an older table in line with it. Retiring a kind is
+# as ordinary as adding one — 'wrap_extend' (superseded by the per-block widths) and
+# 'gap_fill' (split into the verso/recto pair) are both gone, and their rows with them.
+LAYOUT_KINDS = (
+    'page_break',       # a page starts here; `value` 0 = seeded, 1 = the user placed it
+    'line_space',       # signed mm on this line's empty-line gap
+    'line_nospace',     # this line's blank line is dropped
+    'hairline',         # the break here draws a continuation rule
+    'recto_cut',        # per-edition word offset where a split line's recto text divides
+    'width_tibetan',    # signed mm on a block's width — shared across editions
+    'width_phonetics',  # ...per edition
+    'width_translation',
+    'width_section',
+    'width_furniture',  # a special page's block, anchored '#block' instead of a syllable
+    'gap_fill_verso',   # mm added to every empty line on a Tibetan page (shared)
+    'gap_fill_recto',   # ...on a translation page (per edition)
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS texts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -532,27 +551,23 @@ CREATE TABLE IF NOT EXISTS document_languages (
 -- ─── Pagination layout (Phase D2): shared page breaks + per-line balancing ──────
 -- The booklet's page breaks and balancing live on the DOCUMENT at SHARED,
 -- syllable-anchored positions, so all language editions page-align exactly (tuning
--- one lays out all four). kind: 'page_break' (a page boundary at anchor_syl_id,
--- optional char_offset for a mid-line/mid-syllable hairline split), 'line_space'
--- (signed empty-line gap delta), 'line_nospace' (drop the blank line), 'wrap_extend'
--- (push a translation line's right wrap limit rightward). `value` is REAL (mm/px or
--- a signed unit per kind). `lang` NULL = applies to every edition; a language code
--- scopes a translation-only adjustment (e.g. a per-language split of a straddling
--- chunk). Page geometry/type sizes live in documents.layout_config (JSON).
--- `width_*` = a signed per-line-block width in mm: positive overflows that block toward
--- its page's right physical border, negative narrows it so the text wraps. One kind per
--- rendered block (tibetan/phonetics/translation/section) because the UNIQUE key carries
--- the kind, so that is where the target has to live. `wrap_extend` is their superseded,
--- positive-only, translation-only predecessor (legacy rows only).
+-- one lays out all four). See `LAYOUT_KINDS` at the top of this file for what each kind
+-- means; the CHECK below is generated from it.
+--
+-- `value` is REAL and means whatever its kind says (mm, a marker, a signed unit).
+-- `lang` '' = every edition; a language code scopes the adjustment to one. The split runs
+-- along the data: the Tibetan is the same in all four booklets, so what belongs to it is
+-- shared, while anything carrying an edition's own text is that edition's.
+-- `anchor_syl_id` is a syllable id for a body line; on a special page it may instead be a
+-- '#block' key, since the translated furniture is keyed by (item, lang) and has no syllable
+-- (see `width_furniture`). No syllable uuid begins with '#'.
+-- Page geometry/type sizes live in documents.layout_config (JSON).
 CREATE TABLE IF NOT EXISTS document_layout (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
     anchor_syl_id TEXT NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN
-                     ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
-                      'width_tibetan','width_phonetics','width_translation','width_section',
-                      'gap_fill_verso','gap_fill_recto','width_furniture')),
+    kind         TEXT NOT NULL CHECK (kind IN (__LAYOUT_KINDS__)),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -642,7 +657,7 @@ CREATE TABLE IF NOT EXISTS style_samples (
     org_id  INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
     content TEXT NOT NULL DEFAULT ''
 );
-"""
+""".replace("__LAYOUT_KINDS__", ",".join(f"'{k}'" for k in LAYOUT_KINDS))
 
 
 # Additive column migrations for pre-existing tables. Each is applied only if
@@ -762,43 +777,46 @@ def _add_missing_columns(conn) -> None:
 
 
 def _rebuild_document_layout_kinds(conn) -> None:
-    """Widen `document_layout.kind`'s CHECK to include newer kinds ('hairline', then
-    'recto_cut', the per-block 'width_*' set, 'width_furniture', the two 'gap_fill_*').
-    SQLite cannot alter a CHECK in
-    place, so rebuild the table when an older one predates the newest kind. The sentinel is
-    the LAST kind added — bump it whenever the CHECK grows. No-op on fresh DBs (SCHEMA lists
-    them). `document_layout` is a leaf (nothing references it), so the drop/rename is safe."""
+    """Bring `document_layout.kind`'s CHECK in line with `LAYOUT_KINDS`.
+
+    SQLite cannot alter a CHECK in place, so the table is rebuilt whenever the one on disk
+    lists a different set of kinds than the code does. It compares the SETS rather than
+    watching for a sentinel kind: a sentinel only ever notices ADDITIONS, and had to be
+    hand-bumped on every change — which is no use now that kinds get retired too
+    ('wrap_extend' superseded by the per-block widths, 'gap_fill' split into the verso/recto
+    pair). Comparing sets notices either, and cannot be forgotten.
+
+    No-op on a fresh DB (SCHEMA already writes the current set). `document_layout` is a leaf —
+    nothing references it — so the drop/rename is safe.
+    """
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
     ).fetchone()
-    if not row or "'gap_fill_recto'" in row["sql"]:
+    if not row:
         return
-    conn.execute("""
+    m = re.search(r"CHECK\s*\(\s*kind\s+IN\s*\((.*?)\)\s*\)", row["sql"], re.S)
+    if m and set(re.findall(r"'([a-z_]+)'", m.group(1))) == set(LAYOUT_KINDS):
+        return
+    kinds = ",".join(f"'{k}'" for k in LAYOUT_KINDS)
+    conn.execute(f"""
         CREATE TABLE document_layout_new (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
             anchor_syl_id TEXT NOT NULL,
-            kind         TEXT NOT NULL CHECK (kind IN
-                             ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
-                              'width_tibetan','width_phonetics','width_translation','width_section',
-                              'gap_fill_verso','gap_fill_recto','width_furniture')),
+            kind         TEXT NOT NULL CHECK (kind IN ({kinds})),
             char_offset  INTEGER,
             value        REAL,
             lang         TEXT,
             UNIQUE(document_id, item_id, anchor_syl_id, kind, lang)
         )""")
-    # Carry over only what the new CHECK still allows. A kind can be RETIRED as well as added
-    # — 'gap_fill' lived for one commit before splitting into the verso/recto pair — and
-    # without this the copy would fail the constraint on a database that had written one.
-    conn.execute("""
+    # Carry over only what the new CHECK still allows: a retired kind's rows are dead by
+    # definition (nothing reads them any more), and copying them would fail the constraint.
+    conn.execute(f"""
         INSERT INTO document_layout_new
             (id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang)
         SELECT id, document_id, item_id, anchor_syl_id, kind, char_offset, value, lang
-        FROM document_layout
-        WHERE kind IN ('page_break','line_space','line_nospace','wrap_extend','hairline',
-                       'recto_cut','width_tibetan','width_phonetics','width_translation',
-                       'width_section','gap_fill_verso','gap_fill_recto','width_furniture')""")
+        FROM document_layout WHERE kind IN ({kinds})""")
     conn.execute("DROP TABLE document_layout")
     conn.execute("ALTER TABLE document_layout_new RENAME TO document_layout")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_id)")

@@ -476,9 +476,9 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
  *  bookletRender): positive overflows the block toward its page's right physical border,
  *  negative narrows it so the text wraps. One kind per rendered block — the layout row's
  *  unique key is (document, item, anchor_syl_id, kind, lang), so the target lives in the
- *  kind. `wrap_extend` is the superseded positive-only predecessor (legacy rows only). */
+ *  kind. (Their positive-only predecessor `wrap_extend` is retired — nothing read it.) */
 export type DocumentLayoutKind =
-  | 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut'
+  | 'page_break' | 'line_space' | 'line_nospace' | 'hairline' | 'recto_cut'
   | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section'
   | 'gap_fill_verso' | 'gap_fill_recto' | 'width_furniture';
 
