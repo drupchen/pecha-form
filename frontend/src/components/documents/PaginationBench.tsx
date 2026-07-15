@@ -9,8 +9,8 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars, gapFillLang, GAP_FILL_KIND,
-  anchorOf, splitAnchorOf, TIBETAN_LANG,
+  deriveBooklet, furnitureBodyOf, isSplittable, pageVars, gapFillLang, GAP_FILL_KIND,
+  PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
 } from './bookletRender';
@@ -68,6 +68,67 @@ const GapFillSlider: React.FC<{
       <input type="range" min={0} max={Math.max(cap, value)} step={0.1} value={value}
              onChange={(e) => onChange(Number(e.target.value))} />
       <span>{value ? `+${value.toFixed(1)}mm` : (side === 'verso' ? 'fill བོད' : 'fill')}</span>
+    </div>
+  );
+};
+
+/** What one mounted page has left, in mm: how much more each empty line could open before
+ *  the ink leaves the text BLOCK, and how far the page could move before it leaves the
+ *  SHEET, either way. */
+interface PageRoom { gap: number; up: number; down: number }
+
+/** Round to the slider's step. Both ends of a SIGNED range have to sit on the step ladder or
+ *  0 is unreachable: `step` counts from `min`, and `min` here is a measured quotient. The gap
+ *  fill never met this — its `min` is a literal 0. */
+const round1 = (mm: number) => Math.round(mm * 10) / 10;
+
+/**
+ * The page's vertical shift: move the whole block down or up.
+ *
+ * What is left when the gap fill has run out. Opening the empty lines spends a page's slack
+ * first, but only to the limit of decent spacing — past that the block itself has to travel,
+ * and it may take ink between the text block's foot and the sheet's edge. That is the point:
+ * the guide is a guide, the sheet is the limit, and the page's clip enforces it.
+ *
+ * The stops are where the ink would leave the SHEET, measured off the page as it stands.
+ * Independent of the gap fill's stop, which is shift-invariant, so the two can be traded back
+ * and forth without either re-scaling under the other.
+ */
+const PageShiftSlider: React.FC<{
+  side: PageSide; value: number; room: PageRoom; onChange: (mm: number) => void;
+}> = ({ side, value, room, onChange }) => {
+  const min = Math.min(round1(value - room.up), value);
+  const max = Math.max(round1(value + room.down), value);
+  if (min >= -0.05 && max <= 0.05) return null;         // nowhere to go
+  const label = value > 0.05 ? `↓${value.toFixed(1)}mm`
+              : value < -0.05 ? `↑${(-value).toFixed(1)}mm` : 'shift';
+  return (
+    <div className={`bk-pageshift bk-pageshift-${side}`} title={
+      `Move this ${side === 'verso' ? 'Tibetan' : 'translation'} page's whole content down or `
+      + `up, when opening the empty lines is not enough. It may take the type past the bottom `
+      + `guide — down to the edge of the sheet, which is where it stops. Double-click to put `
+      + `it back. ${side === 'verso'
+          ? 'The Tibetan page only — every edition prints the same one, so this is set once.'
+          : 'This edition’s translation page only.'}`}>
+      <input type="range" min={min} max={max} step={0.1} value={value}
+             onChange={(e) => onChange(Number(e.target.value))}
+             onDoubleClick={() => onChange(0)} />
+      <span>{label}</span>
+    </div>
+  );
+};
+
+/** How far this page has been moved off its guide — a band from the text block's top to where
+ *  the content now starts. Honest only because `.bk-atpagetop` zeroes the top margin of
+ *  whatever opens a page, so at rest the content sits exactly ON the guide and there is no
+ *  collapsed margin to correct for. */
+const ShiftMark: React.FC<{ mm: number }> = ({ mm }) => {
+  if (Math.abs(mm) < 0.05) return null;
+  return (
+    <div className="bk-shiftmark" data-dir={mm < 0 ? 'up' : 'down'}
+         style={{ top: `calc(var(--m-top) + ${Math.min(mm, 0).toFixed(2)}mm)`,
+                  height: `${Math.abs(mm).toFixed(2)}mm` }}>
+      <span>{mm > 0 ? `↓${mm.toFixed(1)}` : `↑${(-mm).toFixed(1)}`}mm</span>
     </div>
   );
 };
@@ -553,12 +614,27 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const rowLang = gapFillLang(side, lang);
     mm <= 0 ? void delRow(l, kind, rowLang) : void putRow(l, kind, mm, rowLang);
   };
-  // How far each of a page's gaps could still open before THAT page overflows. Measured off
-  // the mounted page, so it answers for what is actually on screen; the slider uses it only
-  // to know where to stop. Keyed `${unit}:${side}` — the two sides are measured apart, which
-  // is the whole point of splitting them.
-  const [slackByPage, setSlackByPage] = useState<Map<string, number>>(new Map());
-  const slackOf = (si: number, side: PageSide) => slackByPage.get(`${si}:${side}`) ?? 0;
+  // What room each mounted page has left, for the two sliders' stops — measured off the page
+  // on screen, so it answers for what is actually there. Keyed `${unit}:${side}`: the two
+  // sides are measured apart, which is the whole point of splitting them.
+  const [roomByPage, setRoomByPage] = useState<Map<string, PageRoom>>(new Map());
+  const roomOf = (si: number, side: PageSide): PageRoom =>
+    roomByPage.get(`${si}:${side}`) ?? { gap: 0, up: 0, down: 0 };
+
+  // ── The page's vertical shift: move the whole block, once air has run out ──
+  // Signed, so 0 — not "<= 0" — is what clears it: an upward shift is a real value, and the
+  // gap fill's `mm <= 0 -> delete` idiom would silently swallow every one of them.
+  const pageShiftOf = (start: number, side: PageSide) => {
+    const l = renderLines[start];
+    return l ? (rowVal(l, PAGE_SHIFT_KIND[side], gapFillLang(side, lang)) ?? 0) : 0;
+  };
+  const setPageShift = (start: number, side: PageSide, mm: number) => {
+    const l = renderLines[start];
+    if (!l) return;
+    const kind = PAGE_SHIFT_KIND[side];
+    const rowLang = gapFillLang(side, lang);
+    Math.abs(mm) < 0.05 ? void delRow(l, kind, rowLang) : void putRow(l, kind, mm, rowLang);
+  };
 
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
@@ -645,47 +721,92 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const root = scrollRef.current;
     if (!root) return;
     let stop = false;
-    /** A page's foot, and how far its ink falls short of it (negative = past it). */
-    const slackOfContent = (c: HTMLElement) => {
+    /**
+     * A page's ink against the TWO rooms it has to fit, and the room left in each.
+     *
+     * They are different questions, and a shift spends one against the other:
+     *  - the text BLOCK — does the type fit it AS SET? A shift moves the wrapper's top and
+     *    its ink together, so it cancels out of this and cannot answer it. That is why the
+     *    shift's mm never has to reach here: measuring from the wrapper's own top IS
+     *    measuring the unshifted set.
+     *  - the SHEET — is any ink actually being lost? The shift is exactly what decides that,
+     *    at either edge.
+     *
+     * `?? c` is what keeps the furniture pages working through the same function: they have
+     * no wrapper (a block between `.booklet-content` and their `height: 100%` children would
+     * make that percentage indefinite and un-centre every one of them), and with `w === c`
+     * the arithmetic below is identical to what it was before there was a shift at all.
+     */
+    const extentOf = (c: HTMLElement) => {
+      const w = c.querySelector<HTMLElement>(':scope > .bk-shift') ?? c;
+      const page = c.parentElement as HTMLElement;
       let ink = -Infinity;
-      for (const ch of Array.from(c.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
-      return (c.getBoundingClientRect().top + c.clientHeight) - ink;
+      for (const ch of Array.from(w.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
+      const wr = w.getBoundingClientRect(), pr = page.getBoundingClientRect();
+      return {
+        n: w.children.length,
+        setSlack: c.clientHeight - (ink - wr.top),          // the block; shift-invariant
+        footSlack: pr.bottom - ink,                         // the sheet, below
+        headSlack: wr.top - pr.top,                         // the sheet, above
+      };
     };
     const mark = () => {
       if (stop || !scrollRef.current) return;
       for (const c of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-page > .booklet-content')) {
         const page = c.parentElement;
         if (!page) continue;
-        const over = c.children.length > 0 && slackOfContent(c) < -0.5;
+        const e = extentOf(c);
+        // A shift alone can never light this — that is the point of it. What still can: type
+        // too tall for the block however it is placed, or ink pushed off the sheet.
+        const over = e.n > 0 && (e.setSlack < -0.5 || e.footSlack < -0.5 || e.headSlack < -0.5);
         page.classList.toggle('bk-overfull', over);
         if (over) {
-          page.title = `This page runs ${Math.round(-slackOfContent(c))}px past the text block — `
-            + 'the printed page will clip it. Break earlier, close a gap, or split the line.';
+          // Say which room it is out of — the badge is worth having only if it says what to do.
+          page.title = e.setSlack < -0.5
+            ? `This page is ${Math.round(-e.setSlack)}px taller than the text block however it `
+              + 'is placed. Break earlier, close a gap, or split the line.'
+            : e.footSlack < -0.5
+            ? `This page runs ${Math.round(-e.footSlack)}px off the foot of the sheet and will `
+              + 'be trimmed. Shift it up, or give it less to hold.'
+            : `This page runs ${Math.round(-e.headSlack)}px off the head of the sheet and will `
+              + 'be trimmed. Shift it down.';
         } else if (page.title) {
           page.removeAttribute('title');
         }
       }
-      // How much MORE each gap could open before ITS OWN page overflows — the slider's stop.
-      // Per side: the two pages fill independently, so a shared stop would hold the roomier
-      // one back to the tighter one's limit.
-      const next = new Map<string, number>();
+      // Each page's remaining room, for the two sliders' stops. Per side: the pages balance
+      // independently, so a shared stop would hold the roomier one back to the tighter one's.
+      //   gap  — how much MORE each empty line could open before the ink leaves the BLOCK.
+      //   down — how far the page could move before its ink leaves the SHEET's foot.
+      //   up   — ...before its head leaves the sheet.
+      // `gap` is shift-invariant, so shifting does not move the gap slider's stop; the two
+      // controls are independent, and you can trade one back for the other. The reverse
+      // coupling is real and stays: opening the gaps pushes ink down, so `down` shrinks.
+      const next = new Map<string, PageRoom>();
       for (const sp of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-spread[data-unit]')) {
         for (const side of ['verso', 'recto'] as PageSide[]) {
           const c = sp.querySelector<HTMLElement>(`.booklet-page.${side} > .booklet-content`);
           if (!c) continue;
+          const e = extentOf(c);
           const gaps = c.querySelectorAll('.bk-gap').length;
-          const room = gaps ? slackOfContent(c) / gaps / MM_PX : 0;
-          next.set(`${sp.dataset.unit}:${side}`, Math.max(0, room));
+          next.set(`${sp.dataset.unit}:${side}`, {
+            gap: gaps ? Math.max(0, e.setSlack / gaps / MM_PX) : 0,
+            down: Math.max(0, e.footSlack / MM_PX),
+            up: Math.max(0, e.headSlack / MM_PX),
+          });
         }
       }
       // This effect runs on every render, so only disturb state when the answer moved —
-      // otherwise setting it would schedule the render that runs it again.
-      setSlackByPage((prev) => {
-        if (prev.size === next.size
-            && Array.from(next).every(([k, v]) => Math.abs((prev.get(k) ?? -1) - v) < 0.05)) {
-          return prev;
-        }
-        return next;
+      // otherwise setting it would schedule the render that runs it again. EVERY field has to
+      // be compared: miss one and this is an infinite render loop, not a stale number.
+      setRoomByPage((prev) => {
+        const same = prev.size === next.size && Array.from(next).every(([k, v]) => {
+          const p = prev.get(k);
+          return !!p && Math.abs(p.gap - v.gap) < 0.05
+                     && Math.abs(p.down - v.down) < 0.05
+                     && Math.abs(p.up - v.up) < 0.05;
+        });
+        return same ? prev : next;
       });
     };
     mark();
@@ -935,30 +1056,36 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                                      widthOf={furnitureWidthOf(u.item)}
                                      tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)} />
                 ) : (
-                  // Each page carries its OWN fill var and its own slider — the Tibetan is
-                  // much denser than the translation and needs far more air, so the two are
-                  // set apart. The stop is the room LEFT, so the reach is what is already
-                  // spent plus what remains.
+                  // Each page carries its OWN vars and its own pair of controls — the
+                  // Tibetan is much denser than the translation and needs far more air, so the
+                  // two are balanced apart. `.bk-shift` is the block the page's shift moves;
+                  // it goes on BODY pages only (see `.bk-shift` in booklet.css, and note the
+                  // furniture pages' `height: 100%` children, which a block in between would
+                  // un-centre). The gap fill's stop is the room LEFT, so its reach is what is
+                  // already spent plus what remains.
                   <div className="booklet-spread" data-unit={si}>
-                    <div className="booklet-page verso"
-                         style={gapFillVars(rows, renderLines[u.s.start], lang, 'verso')}>
-                      <div className="booklet-content">{renderPageLines(u.s, Verso)}</div>
-                      <GapFillSlider
-                        side="verso"
-                        value={gapFillOf(u.s.start, 'verso')}
-                        max={gapFillOf(u.s.start, 'verso') + slackOf(si, 'verso')}
-                        onChange={(mm) => setGapFill(u.s.start, 'verso', mm)} />
-                    </div>
-                    <div className="booklet-page recto"
-                         style={gapFillVars(rows, renderLines[u.s.start], lang, 'recto')}>
-                      <div className="booklet-content">{renderPageLines(u.s, Recto)}</div>
-                      <div className="booklet-folio">{si + 1}</div>
-                      <GapFillSlider
-                        side="recto"
-                        value={gapFillOf(u.s.start, 'recto')}
-                        max={gapFillOf(u.s.start, 'recto') + slackOf(si, 'recto')}
-                        onChange={(mm) => setGapFill(u.s.start, 'recto', mm)} />
-                    </div>
+                    {(['verso', 'recto'] as PageSide[]).map((side) => (
+                      <div key={side} className={`booklet-page ${side}`}
+                           style={pageVars(rows, renderLines[u.s.start], lang, side)}>
+                        <div className="booklet-content">
+                          <div className="bk-shift">
+                            {renderPageLines(u.s, side === 'verso' ? Verso : Recto)}
+                          </div>
+                        </div>
+                        {side === 'recto' && <div className="booklet-folio">{si + 1}</div>}
+                        <ShiftMark mm={pageShiftOf(u.s.start, side)} />
+                        <GapFillSlider
+                          side={side}
+                          value={gapFillOf(u.s.start, side)}
+                          max={gapFillOf(u.s.start, side) + roomOf(si, side).gap}
+                          onChange={(mm) => setGapFill(u.s.start, side, mm)} />
+                        <PageShiftSlider
+                          side={side}
+                          value={pageShiftOf(u.s.start, side)}
+                          room={roomOf(si, side)}
+                          onChange={(mm) => setPageShift(u.s.start, side, mm)} />
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -990,9 +1117,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         <div ref={measureRef} className="booklet-measure" aria-hidden>
           <div className="booklet-page verso" data-side="verso">
             <div className="booklet-content">
-              {renderLines.map((l) => (
-                <div className="bk-linewrap" key={l.key}><Verso l={l} adj={adjFor(l, false)} /></div>
-              ))}
+              {/* `.bk-shift` with no var — layout-neutral at rest, and the measure DOM exists
+                  precisely so that a selector keyed on these classes matches here exactly as
+                  it does on the page. */}
+              <div className="bk-shift">
+                {renderLines.map((l) => (
+                  <div className="bk-linewrap" key={l.key}><Verso l={l} adj={adjFor(l, false)} /></div>
+                ))}
+              </div>
             </div>
           </div>
           {/* One recto per edition, each with ITS OWN text and widths. The breaks are shared,
@@ -1001,11 +1133,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           {measure.map((m) => (
             <div className="booklet-page recto" data-recto={m.lang} key={m.lang}>
               <div className="booklet-content">
-                {m.lines.map((l) => (
-                  <div className="bk-linewrap" key={l.key}>
-                    <Recto l={l} adj={adjFor(l, false, m.lang)} />
-                  </div>
-                ))}
+                <div className="bk-shift">
+                  {m.lines.map((l) => (
+                    <div className="bk-linewrap" key={l.key}>
+                      <Recto l={l} adj={adjFor(l, false, m.lang)} />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ))}

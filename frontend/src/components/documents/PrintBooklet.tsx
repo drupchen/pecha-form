@@ -7,7 +7,7 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, gapFillVars, anchorOf, TIBETAN_LANG,
+  deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG,
   type LineAdj, type WidthTarget, type BlockWidthOf,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -181,19 +181,24 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
             </div>
           );
         }
-        // Each page's gap fill rides as a CSS var, exactly as on the bench — the two read the
-        // same rows through the same helper, so they cannot drift apart. The sides fill
+        // Each page's balancing rides as CSS vars, exactly as on the bench — the two read the
+        // same rows through the same helper, so they cannot drift apart. The sides balance
         // independently: the Tibetan is denser and carries its own, shared by every edition.
+        // `.bk-shift` is the block the page's shift moves; body pages only, as on the bench.
         const start = flowLines[u.s.start];
         return (
           <React.Fragment key={`u${i}`}>
             <div className="booklet-page verso print-page"
-                 style={gapFillVars(rows, start, lang, 'verso')}>
-              <div className="booklet-content">{renderLines(u.s, Verso)}</div>
+                 style={pageVars(rows, start, lang, 'verso')}>
+              <div className="booklet-content">
+                <div className="bk-shift">{renderLines(u.s, Verso)}</div>
+              </div>
             </div>
             <div className="booklet-page recto print-page"
-                 style={gapFillVars(rows, start, lang, 'recto')}>
-              <div className="booklet-content">{renderLines(u.s, Recto)}</div>
+                 style={pageVars(rows, start, lang, 'recto')}>
+              <div className="booklet-content">
+                <div className="bk-shift">{renderLines(u.s, Recto)}</div>
+              </div>
               <div className="booklet-folio">{folio}</div>
             </div>
           </React.Fragment>

@@ -299,6 +299,25 @@
 .bk-section-l2 { font-size: 13.5pt; }
 .bk-section-l3 { font-size: 12pt; }
 
+/* The page's content, offset bodily by `--page-shift` (signed: + down, − up). The move of
+ * last resort, once opening the empty lines has reached the limit of decent spacing. It may
+ * put ink between the text block's foot and the sheet's edge — that is the point — and the
+ * page's `overflow: hidden` is what still bounds it.
+ *
+ * It is a WRAPPER rather than `.booklet-content` itself because that must stay STATIC: the
+ * folio-zone guide is `.booklet-content::after` and resolves against `.booklet-page` only
+ * while nothing positions in between. Position it and the guide drifts off the folio it
+ * describes.
+ *
+ * `position: relative` and NOTHING ELSE. Do not add `overflow`, `contain`, `transform`, or
+ * `display: flow-root` — any of them makes this a block formatting context, which would
+ * contain `.bk-translation`'s trailing margin and have every recto measure ~1mm fuller than
+ * it sets, quietly shrinking slack and lighting badges. Do not add `z-index` either: a
+ * stacking context here would sink the width grips and break controls beneath the guides.
+ * (Verified in Chrome's paged media: the offset survives to the PDF exactly, ink in the
+ * margins prints, and ink past the sheet is clipped.) */
+.bk-shift { position: relative; top: var(--page-shift, 0mm); }
+
 /* The empty-line gap between chunks — the balancing lever (height set inline).
  * `--gap-fill` is set on the PAGE and inherits down: every empty line on that page grows by
  * the same amount, which is the "fill the page out" control. It is per EDITION — the breaks
@@ -336,6 +355,74 @@
 .bk-gapfill-verso input[type='range'] { accent-color: var(--lapis, #2f6f9f); }
 .bk-gapfill-verso span { color: var(--lapis, #2f6f9f); }
 @media print { .bk-gapfill { display: none !important; } }
+
+/* The page's vertical shift: drag the whole block down or up. Sits in each page's LEFT
+ * margin — the verso's outer, the recto's binding. Not the outer margin on both: the recto's
+ * outer holds the folio and its guide, and a width grip reaches into the right margin of
+ * either page. `writing-mode: vertical-lr` puts the minimum at the top, so the thumb travels
+ * the way the type does. A design control, never ink. */
+.bk-pageshift {
+  position: absolute;
+  left: 2mm;
+  top: var(--m-top);
+  height: calc(var(--page-h) - var(--m-top) - var(--m-bottom));
+  z-index: 3;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.booklet-page:hover > .bk-pageshift,
+.bk-pageshift:focus-within { display: flex; }
+.bk-pageshift input[type='range'] {
+  writing-mode: vertical-lr;    /* NOT -webkit-appearance: slider-vertical (gone in Chrome 135) */
+  direction: ltr;
+  flex: 1;
+  width: 10px;
+  accent-color: var(--jade, #3a7d5f);
+}
+.bk-pageshift span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
+                     white-space: nowrap; }
+/* The Tibetan page reads in the darker ink — it is the shared one, set once for all four
+   editions. Same convention as the gap fill's. */
+.bk-pageshift-verso input[type='range'] { accent-color: var(--lapis, #2f6f9f); }
+.bk-pageshift-verso span { color: var(--lapis, #2f6f9f); }
+@media print { .bk-pageshift { display: none !important; } }
+
+/* How far this page has been moved off its guide. A band from the text block's top to where
+ * the content now starts, drawn off the SAME vars as the text-block guide so it cannot drift
+ * from what it describes.
+ *
+ * Shown whenever the page is shifted — NOT gated on the guides toggle. The guides answer
+ * "show me the geometry I am not printing"; this answers "this page has been moved", which is
+ * a fact about the document, and turning the guides off to read the type as it prints is
+ * exactly when you would forget. It carries its own hairline at the block's top, so it IS the
+ * guide, locally, for as long as the page is displaced. A warning is not a guide.
+ *
+ * Vermilion upward: an up-shift lifts ink above the text block, which the overfull badge
+ * deliberately does not catch, so the warning lives here. */
+.bk-shiftmark {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  border-top: 1px solid var(--jade, #3a7d5f);
+  border-bottom: 1px dashed var(--jade, #3a7d5f);
+  background: rgba(58, 125, 95, 0.06);
+}
+.booklet-page.verso .bk-shiftmark { left: var(--m-outer); right: var(--m-bind); }
+.booklet-page.recto .bk-shiftmark { left: var(--m-bind); right: var(--m-outer); }
+.bk-shiftmark[data-dir='up'] {
+  border-top-color: var(--vermilion, #c53030);
+  border-bottom-color: var(--vermilion, #c53030);
+  background: rgba(197, 48, 48, 0.06);
+}
+.bk-shiftmark span {
+  position: absolute; right: 1mm; top: 0;
+  font: 600 8px/1.3 system-ui, sans-serif;
+  color: var(--jade, #3a7d5f);
+}
+.bk-shiftmark[data-dir='up'] span { color: var(--vermilion, #c53030); }
+@media print { .bk-shiftmark { display: none !important; } }
 
 /* Gap controls (−/+/× and restore) — revealed on hover of the gap. */
 .bk-gapctl-group {

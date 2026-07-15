@@ -631,6 +631,11 @@ class TocEntry(BaseModel):
 # a BLOCK KEY instead: '#title_main', '#copyright', … The column is TEXT and no syllable uuid
 # can begin with '#', so the two cannot be confused, and the unique key
 # (document, item, anchor, kind, lang) still yields exactly one row per block per edition.
+# `page_shift_verso` / `page_shift_recto`: SIGNED mm the whole page's content is moved down
+# (+) or up (-). What is left when opening the empty lines has reached the limit of decent
+# spacing and the page still is not right. `value` is signed, so 0 — not "<= 0" — is what
+# clears one. It may legitimately place ink BETWEEN the text block's foot and the sheet's
+# edge: that is the point of it, and the page's own clip is what still bounds the ink.
 # `gap_fill_verso` / `gap_fill_recto`: extra height added to EVERY empty-line gap on ONE
 # page, in mm — the leftover a shared break left behind, spent on balancing that page.
 # Anchored on the page's first line. Two kinds because the two facing pages have nothing to
@@ -642,6 +647,7 @@ DocumentLayoutKind = Literal[
     'page_break', 'line_space', 'line_nospace', 'hairline', 'recto_cut',
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
     'gap_fill_verso', 'gap_fill_recto', 'width_furniture',
+    'page_shift_verso', 'page_shift_recto',
 ]
 
 class DocumentLayoutRow(BaseModel):

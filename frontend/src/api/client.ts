@@ -480,7 +480,11 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
 export type DocumentLayoutKind =
   | 'page_break' | 'line_space' | 'line_nospace' | 'hairline' | 'recto_cut'
   | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section'
-  | 'gap_fill_verso' | 'gap_fill_recto' | 'width_furniture';
+  | 'gap_fill_verso' | 'gap_fill_recto' | 'width_furniture'
+  /** `page_shift_*`: SIGNED mm the whole page's content is moved down (+) or up (-) — what is
+   *  left once opening the empty lines has reached the limit of decent spacing. It may
+   *  legitimately place ink between the text block's foot and the sheet's edge. */
+  | 'page_shift_verso' | 'page_shift_recto';
 
 export interface DocumentLayoutRow {
   id: number;

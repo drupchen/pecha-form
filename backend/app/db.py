@@ -21,7 +21,13 @@ LAYOUT_KINDS = (
     'width_furniture',  # a special page's block, anchored '#block' instead of a syllable
     'gap_fill_verso',   # mm added to every empty line on a Tibetan page (shared)
     'gap_fill_recto',   # ...on a translation page (per edition)
+    'page_shift_verso', # SIGNED mm the whole Tibetan page is moved down (+) or up (-) (shared)
+    'page_shift_recto', # ...on a translation page (per edition)
 )
+# NB: `_rebuild_document_layout_kinds` reads the kinds back out of the stored CHECK with
+# `'([a-z_]+)'`. A name carrying a digit or a hyphen would never match, so the set comparison
+# could never converge and the table would be rebuilt on EVERY startup, silently. Keep every
+# kind pure [a-z_].
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS texts (

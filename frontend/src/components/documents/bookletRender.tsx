@@ -596,16 +596,49 @@ export const gapFillLang = (side: PageSide, lang: string) => (side === 'verso' ?
 export function gapFillVars(
   rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string, side: PageSide,
 ): React.CSSProperties {
-  if (!line) return {};
-  const kind = GAP_FILL_KIND[side];
-  const rowLang = gapFillLang(side, lang);
-  // The line's anchor, or the bare syllable a row written before the op was part of it used.
-  const a = anchorOf(line);
-  const r = rows.find((x) => x.kind === kind && x.item_id === line.itemId
-                          && (x.anchor_syl_id === a || x.anchor_syl_id === line.startSylId)
-                          && (x.lang ?? '') === rowLang);
-  const mm = r?.value ?? 0;
+  const mm = pageRowMm(rows, line, GAP_FILL_KIND[side], gapFillLang(side, lang));
   return mm ? ({ ['--gap-fill' as string]: `${mm}mm` } as React.CSSProperties) : {};
+}
+
+/** One page-level row's mm, resolved on the page's first line. The line's anchor, or the
+ *  bare syllable a row written before the op was part of it used (see `anchorOf`). */
+function pageRowMm(
+  rows: DocumentLayoutRow[], line: DocLine | undefined, kind: string, rowLang: string,
+): number {
+  if (!line) return 0;
+  const a = anchorOf(line);
+  return rows.find((x) => x.kind === kind && x.item_id === line.itemId
+                       && (x.anchor_syl_id === a || x.anchor_syl_id === line.startSylId)
+                       && (x.lang ?? '') === rowLang)?.value ?? 0;
+}
+
+/**
+ * How far one page's whole content is moved, in SIGNED mm — down positive, up negative.
+ *
+ * The move of last resort. Opening the empty lines (`gap_fill_*`) spends a page's slack
+ * first, but only to the limit of decent spacing; past that the block itself has to travel.
+ * Unlike the gap fill it may put ink BETWEEN the text block's foot and the sheet's edge —
+ * that is what it is for — and the page's own clip is what still bounds it.
+ *
+ * Split by side and by edition on the same seam as everything else here: the verso is the
+ * same Tibetan in all four booklets, so its shift is shared; the recto's is its edition's.
+ */
+export const PAGE_SHIFT_KIND = { verso: 'page_shift_verso', recto: 'page_shift_recto' } as const;
+export const pageShiftMm = (
+  rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string, side: PageSide,
+): number => pageRowMm(rows, line, PAGE_SHIFT_KIND[side], gapFillLang(side, lang));
+
+/** Everything one page's balancing puts on it. Both vars ride on `.booklet-page` and inherit
+ *  down — the bench and the print page read the same rows through this one helper, so they
+ *  cannot drift apart. */
+export function pageVars(
+  rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string, side: PageSide,
+): React.CSSProperties {
+  const shift = pageShiftMm(rows, line, lang, side);
+  return {
+    ...gapFillVars(rows, line, lang, side),
+    ...(shift ? { ['--page-shift' as string]: `${shift}mm` } : {}),
+  } as React.CSSProperties;
 }
 
 export interface DerivedBooklet {
