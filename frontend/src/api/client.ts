@@ -499,12 +499,28 @@ export interface LayoutConfig {
   margin_bind_mm: number; margin_outer_mm: number;
   tibetan_pt: number; phonetics_pt: number; translation_pt: number;
   leading: number;
+  /** Changed syllables the automatic breaks may drift before the bench re-flows them by
+   *  itself. Not geometry, but per-document user config — which is what this already is. */
+  reflow_threshold: number;
 }
 
-export interface DocumentLayout { config: LayoutConfig; rows: DocumentLayoutRow[] }
+export interface DocumentLayout {
+  config: LayoutConfig;
+  rows: DocumentLayoutRow[];
+  /** What the stored breaks were flowed against — a per-line `hash:syllables` signature of
+   *  the stream, and a hash of the styles + geometry. The bench diffs them to count how many
+   *  syllables have changed since, and re-flows once that passes the threshold. Null = never
+   *  recorded, so nothing is assumed. */
+  pagination_sig: string | null;
+  pagination_fp: string | null;
+}
 
 export const getDocumentLayout = (id: number) =>
   jfetch<DocumentLayout>(`${API_BASE}/documents/${id}/layout`);
+/** Record what a just-written set of breaks fits. Only the bench, only after a flow. */
+export const putPaginationStamp = (id: number, pagination_sig: string, pagination_fp: string) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/pagination-stamp`,
+    { method: 'PUT', headers: J, body: JSON.stringify({ pagination_sig, pagination_fp }) });
 export const putLayoutConfig = (id: number, config: Partial<LayoutConfig>) =>
   jfetch<DocumentLayout>(`${API_BASE}/documents/${id}/layout-config`,
     { method: 'PUT', headers: J, body: JSON.stringify({ config }) });

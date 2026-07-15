@@ -7,6 +7,83 @@
  * it cannot quietly drift away from `deriveBooklet`, which renders the answer back.
  */
 
+/** FNV-1a, hex. Not a cryptographic hash — it only has to notice that a line changed. */
+export function hash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/** What one line contributes to a stream signature: its content hashed, and the number of
+ *  syllables it is worth. Anything that changes the line's HEIGHT has to be in the hash, or
+ *  the pagination would go stale without the count noticing. */
+export interface SigLine {
+  itemId: number; startSylId: string; role: string; level?: number | null;
+  tokenCount: number; phonetics: string; translation: string | null; emptyAfter: boolean;
+}
+
+/**
+ * A signature of the whole compiled stream: one `hash:syllables` per line.
+ *
+ * Compact on purpose — ~11 bytes a line, so a 1600-line booklet costs ~18KB — because it is
+ * stored per document and read on every open. It is a per-line list rather than one digest
+ * so that a diff can say HOW MUCH changed, not merely that something did: the bench spends
+ * that as a syllable budget before re-flowing.
+ */
+export function streamSignature(lines: SigLine[]): string {
+  // NUL between the fields: it cannot occur in any of them, so no combination of a
+  // translation and a role can impersonate another line's. Written as an escape — a literal
+  // control byte in the source would be invisible to the next reader.
+  const SEP = '\u0000';
+  return lines.map((l) => {
+    const body = [l.itemId, l.startSylId, l.role, l.level ?? '',
+                  l.phonetics, l.translation ?? '', l.emptyAfter ? 1 : 0].join(SEP);
+    return `${hash(body)}:${l.tokenCount}`;
+  }).join(' ');
+}
+
+/** Project the compiled stream onto the fields a signature cares about. Structural on
+ *  purpose: this module stays free of the render types, so it can be tested without a DOM. */
+export function toSigLines(lines: readonly {
+  itemId: number; startSylId: string; role: string; level?: number | null;
+  tokens: readonly unknown[]; phonetics: string; translation: string | null;
+  emptyAfter: boolean;
+}[]): SigLine[] {
+  return lines.map((l) => ({
+    itemId: l.itemId, startSylId: l.startSylId, role: l.role, level: l.level ?? null,
+    tokenCount: l.tokens.length, phonetics: l.phonetics, translation: l.translation,
+    emptyAfter: l.emptyAfter,
+  }));
+}
+
+/**
+ * How many SYLLABLES have changed between the stream a pagination was flowed against and
+ * the one now.
+ *
+ * Compared by position: the streams are the same document, so a run of edits shows up as a
+ * run of differing lines. A line that changed is counted at its CURRENT weight, one that
+ * vanished at its old — either way the number answers "how much of this booklet has moved
+ * since it was paginated", which is the only thing it is used for.
+ */
+export function dirtySyllables(oldSig: string | null, now: SigLine[]): number {
+  if (!oldSig) return 0;                 // never recorded: assume nothing, disturb nothing
+  const before = oldSig.split(' ').filter(Boolean);
+  const cur = streamSignature(now).split(' ').filter(Boolean);
+  let dirty = 0;
+  for (let i = 0; i < Math.max(before.length, cur.length); i++) {
+    const b = before[i], c = cur[i];
+    if (b === c) continue;
+    // Weight by whichever side exists — an added or edited line by what it is now, a
+    // deleted one by what it was.
+    const w = c ? Number(c.split(':')[1]) : Number((b ?? ':0').split(':')[1]);
+    dirty += Number.isFinite(w) ? w : 0;
+  }
+  return dirty;
+}
+
 /** The first family of a `font-family` list — `'Chogyal', 'Jomolhari', serif` → `'Chogyal'`.
  *  Checking the whole list is useless: it ends in a generic that is always "loaded". */
 const firstFamily = (list: string) => (list.split(',')[0] ?? '').trim();

@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { X, RefreshCw, Scissors, Minus, FileDown, Type, Frame } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getOrgSeal,
+  getOrgSeal, putPaginationStamp, putLayoutConfig,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
@@ -12,7 +12,10 @@ import {
   deriveBooklet, furnitureBodyOf, isSplittable, BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange,
 } from './bookletRender';
-import { awaitBookletFonts, readStream, readHairlineAdvance, flowPages } from './bookletMeasure';
+import {
+  awaitBookletFonts, readStream, readHairlineAdvance, flowPages,
+  hash, streamSignature, toSigLines, dirtySyllables, type SigLine,
+} from './bookletMeasure';
 import { loadBookletStyleCss } from './bookletStyles';
 import { StyleStudio } from './StyleStudio';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
@@ -23,6 +26,26 @@ import '../../styles/booklet.css';
  *  line for line (the stream is cut by the Tibetan, not by the translation), which is what
  *  lets a single shared break set be flowed against all of them. */
 interface EditionStream { lang: string; lines: DocLine[] }
+
+/** Changed syllables the pagination may drift before re-flowing itself — roughly a few
+ *  edited lines, so a working session re-flows now and then rather than at every keystroke.
+ *  Per document, in `layout_config`. */
+const DEFAULT_REFLOW_THRESHOLD = 50;
+
+/** The stored stamp is `{lang: signature}`. Anything else — a stamp from before it was kept
+ *  per edition, or junk — reads as "no stamp", which simply means nothing is disturbed. */
+function parseSigStamp(raw: string | null): Record<string, string> | null {
+  if (!raw) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const out: Record<string, string> = {};
+    for (const [k, s] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof s === 'string') out[k] = s;
+    }
+    return Object.keys(out).length ? out : null;
+  } catch { return null; }
+}
 
 /**
  * Pagination bench (Phase D2). Compiles a document's text pages into the SHARED line
@@ -42,6 +65,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
   const [lang, setLang] = useState<string>('en');
   const [lines, setLines] = useState<DocLine[]>([]);
+  // Which edition `lines` was compiled for. Switching editions flips `lang` at once but the
+  // recompile is async, so for a moment the stream on hand is the PREVIOUS edition's —
+  // long enough for the drift counter to compare `en`'s stream against `de`'s signature and
+  // conclude the whole booklet had been rewritten.
+  const [linesLang, setLinesLang] = useState<string | null>(null);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
   // The navigation + section headings come from the TRANSLATION pane (labels, levels, title
@@ -66,6 +94,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // The compiled editions awaiting measurement. Non-null = the measure DOM is mounted and
   // the effect below may read it.
   const [measure, setMeasure] = useState<EditionStream[] | null>(null);
+  // What the stored breaks were flowed against: one stream signature per EDITION, and one
+  // style/geometry fingerprint. Both empty until a flow records them.
+  const [stamp, setStamp] = useState<{ sig: Record<string, string> | null; fp: string | null }>(
+    { sig: null, fp: null });
+  // How many changed syllables the pagination is allowed to drift before it re-flows itself.
+  // The user's dial: small keeps the pages honest, large keeps them still while you work.
+  const [threshold, setThreshold] = useState(DEFAULT_REFLOW_THRESHOLD);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -83,6 +118,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
+      setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
+      // The threshold rides in layout_config — it is per-document user config, which is
+      // exactly what that JSON already is, so it needs no column of its own.
+      setThreshold(lay.config.reflow_threshold > 0
+        ? Math.round(lay.config.reflow_threshold) : DEFAULT_REFLOW_THRESHOLD);
       setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
@@ -90,6 +130,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setLang(edition);
       const compiled = await compileDocument(d.items, edition);
       setLines(compiled.lines);
+      setLinesLang(edition);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
       setLoading(false);
@@ -104,6 +145,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       const compiled = await compileDocument(doc.items, lang);
       if (!alive) return;
       setLines(compiled.lines);
+      setLinesLang(lang);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
     })();
@@ -125,6 +167,29 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   );
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
+
+  // ── Staleness: how far the booklet has drifted from the pagination it carries ──
+  // The stream's signature and the style/geometry fingerprint are what the breaks were
+  // flowed against. Editing a translation moves a few lines; changing a font moves all of
+  // them. Those are different questions, so they are asked separately.
+  const sigLines: SigLine[] = useMemo(() => toSigLines(renderLines), [renderLines]);
+  const styleFp = useMemo(
+    () => hash(`${styleCss} ${JSON.stringify(config ?? {})}`), [styleCss, config]);
+  // Per EDITION, and it has to be: the stream carries each edition's own translation, so
+  // `en`'s signature and `de`'s differ completely. One shared signature would read "the whole
+  // booklet changed" the moment you clicked another edition chip, and re-flow the lot for
+  // nothing. Only the edition on screen is compiled, so only its drift is measurable; an
+  // edition with no stored signature — one added since the flow — counts as no drift, and the
+  // overfull badge is what speaks for it instead.
+  // Only ask once the stream in hand is actually this edition's — see `linesLang`.
+  const streamReady = linesLang === lang;
+  const dirty = useMemo(
+    () => (streamReady ? dirtySyllables(stamp.sig?.[lang] ?? null, sigLines) : 0),
+    [streamReady, stamp.sig, lang, sigLines]);
+  // A style or geometry change moves EVERY line at once, so counting syllables says nothing
+  // useful about it — re-flow straight away rather than sit at "0 of 50".
+  const styleStale = !!stamp.fp && stamp.fp !== styleFp;
+  const remaining = Math.max(0, threshold - dirty);
 
   // Auto-suggest pagination: the heavy full-stream measure container is mounted ONLY
   // while `measuring`, measured once, then unmounted (keeps the steady-state DOM light).
@@ -244,7 +309,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           item_id: renderLines[i].itemId, anchor_syl_id: renderLines[i].startSylId,
           kind: 'page_break', value: BREAK_AUTO,   // explicit: legacy rows have NULL here
         })));
+        // Record what these breaks fit, so the drift from here is measurable. One signature
+        // per edition — every edition was just compiled and measured, so all of them can be
+        // stamped, and each is then comparable against itself alone. Written only on the path
+        // that actually wrote breaks: a refused or aborted seed must leave the old stamp
+        // standing, or the booklet would look freshly paginated when it is not.
+        const sig: Record<string, string> = {};
+        for (const m of measure) sig[m.lang] = streamSignature(toSigLines(m.lines));
+        await putPaginationStamp(documentId, JSON.stringify(sig), styleFp);
         if (!alive) return;
+        setStamp({ sig, fp: styleFp });
         setRows((await getDocumentLayout(documentId)).rows);
         // A page the flow could not make fit holds ONE line that is taller than the text
         // block in some edition — it has nowhere else to go, so the flow leaves it and says
@@ -261,11 +335,28 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [measure]);
 
-  // Seed an initial pagination the first time a document is opened with no breaks yet.
+  /**
+   * Keep the automatic breaks where they belong, without making a nuisance of it.
+   *
+   * Three ways in:
+   *  - no breaks at all — a document opened for the first time;
+   *  - the styles or the page geometry moved, which relays out EVERY line, so counting
+   *    syllables would be theatre;
+   *  - enough syllables have changed upstream to spend the budget. The chip counts it down,
+   *    so a re-flow is never a surprise.
+   *
+   * Deliberately NOT triggered by the balancing (gaps, widths, the gap fill): those are
+   * local decisions about a page you are looking at, and re-flowing under them would move
+   * the page while you tune it. If one pushes a page past its block, the overfull badge says
+   * so — that is a better answer than repaginating the booklet under the user's hands.
+   */
   useEffect(() => {
-    if (config && lines.length && !hasStoredBreaks && !seeding) void requestSeed(false);
+    if (!config || !lines.length || seeding || !streamReady) return;
+    if (!hasStoredBreaks) { void requestSeed(false); return; }
+    if (!stamp.sig) return;                      // never stamped: nothing to compare against
+    if (styleStale || dirty >= threshold) void requestSeed(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, lines, hasStoredBreaks]);
+  }, [config, lines, streamReady, hasStoredBreaks, styleStale, dirty, threshold, stamp.sig]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
@@ -597,6 +688,28 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
+        {/* The re-flow budget, counted in changed syllables so it tracks the work rather than
+            the clock. It only appears once there is a stamp to measure drift against. */}
+        {stamp.sig && !seeding && (
+          <span className={`px-2 py-1 rounded-md flex items-center gap-1 ${
+                  remaining === 0 ? 'text-vermilion' : 'text-ink-soft'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title={'The automatic breaks re-flow themselves once this many changed '
+                     + 'syllables pile up upstream. Your own breaks and splits are kept. '
+                     + 'Balancing a page never triggers it.'}>
+            re-flow after
+            <input
+              type="number" min={1} step={10} value={threshold}
+              onChange={(e) => setThreshold(Math.max(1, Number(e.target.value) || 1))}
+              onBlur={(e) => void putLayoutConfig(documentId,
+                { reflow_threshold: Math.max(1, Number(e.target.value) || 1) } as Partial<LayoutConfig>)}
+              className="w-12 px-1 py-0 rounded bg-white text-xs text-center"
+              style={{ border: '1px solid var(--cline)' }} />
+            <span className={remaining === 0 ? '' : 'text-lapis'}>
+              {remaining === 0 ? 'syllables · now' : `syllables · ${remaining} to go`}
+            </span>
+          </span>
+        )}
         {msg && (
           <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
         )}

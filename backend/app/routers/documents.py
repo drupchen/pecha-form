@@ -25,7 +25,7 @@ from ..schemas import (
     DocumentItemIn, DocumentItemPatch, DocumentItemOut,
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
-    DocumentLayoutConfigIn, DocumentLayoutOut,
+    DocumentLayoutConfigIn, DocumentLayoutOut, PaginationStampIn,
     DocumentFurnitureRow, DocumentFurnitureIn, ImageSizeIn,
 )
 from .translations import _sanitize_body
@@ -41,6 +41,10 @@ DEFAULT_LAYOUT_CONFIG = {
     "margin_bind_mm": 16.0, "margin_outer_mm": 20.0,   # bind side (spine) vs outer edge (slack)
     "tibetan_pt": 16.0, "phonetics_pt": 10.0, "translation_pt": 11.0,
     "leading": 1.2,
+    # How many CHANGED SYLLABLES the automatic breaks may drift before the bench re-flows
+    # them by itself (see `documents.pagination_sig`). Not geometry, but per-document user
+    # config, which is what this JSON already is.
+    "reflow_threshold": 50,
 }
 
 
@@ -338,9 +342,32 @@ def get_layout(document_id: int):
         rows = conn.execute(
             "SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
             (document_id,)).fetchall()
+        keys = row.keys()
         return DocumentLayoutOut(
             config=_effective_config(row),
-            rows=[DocumentLayoutRow(**dict(r)) for r in rows])
+            rows=[DocumentLayoutRow(**dict(r)) for r in rows],
+            pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
+            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/pagination-stamp")
+def put_pagination_stamp(document_id: int, payload: PaginationStampIn):
+    """Record what the breaks just written were flowed against.
+
+    Only the bench calls this, immediately after a successful flow. Everything else leaves
+    it alone, so a mismatch means exactly one thing: the booklet has moved since.
+    """
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        conn.execute(
+            "UPDATE documents SET pagination_sig = ?, pagination_fp = ?, "
+            "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (payload.pagination_sig, payload.pagination_fp, document_id))
+        conn.commit()
+        return {"ok": True}
     finally:
         conn.close()
 
@@ -368,8 +395,12 @@ def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
         row = _require_doc(conn, document_id)
         rows = conn.execute("SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
                             (document_id,)).fetchall()
-        return DocumentLayoutOut(config=_effective_config(row),
-                                 rows=[DocumentLayoutRow(**dict(r)) for r in rows])
+        keys = row.keys()
+        return DocumentLayoutOut(
+            config=_effective_config(row),
+            rows=[DocumentLayoutRow(**dict(r)) for r in rows],
+            pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
+            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)
     finally:
         conn.close()
 

@@ -490,11 +490,22 @@ CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id);
 -- A document is a booklet: an ordered sequence of `document_items` (multiple
 -- secondary texts + furniture pages), published in a set of `document_languages`
 -- that page-align. Pagination + PDF are D2/D3; D1 is the structure only.
+-- `pagination_sig` / `pagination_fp` record what the stored page breaks were flowed
+-- AGAINST, so the bench can tell when they have gone stale and by how much:
+--   sig = one `hash:tokenCount` per line of the compiled stream. Diffing it against the
+--         current stream gives the number of SYLLABLES that have changed since the flow —
+--         the budget the bench counts down before re-flowing on its own.
+--   fp  = a hash of the compiled style CSS + the page geometry. A change there moves every
+--         line at once, so counting syllables is meaningless and the bench re-flows now.
+-- Both NULL = flowed before this was tracked (or never); the bench then leaves it alone
+-- rather than guessing that everything changed.
 CREATE TABLE IF NOT EXISTS documents (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    title      TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    title          TEXT NOT NULL,
+    pagination_sig TEXT,
+    pagination_fp  TEXT,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS document_items (
@@ -729,7 +740,10 @@ _COLUMN_MIGRATIONS = {
     # Part 13: manual per-parent order for the registry (see the text_groups CREATE).
     "text_groups": [("position", "INTEGER")],
     # D2: page geometry + type sizes for the booklet layout (JSON; NULL = defaults).
-    "documents": [("layout_config", "TEXT")],
+    # `pagination_sig`/`pagination_fp`: what the stored breaks were flowed against, so the
+    # bench can measure how stale they are (see the documents CREATE).
+    "documents": [("layout_config", "TEXT"), ("pagination_sig", "TEXT"),
+                  ("pagination_fp", "TEXT")],
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
     # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.

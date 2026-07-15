@@ -661,6 +661,16 @@ class DocumentLayoutConfigIn(BaseModel):
 class DocumentLayoutOut(BaseModel):
     config: dict                       # effective geometry (defaults + overrides)
     rows: List[DocumentLayoutRow] = []
+    # What the stored breaks were flowed against (see the `documents` CREATE). The bench
+    # diffs these to know how far the pagination has drifted; NULL = never recorded, and it
+    # then leaves the breaks alone rather than assuming everything changed.
+    pagination_sig: Optional[str] = None
+    pagination_fp: Optional[str] = None
+
+class PaginationStampIn(BaseModel):
+    """Written by the bench right after a successful flow — this is what those breaks fit."""
+    pagination_sig: str
+    pagination_fp: str
 
 # Per-language furniture content (copyright text, cover/title overrides, captions).
 class DocumentFurnitureRow(BaseModel):
