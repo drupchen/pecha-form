@@ -7,7 +7,8 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, gapFillVars, type LineAdj, type WidthTarget,
+  deriveBooklet, furnitureBodyOf, gapFillVars,
+  type LineAdj, type WidthTarget, type BlockWidthOf,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
@@ -121,6 +122,16 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
     );
   };
 
+  /** A special page's stored block widths, keyed exactly as the bench writes them — the
+   *  Tibetan title on its own syllable and shared, the translated furniture on its block name
+   *  and per edition. Read back with NO handlers: the print page carries what was set. */
+  const furnitureWidthOf = (item: DocumentItem): BlockWidthOf => (key: string) => {
+    const furn = key.startsWith('#');
+    const kind = furn ? 'width_furniture' : 'width_tibetan';
+    const r = rowByKey.get(`${item.id}:${key}:${kind}:${furn ? lang : ''}`);
+    return { valueMm: r?.value ?? 0, min: 0, max: 0 };
+  };
+
   // A single physical page (front/back matter furniture item).
   const FurniturePageSheet: React.FC<{ item: DocumentItem }> = ({ item }) => (
     <div className="booklet-page furniture print-page">
@@ -130,7 +141,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           titleLines={item.kind === 'cover' ? mainTitleLines : []}
           body={furnitureBodyOf(furniture, item, lang)}
           toc={item.kind === 'toc' ? tocRows : []}
-          orgSeal={orgSeal} />
+          orgSeal={orgSeal}
+          widthOf={furnitureWidthOf(item)} />
       </div>
     </div>
   );
@@ -155,7 +167,9 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
         if (u.kind === 'title') {
           return (
             <div key={`u${i}`} className="booklet-page furniture print-page">
-              <div className="booklet-content"><TitleContent titleLines={u.titleLines} /></div>
+              <div className="booklet-content">
+                <TitleContent titleLines={u.titleLines} widthOf={furnitureWidthOf(u.item)} />
+              </div>
             </div>
           );
         }

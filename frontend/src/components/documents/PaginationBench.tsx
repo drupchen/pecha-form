@@ -11,7 +11,7 @@ import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
-  type LineAdj, type WidthTarget, type WidthRange,
+  type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf,
 } from './bookletRender';
 import {
   awaitBookletFonts, readStream, readHairlineAdvance, flowPages,
@@ -640,11 +640,45 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     return () => { stop = true; };
   });
 
+  /**
+   * Width control for one special page's blocks.
+   *
+   * The key's SHAPE says which of the two anchoring schemes applies, and the schemes are not
+   * a choice — they follow where the text actually comes from:
+   *  - a syllable id: the Tibetan title, a real line lifted out of the text. It anchors like
+   *    any body line and is shared by every edition (`width_tibetan`, lang '').
+   *  - `#block`: the translated furniture, which lives in `document_furniture` keyed by
+   *    (item, lang) and has no syllable anywhere near it. Anchored on the item plus the block
+   *    name, per edition (`width_furniture`). No syllable uuid starts with '#'.
+   *
+   * A furniture page is symmetric (`--m-outer` both sides), so a block may be pulled out to
+   * either physical border.
+   */
+  const furnitureWidthOf = (item: DocumentItem): BlockWidthOf => (key: string) => {
+    const furn = key.startsWith('#');
+    const kind: DocumentLayoutKind = furn ? 'width_furniture' : 'width_tibetan';
+    const rowLang = furn ? lang : '';
+    const k = `${item.id}:${key}:${kind}:${rowLang}`;
+    return {
+      valueMm: layoutByKey.get(k)?.value ?? 0,
+      min: widthRange.min,
+      max: config ? config.margin_outer_mm : 10,
+      onCommit: (mm: number | null) => {
+        void (async () => {
+          const body = { item_id: item.id, anchor_syl_id: key, kind, lang: rowLang };
+          mm == null ? await deleteLayoutRow(documentId, body)
+                     : await putLayoutRow(documentId, { ...body, value: mm });
+          await refreshLayout();
+        })();
+      },
+    };
+  };
+
   const renderFurniture = (item: DocumentItem) => (
     <FurniturePage key={`f${item.id}`} item={item}
       titleLines={item.kind === 'cover' ? mainTitleLines : []}
       body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
-      orgSeal={orgSeal} />
+      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)} />
   );
 
   if (!doc || !config) {
@@ -833,7 +867,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               <div key={si} style={{ position: 'absolute', top: si * spreadHpx + 24, left: 0, right: 0,
                                      display: 'flex', justifyContent: 'center' }}>
                 {u.kind === 'title' ? (
-                  <InternalTitlePage titleLines={u.titleLines} />
+                  <InternalTitlePage titleLines={u.titleLines}
+                                     widthOf={furnitureWidthOf(u.item)} />
                 ) : (
                   <div className="booklet-spread" data-unit={si}
                        style={gapFillVars(rows, renderLines[u.s.start], lang)}>

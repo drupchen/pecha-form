@@ -480,7 +480,7 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
 export type DocumentLayoutKind =
   | 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut'
   | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section'
-  | 'gap_fill';
+  | 'gap_fill' | 'width_furniture';
 
 export interface DocumentLayoutRow {
   id: number;

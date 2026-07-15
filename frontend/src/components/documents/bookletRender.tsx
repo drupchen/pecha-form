@@ -86,14 +86,19 @@ export const WidthLine: React.FC<{
   children?: React.ReactNode;
 }> = ({ valueMm, min, max, onCommit, className, style, children }) => {
   const [preview, setPreview] = React.useState<number | null>(null);
-  const drag = React.useRef<{ x: number; from: number } | null>(null);
+  // The drag's live value lives on the ref, NOT in `preview`. The state is for painting; if
+  // the release were to read it, it would read whatever React had last committed — and when
+  // the move and the release land in one batch (a very fast drag, coalesced input, a
+  // synthetic one) that is still the value from before the drag, so the release looks like a
+  // click and the whole drag is silently dropped.
+  const drag = React.useRef<{ x: number; from: number; cur: number } | null>(null);
   const cur = preview ?? valueMm;
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!onCommit) return;
     e.preventDefault();
     e.stopPropagation();
-    drag.current = { x: e.clientX, from: valueMm };
+    drag.current = { x: e.clientX, from: valueMm, cur: valueMm };
     setPreview(valueMm);
     // Capture keeps the drag alive when the pointer outruns the 6px grip.
     try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* not fatal */ }
@@ -102,14 +107,15 @@ export const WidthLine: React.FC<{
     const d = drag.current;
     if (!d) return;
     // Dragging right widens: the pointer's travel IS the edge's travel.
-    const next = d.from + (e.clientX - d.x) / MM_PX;
-    setPreview(Math.max(min, Math.min(max, next)));
+    const next = Math.max(min, Math.min(max, d.from + (e.clientX - d.x) / MM_PX));
+    d.cur = next;
+    setPreview(next);
   };
   const endDrag = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) return;
     drag.current = null;
-    const final = preview ?? d.from;
+    const final = d.cur;
     setPreview(null);
     try { (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); } catch { /* not fatal */ }
     if (Math.abs(final - d.from) < 0.05) return;          // a click, not a drag
@@ -131,6 +137,25 @@ export const WidthLine: React.FC<{
     </div>
   );
 };
+
+/**
+ * One special page's block, asking for its width.
+ *
+ * The special pages take their text from two places, and the anchoring follows that seam
+ * exactly rather than inventing a scheme:
+ *  - the Tibetan title is a REAL line lifted out of the text, with real syllables, so it
+ *    anchors like any body line — the key is its `startSylId`, shared across editions;
+ *  - everything else (main title, subtitle, copyright, back cover, caption, the TOC) is
+ *    `document_furniture`, keyed by (item, lang) with no syllable anywhere near it — so the
+ *    key is a block name like `#title_main`, and it is per edition.
+ * No syllable uuid begins with '#', so the caller can tell them apart by shape alone.
+ */
+export type BlockWidthOf = (key: string) => {
+  valueMm: number; min: number; max: number; onCommit?: (mm: number | null) => void;
+};
+
+/** No width control at all — the print page, and any caller that has not wired it. */
+const NO_WIDTH: BlockWidthOf = () => ({ valueMm: 0, min: 0, max: 0 });
 
 /** The width props for one block of a line, from its `LineAdj`. */
 function widthProps(adj: LineAdj, target: WidthTarget, verso: boolean) {
@@ -279,7 +304,9 @@ export interface TocRow {
  *  ornament (cover only); `image` (a seal/logo) renders in its place when supplied. */
 export const TitleContent: React.FC<{
   titleLines: DocLine[]; seal?: boolean; image?: React.ReactNode;
-}> = ({ titleLines, seal, image }) => {
+  /** Width control for this page's blocks (bench only; the print page passes nothing). */
+  widthOf?: BlockWidthOf;
+}> = ({ titleLines, seal, image, widthOf = NO_WIDTH }) => {
   // The translated title's parts: the first is the main title, the rest the subtitle.
   // Prefer the title chunk's `<p>` structure (carried on any title line); fall back to
   // one entry per title line.
@@ -290,17 +317,21 @@ export const TitleContent: React.FC<{
       {image}
       {seal && !image && <div className="bk-seal">ༀ</div>}
       {titleLines.map((t, i) => (
-        <div key={i} className="bk-tibetan bk-title-tib">
+        // A real line out of the text: anchored on its own syllable, like any body line,
+        // and so shared by every edition.
+        <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(t.startSylId)}>
           {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
-        </div>
+        </WidthLine>
       ))}
       {trans[0] && (
-        <div className="bk-title-main"
-             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
+        <WidthLine className="bk-title-main" {...widthOf('#title_main')}>
+          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
+        </WidthLine>
       )}
       {trans.slice(1).map((p, i) => (
-        <div key={`sub${i}`} className="bk-title-sub"
-             dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
+        <WidthLine key={`sub${i}`} className="bk-title-sub" {...widthOf(`#title_sub${i}`)}>
+          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
+        </WidthLine>
       ))}
     </div>
   );
@@ -313,7 +344,9 @@ export const FurnitureContent: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
   /** The ORG's seal (Style Studio) — the cover ornament of every booklet in the template. */
   orgSeal?: OrgSeal | null;
-}> = ({ item, titleLines, body, toc, orgSeal }) => {
+  /** Width control for this page's blocks (bench only; the print page passes nothing). */
+  widthOf?: BlockWidthOf;
+}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH }) => {
   // The imported image, sized from the stored width/height (mm); null = natural.
   const sized = item.image_width_mm != null || item.image_height_mm != null;
   const imgStyle: React.CSSProperties = {
@@ -332,7 +365,7 @@ export const FurnitureContent: React.FC<{
              style={{ width: orgSeal.width_mm ? `${orgSeal.width_mm}mm` : undefined,
                       height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
       : undefined;
-    return <TitleContent titleLines={titleLines} seal
+    return <TitleContent titleLines={titleLines} seal widthOf={widthOf}
                         image={item.has_image ? bkImage : sealImage} />;
   }
   if (item.kind === 'copyright') {
@@ -343,13 +376,17 @@ export const FurnitureContent: React.FC<{
     return (
       <div className="bk-copyright">
         {item.has_image && bkImage}
-        {body && <div dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />}
+        {body && (
+          <WidthLine {...widthOf('#copyright')}>
+            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+          </WidthLine>
+        )}
       </div>
     );
   }
   if (item.kind === 'toc') {
     return (
-      <div className="bk-toc">
+      <WidthLine className="bk-toc" {...widthOf('#toc')}>
         {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
         {toc.map((e, i) => (
           <div key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
@@ -361,7 +398,7 @@ export const FurnitureContent: React.FC<{
             <span className="bk-toc-page">{e.page}</span>
           </div>
         ))}
-      </div>
+      </WidthLine>
     );
   }
   if (item.kind === 'image_page') {
@@ -370,8 +407,9 @@ export const FurnitureContent: React.FC<{
         <div className="bk-imagepage">
           {bkImage}
           {body && (
-            <div className="bk-image-caption"
-                 dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+            <WidthLine className="bk-image-caption" {...widthOf('#caption')}>
+              <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+            </WidthLine>
           )}
         </div>
       )
@@ -383,8 +421,11 @@ export const FurnitureContent: React.FC<{
     return (
       <div className="bk-backcover">
         {item.has_image && bkImage}
-        {body && <div className="bk-copyright"
-                      dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />}
+        {body && (
+          <WidthLine className="bk-copyright" {...widthOf('#backcover')}>
+            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(body) }} />
+          </WidthLine>
+        )}
       </div>
     );
   }
@@ -395,6 +436,7 @@ export const FurnitureContent: React.FC<{
 export const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
   orgSeal?: OrgSeal | null;
+  widthOf?: BlockWidthOf;
 }> = (props) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
@@ -404,10 +446,14 @@ export const FurniturePage: React.FC<{
 );
 
 /** A text's internal title page as a facing-page mock (bench use). */
-export const InternalTitlePage: React.FC<{ titleLines: DocLine[] }> = ({ titleLines }) => (
+export const InternalTitlePage: React.FC<{
+  titleLines: DocLine[]; widthOf?: BlockWidthOf;
+}> = ({ titleLines, widthOf }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
-      <div className="booklet-content"><TitleContent titleLines={titleLines} /></div>
+      <div className="booklet-content">
+        <TitleContent titleLines={titleLines} widthOf={widthOf} />
+      </div>
     </div>
   </div>
 );
