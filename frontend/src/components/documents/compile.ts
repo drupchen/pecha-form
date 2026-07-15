@@ -100,17 +100,28 @@ export async function compileTextItem(
   const lines = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true);
   const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups);
 
-  // Phonetics matched to a line: exact range, else the row ANCHORED in this line (its
-  // start syllable falls here). Anchor-only — matching the end syllable too would make a
-  // row spanning several lines render on both its first AND last line (duplication).
-  const phonByRange = new Map<string, string>();
-  for (const p of phonetics) phonByRange.set(rk(p.start_syl_id, p.end_syl_id), p.body);
+  // Where each syllable sits in the stream — so rows matched to a line come back in the
+  // order they are read, whatever order the API listed them in.
+  const posById = new Map<string, number>();
+  tokens.forEach((t, i) => posById.set(t.id, i));
+
+  // Phonetics matched to a line: EVERY row anchored in it (its start syllable falls here),
+  // in stream order, one per output line.
+  //
+  // All of them, not the first. The Tibetan and its phonetics do not divide the same way and
+  // are not meant to: one Tibetan display line commonly carries several phonetics rows — a
+  // mantra's phrases, most obviously — and returning the first silently dropped the rest, so
+  // the PDF printed the opening of a mantra and threw the body of it away.
+  //
+  // Anchor-only — matching the end syllable too would make a row spanning several lines
+  // render on both its first AND its last (duplication).
   const phonFor = (l: { startSylId: string; endSylId: string; sylIds: string[] }): string => {
-    const exact = phonByRange.get(rk(l.startSylId, l.endSylId));
-    if (exact != null) return exact;
     const ids = new Set(l.sylIds);
-    for (const p of phonetics) if (ids.has(p.start_syl_id)) return p.body;
-    return '';
+    return phonetics
+      .filter((p) => ids.has(p.start_syl_id))
+      .sort((a, b) => (posById.get(a.start_syl_id) ?? 0) - (posById.get(b.start_syl_id) ?? 0))
+      .map((p) => p.body)
+      .join('\n');
   };
 
   // Translation matched to a chunk: exact range, else the row ANCHORED in this chunk
@@ -126,13 +137,15 @@ export async function compileTextItem(
     const exact = transByRange.get(rk(ch.startSylId, ch.endSylId));
     if (exact != null) return exact;
     const ids = new Set(ch.sylIds);
-    for (const c of translations) {
-      if (ids.has(c.start_syl_id)) {
-        const t = c.translations.find((x) => x.lang === lang);
-        if (t) return t.body;
-      }
-    }
-    return '';
+    // EVERY translation anchored in this chunk, in stream order — a derived chunk can span
+    // several of the origin's, and taking the first threw the others away. Concatenated as
+    // HTML, so `splitParagraphs` below sees all of their paragraphs.
+    const hits = translations
+      .filter((c) => ids.has(c.start_syl_id))
+      .sort((a, b) => (posById.get(a.start_syl_id) ?? 0) - (posById.get(b.start_syl_id) ?? 0))
+      .map((c) => c.translations.find((x) => x.lang === lang)?.body)
+      .filter((b): b is string => !!b);
+    return hits.join('');
   };
 
   // Which chunk each line belongs to (by first-syllable membership), so the chunk's
@@ -160,8 +173,11 @@ export async function compileTextItem(
   for (const [ck, idxs] of linesByChunk) {
     const parts = splitParagraphs(transFor(chunkByKey.get(ck)!));
     idxs.forEach((lineIdx, k) => {
+      // The last line takes whatever paragraphs are left over — as separate lines. Joining
+      // them with a space ran them together into one, which is the same loss in a quieter
+      // form: the text was there, but not the lines the translator wrote.
       const piece = k === idxs.length - 1 && parts.length > idxs.length
-        ? parts.slice(k).join(' ')
+        ? parts.slice(k).join('<br>')
         : (parts[k] ?? '');
       if (piece) translationByLine.set(lineIdx, piece);
     });
@@ -205,8 +221,6 @@ export async function compileTextItem(
   //      "added in the translation pane that don't exist anywhere else".
   // Level is 0-based: the sapche depth where the tree supplies one, else the chunk's /
   // layout's manual H-level minus one (H1 → 0), so both scales nest together.
-  const posById = new Map<string, number>();
-  tokens.forEach((t, i) => posById.set(t.id, i));
   const headings: OutlineHeading[] = [];
   // The leading title block is lifted out to head the text's title page (see
   // compileDocument) and becomes the text's own top-level nav entry — don't repeat it.

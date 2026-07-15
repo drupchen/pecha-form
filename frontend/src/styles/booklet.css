@@ -247,7 +247,11 @@
   white-space: pre-wrap;
 }
 
-/* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic), indented under the verse. */
+/* Phonetics = `Phonetics` (Raleway SemiBold 10, bold+italic), indented under the verse.
+ * `pre-line` because one Tibetan display line commonly carries SEVERAL phonetics rows — a
+ * mantra's phrases most of all — and they are separate lines of type, not one run. It honours
+ * the newlines `phonFor` joins them with while still collapsing incidental whitespace and
+ * wrapping long ones. */
 .bk-phonetics {
   font-family: var(--font-phonetics);
   font-size: var(--phonetics-pt);
@@ -256,6 +260,7 @@
   line-height: 1.25;
   color: #222;
   margin-left: 8mm;
+  white-space: pre-line;
 }
 
 /* Translation = `Translation` (Gentium Basic 11), indented deeper — a hanging indent so
