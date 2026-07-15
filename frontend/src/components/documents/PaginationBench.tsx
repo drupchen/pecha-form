@@ -431,6 +431,50 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const vFirst = Math.max(0, Math.floor(local / spreadHpx) - 1);
   const vLast = Math.min(bodyUnits.length, Math.ceil((local + viewH) / spreadHpx) + 1);
 
+  /**
+   * Flag any mounted page whose ink runs past the text block.
+   *
+   * The flow guarantees the pages IT chose fit, so a seeded page can never light up here —
+   * that is the point: the badge makes the guarantee visible instead of asking anyone to
+   * trust it. What it does catch is everything the flow does not own: a break you placed by
+   * hand, a gap or width you tuned afterwards, a line too tall for any page, and the other
+   * editions (the breaks are shared, and only the tallest edition drove them).
+   *
+   * `.booklet-page` has `overflow: hidden`, so today this spills silently at the PHYSICAL
+   * page edge, where nothing marks it and the guides are the only hint. Same criterion as
+   * `flowPages` — the last ink's bottom against the block's foot. `scrollHeight` would not
+   * do: it counts the last line's trailing margin, which a page foot discards.
+   */
+  useLayoutEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    let stop = false;
+    const mark = () => {
+      if (stop || !scrollRef.current) return;
+      for (const c of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-page > .booklet-content')) {
+        const page = c.parentElement;
+        if (!page) continue;
+        let ink = -Infinity;
+        for (const ch of Array.from(c.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
+        const foot = c.getBoundingClientRect().top + c.clientHeight;
+        const over = c.children.length > 0 && ink > foot + 0.5;
+        page.classList.toggle('bk-overfull', over);
+        if (over) {
+          page.title = `This page runs ${Math.round(ink - foot)}px past the text block — the `
+            + 'printed page will clip it. Break earlier, close a gap, or split the line.';
+        } else if (page.title) {
+          page.removeAttribute('title');
+        }
+      }
+    };
+    mark();
+    // Re-mark once the faces land: measured against fallback metrics every page looks
+    // overfull, and a badge that cries wolf on load is worse than none.
+    const fonts = (document as unknown as { fonts?: FontFaceSet }).fonts;
+    if (fonts?.ready) void fonts.ready.then(() => setTimeout(mark, 80));
+    return () => { stop = true; };
+  });
+
   const renderFurniture = (item: DocumentItem) => (
     <FurniturePage key={`f${item.id}`} item={item}
       titleLines={item.kind === 'cover' ? mainTitleLines : []}

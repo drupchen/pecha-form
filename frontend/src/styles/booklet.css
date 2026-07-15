@@ -181,6 +181,20 @@
   .bk-guides .specimen-pages { display: none; }
 }
 
+/* A page whose ink runs past the text block. `.booklet-page`'s `overflow: hidden` clips it
+ * at the PHYSICAL edge, so without this it spills invisibly — the failure that started all
+ * of this. Drawn on the page's own box rather than a pseudo-element: both of those are
+ * already spoken for by the geometry guides, and this has to be legible with guides ON,
+ * which is exactly when someone is looking for it. The bar sits at the foot, where the
+ * overflow is. A design warning, never ink — `.booklet-print` never carries the class, and
+ * `@media print` is the belt to that braces. */
+.bk-overfull {
+  outline: 1px solid rgba(197, 48, 48, 0.6);
+  outline-offset: -1px;
+  box-shadow: inset 0 -3px 0 var(--vermilion, #c53030), 0 1px 6px rgba(0, 0, 0, 0.14);
+}
+@media print { .bk-overfull { outline: none; box-shadow: none; } }
+
 /* ── Line roles (mapped to the reference docx named styles) ── */
 .bk-line { break-inside: avoid; }
 /* Space-above is suppressed at the top of a page — the typesetter's convention (InDesign
