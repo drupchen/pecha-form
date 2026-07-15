@@ -1,17 +1,21 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus, FileDown, Type } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus, FileDown, Type, Frame } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
+  getOrgSeal,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow,
+  type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
-import { compileDocument, type DocLine } from './compile';
+import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
-  deriveBooklet, furnitureBodyOf, isSplittable, type LineAdj,
+  deriveBooklet, furnitureBodyOf, isSplittable,
+  type LineAdj, type WidthTarget, type WidthRange,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import { StyleStudio } from './StyleStudio';
+import { useTreeNodeStore } from '../../store/useTreeNodeStore';
+import { useTranslationStore } from '../../store/useTranslationStore';
 import '../../styles/booklet.css';
 
 /**
@@ -33,33 +37,49 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [lang, setLang] = useState<string>('en');
   const [lines, setLines] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
+  const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
+  // The navigation + section headings come from the TRANSLATION pane (labels, levels, title
+  // chunks); the sapche tree still supplies inherited nesting depth. Watch both so curating
+  // either in another tab re-compiles the booklet without a reload.
+  const treeVersion = useTreeNodeStore(s => s.version);
+  const trVersion = useTranslationStore(s => s.version);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [styleCss, setStyleCss] = useState('');
+  // The org's cover seal travels with the styles: it is part of the template, and the studio
+  // can change it, so it is re-read whenever the styles are.
+  const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
   const [showStyles, setShowStyles] = useState(false);
   const [splitMode, setSplitMode] = useState(false);
+  // Geometry guides (text block, spine side, folio zone) — a design aid; never exported.
+  const [guides, setGuides] = useState(true);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
-  const reloadStyles = () => { void loadBookletStyleCss(documentId).then(setStyleCss); };
+  const reloadStyles = () => {
+    void loadBookletStyleCss(documentId).then(setStyleCss);
+    void getOrgSeal().then(setOrgSeal).catch(() => {});
+  };
   const measureRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoading(true);
-      const [d, lay, furn, css] = await Promise.all([
+      const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId)]);
+        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
       setFurniture(furn);
       setStyleCss(css);
+      setOrgSeal(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       setLang(edition);
       const compiled = await compileDocument(d.items, edition);
       setLines(compiled.lines);
       setTitleByItem(compiled.titleByItem);
+      setHeadingsByItem(compiled.headingsByItem);
       setLoading(false);
     })();
     return () => { alive = false; };
@@ -73,9 +93,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       if (!alive) return;
       setLines(compiled.lines);
       setTitleByItem(compiled.titleByItem);
+      setHeadingsByItem(compiled.headingsByItem);
     })();
     return () => { alive = false; };
-  }, [lang]);
+  }, [lang, treeVersion, trVersion]);
 
   const contentWmm = config ? config.page_width_mm - config.margin_bind_mm - config.margin_outer_mm : 0;
   const contentHpx = config
@@ -86,8 +107,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // identically. The bench layers interactive break/balancing controls on top.
   const { lines: renderLines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter,
           backMatter, tocRows, mainTitleLines } = useMemo(
-    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang, splitMode),
-    [doc, rows, lines, titleByItem, furniture, lang, splitMode],
+    () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang, splitMode,
+                        headingsByItem),
+    [doc, rows, lines, titleByItem, headingsByItem, furniture, lang, splitMode],
   );
 
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
@@ -193,24 +215,29 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     setRows((await getDocumentLayout(documentId)).rows);
   };
 
-  // ── Per-line balancing (empty-line spacing, remove, wrap-extend) ──
+  // ── Per-line balancing (empty-line spacing, remove) + per-block width ──
+  // Rows are keyed by lang too: a block's width is per-EDITION for the translated/romanised
+  // recto text (the same syllable's English line is not the German one), but shared for the
+  // Tibetan, which every edition renders identically. Gap/no-space stay shared ('').
   const layoutByKey = useMemo(() => {
     const m = new Map<string, DocumentLayoutRow>();
-    for (const r of rows) m.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}`, r);
+    for (const r of rows) m.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r);
     return m;
   }, [rows]);
-  const rowVal = (l: DocLine, kind: string) =>
-    layoutByKey.get(`${l.itemId}:${l.startSylId}:${kind}`)?.value ?? null;
-  const rowHas = (l: DocLine, kind: string) =>
-    layoutByKey.has(`${l.itemId}:${l.startSylId}:${kind}`);
+  const rowVal = (l: DocLine, kind: string, rowLang = '') =>
+    layoutByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`)?.value ?? null;
+  const rowHas = (l: DocLine, kind: string, rowLang = '') =>
+    layoutByKey.has(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
 
   const refreshLayout = async () => setRows((await getDocumentLayout(documentId)).rows);
-  const putRow = async (l: DocLine, kind: 'line_space' | 'line_nospace' | 'wrap_extend', value: number) => {
-    await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, value });
+  const putRow = async (l: DocLine, kind: DocumentLayoutKind, value: number, rowLang = '') => {
+    await putLayoutRow(documentId,
+      { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, value, lang: rowLang });
     await refreshLayout();
   };
-  const delRow = async (l: DocLine, kind: 'line_space' | 'line_nospace' | 'wrap_extend') => {
-    await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind });
+  const delRow = async (l: DocLine, kind: DocumentLayoutKind, rowLang = '') => {
+    await deleteLayoutRow(documentId,
+      { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang });
     await refreshLayout();
   };
   const adjustGap = (l: DocLine, delta: number) => {
@@ -221,19 +248,38 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     if (rowHas(l, 'line_nospace')) void delRow(l, 'line_nospace');
     else void putRow(l, 'line_nospace', 1);
   };
-  const adjustWrap = (l: DocLine, delta: number) => {
-    const cap = config ? config.margin_outer_mm - 2 : 10;
-    const next = Math.max(0, Math.min(cap, (rowVal(l, 'wrap_extend') ?? 0) + delta));
-    next === 0 ? void delRow(l, 'wrap_extend') : void putRow(l, 'wrap_extend', next);
+
+  const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
+    tibetan: 'width_tibetan', phonetics: 'width_phonetics',
+    translation: 'width_translation', section: 'width_section',
   };
+  // The Tibetan is language-independent; the recto's translated text is per-edition.
+  const widthLang = (t: WidthTarget) => (t === 'tibetan' ? '' : lang);
+  const widthOf = (l: DocLine, t: WidthTarget) => rowVal(l, WIDTH_KIND[t], widthLang(t)) ?? 0;
+  const setWidth = (l: DocLine, t: WidthTarget, mm: number | null) => {
+    mm == null ? void delRow(l, WIDTH_KIND[t], widthLang(t))
+               : void putRow(l, WIDTH_KIND[t], mm, widthLang(t));
+  };
+  // A block may be dragged out until it eats its page's right padding (reaching the
+  // physical border, where the page clips it), and back until only a sliver is left.
+  const widthRange: WidthRange = useMemo(() => ({
+    min: config ? -(contentWmm - 20) : -60,
+    maxVerso: config ? config.margin_bind_mm : 10,
+    maxRecto: config ? config.margin_outer_mm : 10,
+  }), [config, contentWmm]);
+
   const adjFor = (l: DocLine, interactive: boolean): LineAdj => ({
     gapDeltaMm: rowVal(l, 'line_space') ?? 0,
     noSpace: rowHas(l, 'line_nospace'),
-    wrapMm: rowVal(l, 'wrap_extend') ?? 0,
+    widths: {
+      tibetan: widthOf(l, 'tibetan'), phonetics: widthOf(l, 'phonetics'),
+      translation: widthOf(l, 'translation'), section: widthOf(l, 'section'),
+    },
+    widthRange,
     ...(interactive ? {
       onGap: (d: number) => adjustGap(l, d),
       onToggleNoSpace: () => toggleNoSpace(l),
-      onWrap: (d: number) => adjustWrap(l, d),
+      onWidth: (t: WidthTarget, mm: number | null) => setWidth(l, t, mm),
     } : {}),
   });
 
@@ -270,7 +316,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const renderFurniture = (item: DocumentItem) => (
     <FurniturePage key={`f${item.id}`} item={item}
       titleLines={item.kind === 'cover' ? mainTitleLines : []}
-      body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []} />
+      body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
+      orgSeal={orgSeal} />
   );
 
   if (!doc || !config) {
@@ -332,7 +379,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden booklet-root" style={vars}>
+    <div className={`flex-1 flex flex-col overflow-hidden booklet-root${guides ? ' bk-guides' : ''}`}
+         style={vars}>
       {/* Data-driven typography (org styles ← per-doc overrides); default = booklet.css. */}
       {styleCss && <style dangerouslySetInnerHTML={{ __html: styleCss }} />}
       <div className="px-5 py-2.5 shrink-0 flex items-center gap-4 bg-cream-hi text-xs"
@@ -372,6 +420,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 style={{ border: '1px solid var(--cline)' }}
                 title="Edit booklet typography (org styles / per-document overrides)">
           <Type size={12} /> styles
+        </button>
+        <button type="button" onClick={() => setGuides(v => !v)}
+                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${guides ? 'text-lapis' : 'text-ink-soft'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title="Show the page geometry — text block, binding side, folio zone (a design aid; the PDF never carries it)">
+          <Frame size={12} /> guides
         </button>
         <button type="button" onClick={() => setSplitMode(v => !v)}
                 className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${splitMode ? 'text-vermilion' : 'text-ink-soft'}`}

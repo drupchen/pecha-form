@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getDocument, getDocumentLayout, getFurniture,
+  getDocument, getDocumentLayout, getFurniture, getOrgSeal,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow,
+  type DocumentFurnitureRow, type OrgSeal,
 } from '../../api/client';
-import { compileDocument, type DocLine } from './compile';
+import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf,
+  deriveBooklet, furnitureBodyOf, type LineAdj, type WidthTarget,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
@@ -27,21 +27,25 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [lines, setLines] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
+  const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
   const [ready, setReady] = useState(false);
   const [styleCss, setStyleCss] = useState('');
+  const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [d, lay, furn, css] = await Promise.all([
+      const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId)]);
+        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       if (!alive) return;
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       const compiled = await compileDocument(d.items, edition);
       if (!alive) return;
       setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn); setStyleCss(css);
+      setOrgSeal(seal);
       setLines(compiled.lines); setTitleByItem(compiled.titleByItem);
+      setHeadingsByItem(compiled.headingsByItem);
     })();
     return () => { alive = false; };
   }, [documentId, lang]);
@@ -70,16 +74,37 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
 
   const { lines: flowLines, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines,
           navOutline, hairlineSet } =
-    deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang);
+    deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang, false, headingsByItem);
   const vars = rootVars(config);
   const outlineJson = JSON.stringify(navOutline);
+
+  // Per-block widths, read back exactly as the bench stores them (Tibetan shared at '',
+  // the translated recto blocks per edition) and applied with NO handlers — the printed
+  // page must carry the widths the user set without offering to change them.
+  const widthByKey = new Map<string, number>();
+  for (const r of rows) {
+    if (r.value != null && r.kind.startsWith('width_')) {
+      widthByKey.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r.value);
+    }
+  }
+  const widthOf = (l: DocLine, kind: string, rowLang: string) =>
+    widthByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`) ?? 0;
+  const adjFor = (l: DocLine): LineAdj => ({
+    gapDeltaMm: 0, noSpace: false,
+    widths: {
+      tibetan: widthOf(l, 'width_tibetan', ''),
+      phonetics: widthOf(l, 'width_phonetics', lang),
+      translation: widthOf(l, 'width_translation', lang),
+      section: widthOf(l, 'width_section', lang),
+    } as Partial<Record<WidthTarget, number>>,
+  });
 
   // A page's lines, with the reference's thin continuation rule at a hairline boundary
   // (top if continued from the previous page, bottom if it runs on to the next).
   const renderLines = (s: { start: number; end: number }, Comp: typeof Verso) => (
     <>
       {hairlineSet.has(s.start) && <div className="bk-hairline" />}
-      {flowLines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} />)}
+      {flowLines.slice(s.start, s.end).map((l) => <Comp key={l.key} l={l} adj={adjFor(l)} />)}
       {hairlineSet.has(s.end) && <div className="bk-hairline" />}
     </>
   );
@@ -92,7 +117,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           item={item}
           titleLines={item.kind === 'cover' ? mainTitleLines : []}
           body={furnitureBodyOf(furniture, item, lang)}
-          toc={item.kind === 'toc' ? tocRows : []} />
+          toc={item.kind === 'toc' ? tocRows : []}
+          orgSeal={orgSeal} />
       </div>
     </div>
   );

@@ -125,6 +125,56 @@
   color: #666;
 }
 
+/* ── Geometry guides ─────────────────────────────────────────────────────────
+ * DESIGN AID, never ink: the text block, the binding side and the folio zone drawn from
+ * the same layout_config vars the pages lay themselves out with — so a guide can never
+ * drift from the geometry it describes. Opt-in per surface via `.bk-guides` on the root:
+ * the bench and the Style Studio set it, the print root (.booklet-print) never does, so an
+ * exported PDF carries no guides. @media print is the belt to that braces. */
+.bk-guides .booklet-page::before,
+.bk-guides .booklet-page::after,
+.bk-guides .booklet-page.recto .booklet-content::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+}
+/* The text block: a hairline at the margins — where type starts and ends on the page. */
+.bk-guides .booklet-page::after {
+  top: var(--m-top);
+  bottom: var(--m-bottom);
+  border: 1px dashed rgba(47, 111, 159, 0.35);
+}
+.bk-guides .booklet-page.verso::after { left: var(--m-outer); right: var(--m-bind); }
+.bk-guides .booklet-page.recto::after { left: var(--m-bind); right: var(--m-outer); }
+.bk-guides .booklet-page.furniture::after { left: var(--m-outer); right: var(--m-outer); }
+/* The binding side: the margin the spine eats. Tinted band + a firmer rule at the fold. */
+.bk-guides .booklet-page::before {
+  top: 0;
+  bottom: 0;
+  width: var(--m-bind);
+  background: rgba(197, 48, 48, 0.05);
+}
+.bk-guides .booklet-page.verso::before { right: 0; border-left: 1px dashed rgba(197, 48, 48, 0.35); }
+.bk-guides .booklet-page.recto::before { left: 0; border-right: 1px dashed rgba(197, 48, 48, 0.35); }
+.bk-guides .booklet-page.furniture::before { display: none; }   /* symmetric — no spine side */
+/* The folio zone: the box the page number prints in (see .booklet-folio above). The RECTO
+   alone is numbered, so only it gets the guide. */
+.bk-guides .booklet-page.recto .booklet-content::after {
+  right: var(--m-outer);
+  bottom: calc(var(--m-bottom) / 2);
+  width: 10mm;
+  height: 4mm;
+  transform: translate(0, 50%);
+  border: 1px dashed rgba(180, 140, 30, 0.5);
+}
+@media print {
+  .bk-guides .booklet-page::before,
+  .bk-guides .booklet-page::after,
+  .bk-guides .booklet-page.recto .booklet-content::after,
+  .bk-guides .specimen-pages { display: none; }
+}
+
 /* ── Line roles (mapped to the reference docx named styles) ── */
 .bk-line { break-inside: avoid; }
 /* A recto unit is an unbreakable pair (phonetics + its translation stay together). */
@@ -226,15 +276,23 @@
 .bk-gap-removed .bk-gapctl { position: absolute; right: -2px; top: -6px; opacity: 0; }
 .bk-gap-removed:hover .bk-gapctl { opacity: 1; }
 
-/* Wrap-extend control on a translation block. */
-.bk-translation { position: relative; }
-.bk-wrapctl { position: absolute; right: -1px; bottom: -2px; display: none; gap: 1px; }
-.bk-translation:hover .bk-wrapctl { display: inline-flex; }
-.bk-wrapctl button {
-  font: 600 9px/1 system-ui, sans-serif; width: 12px; height: 12px;
-  background: #fff; color: var(--jade, #3a7d5f);
-  border: 1px solid var(--cline, #ddd); border-radius: 3px; cursor: pointer;
+/* Per-line width grip: grab a text block's RIGHT EDGE and slide it out toward the page's
+   physical border (the page clips there) or back in to wrap the text. Revealed on hover of
+   its own block, so every line is adjustable independently. A design control — never printed. */
+.bk-widthgrip {
+  position: absolute; right: -3px; top: 0; bottom: 0; width: 6px;
+  cursor: ew-resize; display: none; z-index: 2;
+  border-right: 2px solid var(--jade, #3a7d5f);
+  border-radius: 2px;
+  touch-action: none;   /* the pointer drag owns the gesture */
 }
+.bk-tibetan:hover > .bk-widthgrip,
+.bk-phonetics:hover > .bk-widthgrip,
+.bk-translation:hover > .bk-widthgrip,
+.bk-section:hover > .bk-widthgrip { display: block; }
+.bk-widthgrip:hover, .bk-widthgrip:active { border-right-color: var(--lapis, #2f6f9f); }
+
+@media print { .bk-widthgrip { display: none !important; } }
 
 /* Per-line-boundary break controls (force/lift a plain page break, or a mid-content
  * hairline split). Hidden until the line is hovered so the page reads cleanly. */
@@ -285,18 +343,66 @@
 .style-specimen .bk-toc { height: auto; display: block; }
 .style-specimen .bk-titlepage { text-align: center; }
 .style-specimen .bk-seal { margin-bottom: 2mm; }
+/* The cover ornament's slot in the specimen: the seal (image or ༀ) with its loader beside it.
+   The tools are studio chrome — they never print, so they sit outside the centred flow. */
+.specimen-seal { position: relative; display: flex; flex-direction: column; align-items: center; }
+.specimen-seal .bk-image { margin-bottom: 2mm; }
+.specimen-seal-tools {
+  display: none; align-items: center; gap: 3px;
+  position: absolute; top: 0; left: 50%; transform: translateX(4.5rem);
+  padding: 2px 4px; border-radius: 6px; white-space: nowrap;
+  background: var(--cream-hi, #f7f2e7); border: 1px solid var(--cline, #ddd);
+}
+.specimen-seal:hover .specimen-seal-tools,
+.specimen-seal:focus-within .specimen-seal-tools { display: flex; }
 .style-specimen .booklet-folio { position: static; }
 .style-specimen .bk-foliobox { text-align: right; }
 .style-specimen .bk-section { margin: 5pt 0; }
 .style-specimen .bk-line { margin: 1mm 0; }
-/* The specimen grows past one page: at least one A5 page tall, with a faint guide line
-   at each 210 mm page boundary so long content reads as stacked pages. */
+/* The specimen is laid out on the booklet's REAL page: one page wide, the recto margins as
+   padding, growing past one page as content is added. */
 .style-specimen {
-  min-height: 210mm;
-  background-image: repeating-linear-gradient(to bottom,
-    transparent 0, transparent calc(210mm - 1px),
-    var(--cline) calc(210mm - 1px), var(--cline) 210mm);
+  position: relative;
+  min-height: var(--page-h);
 }
+/* The geometry drawn behind the flowing content: one frame per page of the specimen, each
+   carrying the same text block / spine / folio guides as a real page. */
+.style-specimen .specimen-pages { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.style-specimen .specimen-page {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--page-h);
+  border-bottom: 1px solid var(--cline);   /* the page boundary */
+}
+.bk-guides .specimen-page::before {        /* the binding side (spine) — recto: on the left */
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: var(--m-bind);
+  background: rgba(197, 48, 48, 0.05);
+  border-right: 1px dashed rgba(197, 48, 48, 0.35);
+}
+.bk-guides .specimen-page::after {         /* the text block */
+  content: '';
+  position: absolute;
+  top: var(--m-top);
+  bottom: var(--m-bottom);
+  left: var(--m-bind);
+  right: var(--m-outer);
+  border: 1px dashed rgba(47, 111, 159, 0.35);
+}
+.bk-guides .specimen-folio {               /* the folio zone (see .booklet-folio) */
+  position: absolute;
+  right: var(--m-outer);
+  bottom: calc(var(--m-bottom) / 2);
+  width: 10mm;
+  height: 4mm;
+  transform: translate(0, 50%);
+  border: 1px dashed rgba(180, 140, 30, 0.5);
+}
+/* The blocks sit ABOVE the guides. */
+.style-specimen .specimen-block { z-index: 1; }
 /* Integrated block: Tibetan sits directly above its phonetics + translation. */
 .style-specimen .bk-integrated { margin: 1.5mm 0; }
 .specimen-block { position: relative; padding: 1px 0; }

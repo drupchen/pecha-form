@@ -1,5 +1,5 @@
 import {
-  API_BASE, getEditorTokens, getTextTranslations, getPhonetics,
+  API_BASE, getEditorTokens, getTextTranslations, getPhonetics, getLayouts,
   type DocumentItem,
 } from '../../api/client';
 import { deriveChunks } from '../translate/chunks';
@@ -47,9 +47,11 @@ async function fetchJson(url: string): Promise<any> {
   return r.json();
 }
 
-export async function compileTextItem(item: DocumentItem, lang: string): Promise<DocLine[]> {
+export async function compileTextItem(
+  item: DocumentItem, lang: string,
+): Promise<{ lines: DocLine[]; headings: OutlineHeading[] }> {
   const textId = item.text_id!;
-  const [tokens, spans, breaks, markers, translations, phonetics, treeNodes] = await Promise.all([
+  const [tokens, spans, breaks, markers, translations, phonetics, treeNodes, layouts] = await Promise.all([
     getEditorTokens(textId),
     fetchJson(`${API_BASE}/texts/${textId}/spans`),
     fetchJson(`${API_BASE}/texts/${textId}/display-breaks`),
@@ -57,6 +59,7 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
     getTextTranslations(textId),
     getPhonetics(textId, lang),
     fetchJson(`${API_BASE}/texts/${textId}/tree-nodes`),
+    getLayouts(textId),
   ]);
 
   // Sapche outline depth per anchor syllable: a tree node's `segment_start` offset →
@@ -79,6 +82,11 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
     const prev = depthBySyl.get(syl);
     if (prev == null || d < prev) depthBySyl.set(syl, d);
   }
+  // A manually-set heading level per chunk-start syllable (H1-based). The Translate bench
+  // lets a heading NOT anchored in the sapche outline carry an explicit level; the booklet
+  // navigation nests by it where the tree does not supply a depth.
+  const levelBySyl = new Map<string, number>();
+  for (const c of translations) if (c.level != null) levelBySyl.set(c.start_syl_id, c.level);
 
   const breakOverrides = new Map<string, number>(breaks.map((b: any) => [b.syl_id, b.count]));
   const markerOffsets = new Set<number>(markers.map((m: any) => m.position));
@@ -177,7 +185,49 @@ export async function compileTextItem(item: DocumentItem, lang: string): Promise
       ...(paragraphs && paragraphs.length ? { paragraphs } : {}),
     });
   });
-  return out;
+  // ── Navigation outline: the TRANSLATION pane's headings, per language ──
+  // The booklet reads in one language, so its navigation is the sequence of headings the
+  // translator sees, labelled with the SELECTED language's string (never the Tibetan tree
+  // title) and INCLUDING the translation-only title chunks (scramble layer) that exist in
+  // no other layer. Two sources, merged in stream order and nested by heading level:
+  //   1. heading LINES — a line tagged sapche/title — labelled by its own translation;
+  //      skipped when it has none (an untranslated heading has no place in a translated
+  //      booklet's navigation — the string is the point).
+  //   2. TITLE layout chunks — a per-language title anchored before a chunk; the nodes
+  //      "added in the translation pane that don't exist anywhere else".
+  // Level is 0-based: the sapche depth where the tree supplies one, else the chunk's /
+  // layout's manual H-level minus one (H1 → 0), so both scales nest together.
+  const posById = new Map<string, number>();
+  tokens.forEach((t, i) => posById.set(t.id, i));
+  const headings: OutlineHeading[] = [];
+  // The leading title block is lifted out to head the text's title page (see
+  // compileDocument) and becomes the text's own top-level nav entry — don't repeat it.
+  let lead = 0;
+  while (lead < out.length && out[lead].role === 'title') lead++;
+  out.forEach((l, li) => {
+    if (li < lead) return;
+    if (l.role !== 'sapche' && l.role !== 'title') return;
+    const label = (l.translation ?? '').trim();
+    if (!label) return;
+    const depth = depthBySyl.get(l.startSylId);
+    const level = depth != null ? depth
+      : (levelBySyl.has(l.startSylId) ? levelBySyl.get(l.startSylId)! - 1 : 0);
+    headings.push({ key: `line:${l.key}`, level, anchorSylId: l.startSylId,
+                    label, order: posById.get(l.startSylId) ?? Infinity });
+  });
+  for (const ly of layouts) {
+    if (ly.kind !== 'title' || ly.disabled) continue;
+    const body = (ly.titles[lang] ?? Object.values(ly.titles)[0] ?? '').trim();
+    if (!body) continue;
+    // A title chunk sits BEFORE the chunk starting at its anchor; the `-0.5` orders it
+    // ahead of a heading line sharing that syllable. A null anchor rides at the end.
+    const at = ly.anchor_syl_id != null ? posById.get(ly.anchor_syl_id) : undefined;
+    headings.push({ key: `title:${ly.id}`, level: Math.max(0, (ly.level ?? 1) - 1),
+                    anchorSylId: ly.anchor_syl_id ?? null, label: body,
+                    order: at != null ? at - 0.5 : Infinity });
+  }
+  headings.sort((a, b) => a.order - b.order);
+  return { lines: out, headings };
 }
 
 /** Split a translation body into its per-line `<p>` pieces. Parses via the DOM (not a
@@ -197,12 +247,29 @@ export function splitParagraphs(html: string): string[] {
     .filter(Boolean);
 }
 
+/** A navigation heading, resolved for ONE language: an ordered, flat entry the booklet
+ *  nests into its outline. It comes from the translation pane — a translated heading line
+ *  or a translation-only title chunk — so `label` is already the right string. */
+export interface OutlineHeading {
+  key: string;
+  /** 0-based nesting depth (sapche depth, or manual H-level − 1). */
+  level: number;
+  /** A compiled-stream token id whose line gives the heading its page; null = end. */
+  anchorSylId: string | null;
+  /** The heading's text in the compiled language (may be inline HTML). */
+  label: string;
+  /** Position in the token stream, for ordering (title chunks sit just before their anchor). */
+  order: number;
+}
+
 export interface CompiledDoc {
   /** The document's body line stream (title lifted out), text pages in order. */
   lines: DocLine[];
   /** Per text item: its lifted leading title line(s) (Tibetan + translated title),
    *  for the title/cover page. */
   titleByItem: Map<number, DocLine[]>;
+  /** Per text item: its translation-pane headings — the source of the navigation. */
+  headingsByItem: Map<number, OutlineHeading[]>;
 }
 
 /** Compile the whole document's text pages for one language, lifting each text's
@@ -210,14 +277,16 @@ export interface CompiledDoc {
 export async function compileDocument(items: DocumentItem[], lang: string): Promise<CompiledDoc> {
   const lines: DocLine[] = [];
   const titleByItem = new Map<number, DocLine[]>();
+  const headingsByItem = new Map<number, OutlineHeading[]>();
   for (const it of items) {
     if (it.kind !== 'text' || it.text_id == null) continue;
-    const compiled = await compileTextItem(it, lang);
+    const { lines: compiled, headings } = await compileTextItem(it, lang);
     let i = 0;
     const titleLines: DocLine[] = [];
     while (i < compiled.length && compiled[i].role === 'title') { titleLines.push(compiled[i]); i++; }
     titleByItem.set(it.id, titleLines);
+    headingsByItem.set(it.id, headings);
     lines.push(...compiled.slice(i));
   }
-  return { lines, titleByItem };
+  return { lines, titleByItem, headingsByItem };
 }

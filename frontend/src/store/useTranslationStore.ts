@@ -24,6 +24,10 @@ interface TranslationState {
   suggestions: TranslationSuggestion[];
   layouts: ChunkLayout[];
   textId: number | null;
+  /** Bumped whenever a heading's label, level, or existence changes (translation body,
+   *  chunk level, or a title layout). The booklet preview + PDF navigation derive from the
+   *  translation pane, so they watch this to re-compile as headings are curated. */
+  version: number;
   fetchLanguages: () => Promise<void>;
   fetchChunks: (textId: number) => Promise<void>;
   fetchCollab: (textId: number) => Promise<void>;
@@ -66,6 +70,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
   suggestions: [],
   layouts: [],
   textId: null,
+  version: 0,
 
   fetchLanguages: async () => {
     try {
@@ -110,6 +115,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     set(s => ({
       chunks: [...s.chunks.filter(c => c.id !== updated.id
         && rangeKey(c.start_syl_id, c.end_syl_id) !== rangeKey(startSylId, endSylId)), updated],
+      version: s.version + 1,
     }));
   },
 
@@ -123,6 +129,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     set(s => ({
       chunks: [...s.chunks.filter(c => c.id !== updated.id
         && rangeKey(c.start_syl_id, c.end_syl_id) !== rangeKey(startSylId, endSylId)), updated],
+      version: s.version + 1,
     }));
   },
 
@@ -165,7 +172,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     await resolveSuggestion(id, accept);
     set(s => ({ suggestions: s.suggestions.filter(x => x.id !== id) }));
     // Accepting rewrites the canonical body → refresh chunks.
-    if (accept) await get().fetchChunks(textId);
+    if (accept) { await get().fetchChunks(textId); set(st => ({ version: st.version + 1 })); }
   },
 
   addMove: async ({ textId, srcStart, srcEnd, anchor, mode, anchorAfter }) => {
@@ -181,21 +188,21 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     const row = await createLayout({
       text_id: textId, kind: 'title', anchor_syl_id: anchor, level,
     });
-    set(s => ({ layouts: [...s.layouts, row] }));
+    set(s => ({ layouts: [...s.layouts, row], version: s.version + 1 }));
   },
 
   setTitleBody: async (layoutId, lang, body) => {
     const row = await putLayoutTitle(layoutId, { lang, body });
-    set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l) }));
+    set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l), version: s.version + 1 }));
   },
 
   setTitleLevel: async (layoutId, level) => {
     const row = await patchLayout(layoutId, { level });
-    set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l) }));
+    set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l), version: s.version + 1 }));
   },
 
   removeLayout: async (layoutId) => {
     await deleteLayout(layoutId);
-    set(s => ({ layouts: s.layouts.filter(l => l.id !== layoutId) }));
+    set(s => ({ layouts: s.layouts.filter(l => l.id !== layoutId), version: s.version + 1 }));
   },
 }));

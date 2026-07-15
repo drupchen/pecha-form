@@ -29,6 +29,10 @@ interface TreeNodeState {
   loading: boolean;
   error: string | null;
   saveStatus: SaveStatus;
+  /** Bumped by every tree mutation. Surfaces that derive from the tree but do not read
+   *  this store (the booklet preview and its navigation outline, which compile their own
+   *  copy of the tree) watch it to re-derive as the tree is curated. */
+  version: number;
   /**
    * The tree node currently "expecting input" from the tagger. When the user
    * selects text in the tagger AND this node has a placeholder title, the
@@ -83,6 +87,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
   loading: false,
   error: null,
   saveStatus: 'idle',
+  version: 0,
   activeNodeId: null,
   editingAppend: null,
 
@@ -92,7 +97,9 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
       const res = await fetch(`${API_BASE}/texts/${textId}/tree-nodes`);
       if (!res.ok) throw new Error(await res.text());
       const data: TreeNode[] = await res.json();
-      set({ nodes: data, loading: false });
+      // Every write path (create/move/reorder/delete) refetches, so bumping here covers
+      // them all; a plain open bumps once, which costs the watchers one re-derive.
+      set(state => ({ nodes: data, loading: false, version: state.version + 1 }));
     } catch (e: any) {
       set({ error: e.message, loading: false });
     }
@@ -143,6 +150,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
       set(state => ({
         nodes: state.nodes.map(n => n.id === nodeId ? updated : n),
         saveStatus: 'saved',
+        version: state.version + 1,
       }));
       if (before) {
         useUndoStore.getState().push({
@@ -254,11 +262,13 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
     nodes: state.nodes.some(n => n.id === node.id)
       ? state.nodes.map(n => n.id === node.id ? node : n)
       : [...state.nodes, node],
+    version: state.version + 1,
   })),
   removeNodeLocally: (nodeId) => set(state => ({
     nodes: state.nodes.filter(n => n.id !== nodeId),
+    version: state.version + 1,
   })),
-  setNodesLocally: (nodes) => set({ nodes }),
+  setNodesLocally: (nodes) => set(state => ({ nodes, version: state.version + 1 })),
 
   setActiveNode: (id) => set({ activeNodeId: id }),
   setEditingAppend: (fn) => set({ editingAppend: fn }),

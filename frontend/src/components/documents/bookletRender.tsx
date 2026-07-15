@@ -1,9 +1,10 @@
 import React from 'react';
 import {
-  itemImageUrl,
+  itemImageUrl, orgSealUrl,
   type DocumentItem, type LayoutConfig, type DocumentLayoutRow, type DocumentFurnitureRow,
+  type OrgSeal,
 } from '../../api/client';
-import { type DocLine } from './compile';
+import { type DocLine, type OutlineHeading } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
 
 /**
@@ -37,16 +38,110 @@ export function rootVars(c: LayoutConfig): React.CSSProperties {
   };
 }
 
+/** The text blocks a line can render, each independently widenable. A line shows some
+ *  subset: `tibetan` on the verso; on the recto either `section`, or a mantra's
+ *  `phonetics`, or a `phonetics` + `translation` pair. */
+export type WidthTarget = 'tibetan' | 'phonetics' | 'translation' | 'section';
+
+/** How far a block may be dragged, in mm. `max` differs by page: reaching the right
+ *  physical border means eating that page's whole right padding — the outer margin on a
+ *  recto, the binding margin on a verso. `min` is negative (how far it can be narrowed). */
+export interface WidthRange { min: number; maxVerso: number; maxRecto: number }
+
 /** Balancing state applied to one line, plus (interactive only) the handlers. */
 export interface LineAdj {
   gapDeltaMm: number;   // empty-line spacing delta
   noSpace: boolean;     // blank line removed
-  wrapMm: number;       // rightward wrap-limit push for the translation
+  /** Signed width delta per block, in mm (see WidthLine). Absent = natural width. */
+  widths?: Partial<Record<WidthTarget, number>>;
+  widthRange?: WidthRange;
   onGap?: (delta: number) => void;
   onToggleNoSpace?: () => void;
-  onWrap?: (delta: number) => void;
+  /** Persist a block's new width (null clears it). Absent = non-interactive (print). */
+  onWidth?: (target: WidthTarget, mm: number | null) => void;
 }
-export const NO_ADJ: LineAdj = { gapDeltaMm: 0, noSpace: false, wrapMm: 0 };
+export const NO_ADJ: LineAdj = { gapDeltaMm: 0, noSpace: false };
+
+const DEFAULT_RANGE: WidthRange = { min: -60, maxVerso: 10, maxRecto: 10 };
+/** Below this (mm) a width is indistinguishable from natural — store nothing. */
+const WIDTH_EPS = 0.3;
+
+/**
+ * One width-adjustable text block. The stored `valueMm` is a SIGNED delta applied as
+ * `margin-right: -valueMm` — positive pulls the right edge outward (the text overflows
+ * toward the page's physical border, which `.booklet-page { overflow: hidden }` clips),
+ * negative pushes it inward (the block narrows and its text wraps).
+ *
+ * With `onCommit` it grows a hover-revealed grip on that right edge: dragging slides the
+ * edge, previewing locally (so the text reflows live under the pointer) and persisting
+ * once on release. Without it — the print page and the measurement pass — it is a plain
+ * wrapper that just applies the stored width, which is what keeps the PDF and the
+ * auto-pagination measurements identical to the bench.
+ */
+export const WidthLine: React.FC<{
+  valueMm: number; min: number; max: number;
+  onCommit?: (mm: number | null) => void;
+  className?: string;
+  style?: React.CSSProperties;
+  children?: React.ReactNode;
+}> = ({ valueMm, min, max, onCommit, className, style, children }) => {
+  const [preview, setPreview] = React.useState<number | null>(null);
+  const drag = React.useRef<{ x: number; from: number } | null>(null);
+  const cur = preview ?? valueMm;
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!onCommit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    drag.current = { x: e.clientX, from: valueMm };
+    setPreview(valueMm);
+    // Capture keeps the drag alive when the pointer outruns the 6px grip.
+    try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* not fatal */ }
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    // Dragging right widens: the pointer's travel IS the edge's travel.
+    const next = d.from + (e.clientX - d.x) / MM_PX;
+    setPreview(Math.max(min, Math.min(max, next)));
+  };
+  const endDrag = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    const final = preview ?? d.from;
+    setPreview(null);
+    try { (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); } catch { /* not fatal */ }
+    if (Math.abs(final - d.from) < 0.05) return;          // a click, not a drag
+    onCommit?.(Math.abs(final) < WIDTH_EPS ? null : Number(final.toFixed(2)));
+  };
+
+  return (
+    <div className={className}
+         style={{ ...style, marginRight: `${-cur}mm`, position: 'relative' }}>
+      {children}
+      {onCommit && (
+        <span className="bk-widthgrip"
+              title="Drag to overflow the line to the page border, or back to wrap it"
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag} />
+      )}
+    </div>
+  );
+};
+
+/** The width props for one block of a line, from its `LineAdj`. */
+function widthProps(adj: LineAdj, target: WidthTarget, verso: boolean) {
+  const r = adj.widthRange ?? DEFAULT_RANGE;
+  return {
+    valueMm: adj.widths?.[target] ?? 0,
+    min: r.min,
+    max: verso ? r.maxVerso : r.maxRecto,
+    onCommit: adj.onWidth ? (mm: number | null) => adj.onWidth!(target, mm) : undefined,
+  };
+}
 
 /** The empty-line gap between chunks — the primary balancing lever. */
 export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
@@ -80,7 +175,9 @@ export const Verso: React.FC<{
   const split = l.splitAnchor != null;
   return (
     <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`}>
-      <div className="bk-tibetan">
+      {/* Split mode owns the syllable clicks — no width grip competing for the pointer. */}
+      <WidthLine className="bk-tibetan" {...widthProps(adj, 'tibetan', true)}
+                 onCommit={onSplit ? undefined : widthProps(adj, 'tibetan', true).onCommit}>
         {l.tokens.map((t, i) => (
           <span key={i}
                 className={onSplit ? 'bk-syl' : undefined}
@@ -88,7 +185,7 @@ export const Verso: React.FC<{
             {t.render}
           </span>
         ))}
-      </div>
+      </WidthLine>
       {l.emptyAfter && <Gap adj={adj} />}
     </div>
   );
@@ -131,22 +228,22 @@ export const Recto: React.FC<{
     <div className={`bk-line bk-pair bk-role-${l.role}`}>
       {isSection ? (
         l.translation != null && (
-          <div className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
-               dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
+          <WidthLine className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
+                     {...widthProps(adj, 'section', false)}>
+            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
+          </WidthLine>
         )
       ) : (
         <>
-          {l.phonetics && <div className="bk-phonetics">{l.phonetics}</div>}
+          {l.phonetics && (
+            <WidthLine className="bk-phonetics" {...widthProps(adj, 'phonetics', false)}>
+              {l.phonetics}
+            </WidthLine>
+          )}
           {!isMantra && l.translation != null && (
-            <div className="bk-translation" style={adj.wrapMm ? { marginRight: `-${adj.wrapMm}mm` } : undefined}>
+            <WidthLine className="bk-translation" {...widthProps(adj, 'translation', false)}>
               <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
-              {adj.onWrap && (
-                <span className="bk-wrapctl">
-                  <button type="button" title="Narrower" onClick={() => adj.onWrap!(-1)}>−</button>
-                  <button type="button" title="Wider (into the outer margin)" onClick={() => adj.onWrap!(1)}>+</button>
-                </span>
-              )}
-            </div>
+            </WidthLine>
           )}
         </>
       )}
@@ -203,7 +300,9 @@ export const TitleContent: React.FC<{
  *  wrap it in their own page element. */
 export const FurnitureContent: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
-}> = ({ item, titleLines, body, toc }) => {
+  /** The ORG's seal (Style Studio) — the cover ornament of every booklet in the template. */
+  orgSeal?: OrgSeal | null;
+}> = ({ item, titleLines, body, toc, orgSeal }) => {
   // The imported image, sized from the stored width/height (mm); null = natural.
   const sized = item.image_width_mm != null || item.image_height_mm != null;
   const imgStyle: React.CSSProperties = {
@@ -214,8 +313,16 @@ export const FurnitureContent: React.FC<{
                        src={itemImageUrl(item.id)} style={imgStyle} alt="" />;
 
   if (item.kind === 'cover') {
-    // The seal is a real imported image when present (else the ༀ glyph), above the title.
-    return <TitleContent titleLines={titleLines} seal image={item.has_image ? bkImage : undefined} />;
+    // At the ༀ ornament's place: this booklet's own cover image if it has one, else the org's
+    // seal from the template, else (neither) the ༀ glyph — see TitleContent.
+    const sealSized = orgSeal?.width_mm != null || orgSeal?.height_mm != null;
+    const sealImage = orgSeal?.has_image
+      ? <img className={`bk-image${sealSized ? '' : ' bk-image-nat'}`} src={orgSealUrl()} alt=""
+             style={{ width: orgSeal.width_mm ? `${orgSeal.width_mm}mm` : undefined,
+                      height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
+      : undefined;
+    return <TitleContent titleLines={titleLines} seal
+                        image={item.has_image ? bkImage : sealImage} />;
   }
   if (item.kind === 'copyright') {
     // The copyright ("second cover") emblem above the copyright text.
@@ -276,6 +383,7 @@ export const FurnitureContent: React.FC<{
 /** A furniture page as a facing-page mock (bench use). */
 export const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
+  orgSeal?: OrgSeal | null;
 }> = (props) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
@@ -399,15 +507,29 @@ function splitDocLine(l: DocLine, k: number, rectoCut: number | null): [DocLine,
   return [head, tail];
 }
 
-/** Build a nested outline from flat sapche entries, nesting by their depth `level`. */
-function nestByLevel(items: { title: string; pageIndex: number; folio: number; level: number }[]): NavNode[] {
+/** Build a text's navigation from its TRANSLATION-PANE headings: a flat, stream-ordered
+ *  list already labelled in the booklet's language (heading lines + translation-only title
+ *  chunks). Nest by each heading's 0-based `level` (a monotone stack, like an outline).
+ *  Each heading's page comes from its anchor syllable resolved into the line stream; an
+ *  anchor that resolves to nothing inherits the nearest preceding resolved page, so every
+ *  bookmark stays clickable. `base` seeds the page before the first resolved heading. */
+function navFromHeadings(
+  headings: OutlineHeading[],
+  resolve: (sylId: string | null) => { pageIndex: number; folio: number } | null,
+  base: { pageIndex: number; folio: number },
+): NavNode[] {
   const roots: NavNode[] = [];
   const stack: { node: NavNode; level: number }[] = [];
-  for (const it of items) {
-    const node: NavNode = { title: it.title, pageIndex: it.pageIndex, folio: it.folio, children: [] };
-    while (stack.length && stack[stack.length - 1].level >= it.level) stack.pop();
+  let last = base;
+  for (const h of headings) {
+    const hit = resolve(h.anchorSylId);
+    if (hit) last = hit;
+    const title = plainTextOf(h.label);
+    if (!title) continue;
+    const node: NavNode = { title, pageIndex: last.pageIndex, folio: last.folio, children: [] };
+    while (stack.length && stack[stack.length - 1].level >= h.level) stack.pop();
     (stack.length ? stack[stack.length - 1].node.children : roots).push(node);
-    stack.push({ node, level: it.level });
+    stack.push({ node, level: h.level });
   }
   return roots;
 }
@@ -425,6 +547,8 @@ export function deriveBooklet(
   /** Split-edit mode (bench): ignore recto cuts so the whole recto text shows on the head
    *  for word-picking. The Tibetan still splits. */
   editRecto = false,
+  /** Per text item: its translation-pane headings — the source of the nav outline (bookmarks). */
+  headingsByItem?: Map<number, OutlineHeading[]>,
 ): DerivedBooklet {
   // Apply mid-line splits first: a page_break row carrying a `char_offset` splits its
   // (non-pair) line at that syllable (token) index into head + tail, reusing the hairline-
@@ -550,6 +674,14 @@ export function deriveBooklet(
     }
     return F;
   };
+  // Where each syllable landed, so a tree node's anchor finds its line (and so its page).
+  const lineOfSyl = new Map<string, number>();
+  lines.forEach((l, i) => {
+    for (const t of l.tokens) {
+      const k = `${l.itemId}:${t.id}`;
+      if (!lineOfSyl.has(k)) lineOfSyl.set(k, i);
+    }
+  });
   const navOutline: NavNode[] = orderedTexts.map((it) => {
     const custom = furniture && lang != null ? furnitureBodyOf(furniture, it, lang) : null;
     let titleSrc: string;
@@ -563,15 +695,14 @@ export function deriveBooklet(
     const pageIndex = titleUnitIdx >= 0 ? unitBase[titleUnitIdx]
       : (startLine != null ? rectoPageOfLine(startLine) : F);
     const folio = startLine != null ? folioOfLine(startLine) : 1;
-    const sections: { title: string; pageIndex: number; folio: number; level: number }[] = [];
-    lines.forEach((l, i) => {
-      if (l.itemId !== it.id || l.role !== 'sapche' || !l.translation) return;
-      sections.push({
-        title: plainTextOf(l.translation), pageIndex: rectoPageOfLine(i),
-        folio: folioOfLine(i), level: l.level ?? 0,
-      });
-    });
-    return { title: plainTextOf(titleSrc), pageIndex, folio, children: nestByLevel(sections) };
+    const resolve = (syl: string | null) => {
+      if (!syl) return null;
+      const i = lineOfSyl.get(`${it.id}:${syl}`);
+      if (i == null) return null;
+      return { pageIndex: rectoPageOfLine(i), folio: folioOfLine(i) };
+    };
+    const children = navFromHeadings(headingsByItem?.get(it.id) ?? [], resolve, { pageIndex, folio });
+    return { title: plainTextOf(titleSrc), pageIndex, folio, children };
   });
 
   return { lines, breakSet, hairlineSet, spreads, bodyUnits, frontMatter, backMatter, tocRows,

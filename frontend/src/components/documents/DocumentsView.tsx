@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
+import { useTreeNodeStore } from '../../store/useTreeNodeStore';
+import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize,
@@ -31,7 +33,7 @@ const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode
 const FURNITURE: DocumentItemKind[] = ['cover', 'blank', 'toc', 'copyright', 'image_page', 'backcover'];
 
 /** The booklet's navigation outline (what the PDF's bookmarks contain): each text with
- *  its sapche sections nested by depth, translated headings + reader folio. */
+ *  its translation-pane headings nested by level, translated labels + reader folio. */
 const NavOutline: React.FC<{ nodes: NavNode[]; depth?: number }> = ({ nodes, depth = 0 }) => (
   <div>
     {nodes.map((n, i) => (
@@ -71,6 +73,8 @@ export const DocumentsView: React.FC = () => {
 
   const texts = useTextStore(s => s.texts);
   const fetchTexts = useTextStore(s => s.fetchTexts);
+  const treeVersion = useTreeNodeStore(s => s.version);
+  const trVersion = useTranslationStore(s => s.version);
 
   const [languages, setLangs] = useState<Language[]>([]);
   const [newTitle, setNewTitle] = useState('');
@@ -118,13 +122,16 @@ export const DocumentsView: React.FC = () => {
           getFurniture(current.id),
         ]);
         if (!alive) return;
-        const d = deriveBooklet(current.items, layout.rows, compiled.lines, compiled.titleByItem, furn, edition);
+        const d = deriveBooklet(current.items, layout.rows, compiled.lines, compiled.titleByItem,
+                               furn, edition, false, compiled.headingsByItem);
         setNavPreview(d.navOutline);
       } catch { if (alive) setNavPreview([]); }
       finally { if (alive) setNavLoading(false); }
     })();
     return () => { alive = false; };
-  }, [current?.id, current?.items, navLang]);
+    // The outline is the TRANSLATION pane's headings (tree depth still nests them), so
+    // curating either re-derives the preview without a reload.
+  }, [current?.id, current?.items, navLang, treeVersion, trVersion]);
 
   const furnitureBody = (itemId: number, langCode: string) =>
     furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
@@ -297,8 +304,6 @@ export const DocumentsView: React.FC = () => {
                 );
               })}
             </div>
-            <div className="flex-1" />
-            {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
             <button
               type="button"
               onClick={() => setPaginating(true)}
@@ -309,6 +314,8 @@ export const DocumentsView: React.FC = () => {
             >
               <LayoutTemplate size={13} /> layout
             </button>
+            <div className="flex-1" />
+            {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
             <button
               type="button"
               onClick={() => { if (confirm(`Delete "${current.title}"?`)) void remove(current.id); }}

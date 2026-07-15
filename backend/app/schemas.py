@@ -619,7 +619,15 @@ class TocEntry(BaseModel):
 
 # ─── Pagination layout (Phase D2) ───────────────────────────────────────────────
 
-DocumentLayoutKind = Literal['page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline', 'recto_cut']
+# `width_*`: a per-line-block width delta in mm (signed) — positive overflows the block
+# toward its page's right physical border, negative narrows it so the text wraps. One kind
+# per rendered block because the unique key is (document, item, anchor_syl_id, kind, lang),
+# so the target has to live in the kind. `wrap_extend` is the superseded, positive-only
+# translation-column predecessor (kept only so legacy rows still parse).
+DocumentLayoutKind = Literal[
+    'page_break', 'line_space', 'line_nospace', 'wrap_extend', 'hairline', 'recto_cut',
+    'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
+]
 
 class DocumentLayoutRow(BaseModel):
     id: int

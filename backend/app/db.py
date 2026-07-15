@@ -528,13 +528,19 @@ CREATE TABLE IF NOT EXISTS document_languages (
 -- a signed unit per kind). `lang` NULL = applies to every edition; a language code
 -- scopes a translation-only adjustment (e.g. a per-language split of a straddling
 -- chunk). Page geometry/type sizes live in documents.layout_config (JSON).
+-- `width_*` = a signed per-line-block width in mm: positive overflows that block toward
+-- its page's right physical border, negative narrows it so the text wraps. One kind per
+-- rendered block (tibetan/phonetics/translation/section) because the UNIQUE key carries
+-- the kind, so that is where the target has to live. `wrap_extend` is their superseded,
+-- positive-only, translation-only predecessor (legacy rows only).
 CREATE TABLE IF NOT EXISTS document_layout (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
     anchor_syl_id TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN
-                     ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut')),
+                     ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
+                      'width_tibetan','width_phonetics','width_translation','width_section')),
     char_offset  INTEGER,
     value        REAL,
     lang         TEXT,
@@ -603,6 +609,19 @@ CREATE TABLE IF NOT EXISTS org_fonts (
     mime       TEXT NOT NULL,
     data       BLOB NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- The org's cover ornament (seal/logo) — part of the template, like the fonts. It prints at
+-- the ༀ placeholder on EVERY booklet's cover; a booklet that uploads its own cover image
+-- (document_images) overrides it, and with neither the ༀ glyph shows. One row per org;
+-- width/height in mm (NULL = the image's natural size).
+CREATE TABLE IF NOT EXISTS org_seal (
+    org_id     INTEGER PRIMARY KEY DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    mime       TEXT NOT NULL,
+    data       BLOB NOT NULL,
+    width_mm   REAL,
+    height_mm  REAL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- The Style Studio's editable specimen (a JSON list of blocks) — a per-org sample that
@@ -729,12 +748,14 @@ def _add_missing_columns(conn) -> None:
 
 def _rebuild_document_layout_kinds(conn) -> None:
     """Widen `document_layout.kind`'s CHECK to include newer kinds ('hairline', then
-    'recto_cut'). SQLite can't alter a CHECK in place, so rebuild the table when an older
-    one predates the newest kind. No-op on fresh DBs (SCHEMA already lists them)."""
+    'recto_cut', then the per-block 'width_*' set). SQLite can't alter a CHECK in place, so
+    rebuild the table when an older one predates the newest kind. The sentinel is the LAST
+    kind added — bump it whenever the CHECK grows. No-op on fresh DBs (SCHEMA lists them).
+    `document_layout` is a leaf (nothing references it), so the drop/rename is safe."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_layout'"
     ).fetchone()
-    if not row or "'recto_cut'" in row["sql"]:
+    if not row or "'width_section'" in row["sql"]:
         return
     conn.execute("""
         CREATE TABLE document_layout_new (
@@ -743,7 +764,8 @@ def _rebuild_document_layout_kinds(conn) -> None:
             item_id      INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
             anchor_syl_id TEXT NOT NULL,
             kind         TEXT NOT NULL CHECK (kind IN
-                             ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut')),
+                             ('page_break','line_space','line_nospace','wrap_extend','hairline','recto_cut',
+                              'width_tibetan','width_phonetics','width_translation','width_section')),
             char_offset  INTEGER,
             value        REAL,
             lang         TEXT,

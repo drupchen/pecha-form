@@ -5,6 +5,7 @@ Organizations/users are not built yet — everything is org 1 for now.
 """
 import io
 import json
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
@@ -244,6 +245,105 @@ def delete_org_font(font_id: int):
     conn = get_db()
     try:
         conn.execute("DELETE FROM org_fonts WHERE id = ?", (font_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ── Organization cover seal (the ༀ placeholder's image) ──────────────────────
+# Part of the TEMPLATE, like the fonts: it prints on every booklet's cover, where the ༀ
+# ornament otherwise sits. A booklet that uploads its own cover image overrides it.
+
+ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+class SealOut(BaseModel):
+    has_image: bool = False
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
+
+
+class SealSizeIn(BaseModel):
+    width_mm: Optional[float] = None    # NULL/absent = the image's natural size
+    height_mm: Optional[float] = None
+
+
+@router.get("/org-seal", response_model=SealOut)
+def get_org_seal(org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+        if not row:
+            return SealOut()
+        return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
+    finally:
+        conn.close()
+
+
+@router.get("/org-seal/file")
+def get_org_seal_file(org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT mime, data FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "No seal for this organization")
+        return Response(content=row["data"], media_type=row["mime"],
+                        headers={"Cache-Control": "no-store"})
+    finally:
+        conn.close()
+
+
+@router.put("/org-seal", response_model=SealOut)
+async def upload_org_seal(file: UploadFile = File(...), org_id: int = Form(DEFAULT_ORG)):
+    data = await file.read()
+    mime = file.content_type or ""
+    if mime not in ALLOWED_IMAGE_MIME:
+        raise HTTPException(415, f"Unsupported image type: {mime or 'unknown'}")
+    if not data:
+        raise HTTPException(400, "Empty file")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(413, "Image too large (max 10 MB)")
+    conn = get_db()
+    try:
+        # A replacement keeps the size the designer already set (only the bytes change).
+        conn.execute(
+            "INSERT INTO org_seal (org_id, mime, data) VALUES (?, ?, ?) "
+            "ON CONFLICT(org_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (org_id, mime, data))
+        conn.commit()
+        row = conn.execute(
+            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+        return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
+    finally:
+        conn.close()
+
+
+@router.patch("/org-seal", response_model=SealOut)
+def set_org_seal_size(payload: SealSizeIn, org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT 1 FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "No seal for this organization")
+        conn.execute(
+            "UPDATE org_seal SET width_mm = ?, height_mm = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE org_id = ?", (payload.width_mm, payload.height_mm, org_id))
+        conn.commit()
+        return SealOut(has_image=True, width_mm=payload.width_mm, height_mm=payload.height_mm)
+    finally:
+        conn.close()
+
+
+@router.delete("/org-seal")
+def delete_org_seal(org_id: int = DEFAULT_ORG):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM org_seal WHERE org_id = ?", (org_id,))
         conn.commit()
         return {"ok": True}
     finally:

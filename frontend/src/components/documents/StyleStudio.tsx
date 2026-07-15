@@ -1,16 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Upload, RotateCcw, FileDown, FileUp, Bold, Italic, Plus, Copy, Trash2,
+  Image as ImageIcon,
 } from 'lucide-react';
 import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
   putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
-  getStyleSample, putStyleSample, type OrgFont,
+  getStyleSample, putStyleSample, getOrgSeal, uploadOrgSeal, deleteOrgSeal, setOrgSealSize,
+  orgSealUrl, getDocumentLayout, type OrgFont, type OrgSeal, type LayoutConfig,
 } from '../../api/client';
 import {
   ROLE_DEFS, BUNDLED_FONTS, resolveStyles, compileStyleCss,
   type StyleProps, type RoleDef, type StudioFormat,
 } from './bookletStyles';
+import { MM_PX, rootVars } from './bookletRender';
 import '../../styles/booklet.css';
 
 /**
@@ -150,7 +153,33 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   const [msg, setMsg] = useState('');
   const [blocks, setBlocks] = useState<Block[]>(DEFAULT_BLOCKS);
   const [activeRoles, setActiveRoles] = useState<string[]>([]);
+  const [seal, setSeal] = useState<OrgSeal | null>(null);
+  const [sealBust, setSealBust] = useState(0);   // cache-buster for the seal preview
+  // The booklet's page geometry — the specimen is laid out on it, so what you style here is
+  // measured by the page it prints on.
+  const [config, setConfig] = useState<LayoutConfig | null>(null);
+  const [pageCount, setPageCount] = useState(1);
+  const specimenRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<number>(0);
+
+  useEffect(() => { void getOrgSeal().then(setSeal).catch(() => {}); }, []);
+
+  useEffect(() => {
+    void getDocumentLayout(documentId).then(l => setConfig(l.config)).catch(() => {});
+  }, [documentId]);
+
+  // How many page frames the guides need. The specimen grows as you type — and `Editable` is
+  // uncontrolled, so typing does not re-render — hence a ResizeObserver rather than a render count.
+  useEffect(() => {
+    const el = specimenRef.current;
+    if (!el || !config) return;
+    const pageH = config.page_height_mm * MM_PX;
+    const recount = () => setPageCount(Math.max(1, Math.ceil(el.scrollHeight / pageH)));
+    recount();
+    const ro = new ResizeObserver(recount);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [config, blocks]);
 
   useEffect(() => {
     void Promise.all([getOrgStyles(), getDocStyles(documentId), getOrgFonts(), getStyleSample()])
@@ -227,6 +256,24 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     try { await uploadOrgFont(file, fam.trim()); setFonts(await getOrgFonts()); setFam(''); }
     catch { /* ignore */ } finally { setBusy(false); }
   };
+  // ── the org's cover seal: the image that prints where the ༀ ornament sits ──
+  const doSeal = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    try { setSeal(await uploadOrgSeal(file)); setSealBust(n => n + 1); }
+    catch (e) { setMsg(`Seal upload failed: ${(e as Error).message}`.slice(0, 140)); }
+    finally { setBusy(false); }
+  };
+  const dropSeal = async () => {
+    setBusy(true);
+    try { await deleteOrgSeal(); setSeal({ has_image: false, width_mm: null, height_mm: null }); }
+    catch { /* ignore */ } finally { setBusy(false); }
+  };
+  const sizeSeal = (w: number | null, h: number | null) => {
+    setSeal(s => (s ? { ...s, width_mm: w, height_mm: h } : s));
+    void setOrgSealSize(w, h).catch(() => {});
+  };
+
   const scopeTarget = scope === 'org' ? 'org' : 'document';
   const doImport = async (file?: File) => {
     if (!file) return;
@@ -243,12 +290,56 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
 
   const border = { border: '1px solid var(--cline)' } as const;
   const sel = "px-1 py-0.5 rounded bg-white text-xs";
+  const miniBtn = "px-1.5 py-0.5 rounded-md text-xs hover:bg-cream inline-flex items-center gap-1 disabled:opacity-40";
+
+  /** The cover ornament — the org's seal image if one is uploaded, else the ༀ glyph. It sits at
+   *  the top of the title page and prints on EVERY booklet's cover; a booklet can still override
+   *  it with its own cover image (Documents tab). The loader lives right here, in its place. */
+  const sealSlot = () => {
+    const sized = seal?.width_mm != null || seal?.height_mm != null;
+    return (
+      <div className="specimen-seal">
+        {seal?.has_image ? (
+          <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
+               src={`${orgSealUrl()}&v=${sealBust}`} alt=""
+               style={{ width: seal.width_mm ? `${seal.width_mm}mm` : undefined,
+                        height: seal.height_mm ? `${seal.height_mm}mm` : undefined }} />
+        ) : (
+          <div className="bk-seal">ༀ</div>
+        )}
+        <div className="specimen-seal-tools" contentEditable={false}>
+          <label className={`${miniBtn} text-lapis cursor-pointer`} style={border}>
+            <ImageIcon size={11} /> {seal?.has_image ? 'replace' : 'seal image'}
+            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden"
+                   disabled={busy}
+                   onChange={e => { void doSeal(e.target.files?.[0]); e.target.value = ''; }} />
+          </label>
+          {seal?.has_image && (
+            <>
+              <span className="text-[10px] text-ink-soft" title="Print size in mm; leave height blank to keep the aspect ratio">size</span>
+              <input type="number" min={0} step={1} defaultValue={seal.width_mm ?? ''} placeholder="w"
+                     className="w-11 px-1 py-0.5 rounded bg-white text-xs" style={border}
+                     onChange={e => sizeSeal(e.target.value === '' ? null : Number(e.target.value), seal.height_mm ?? null)} />
+              <span className="text-[10px] text-ink-soft">×</span>
+              <input type="number" min={0} step={1} defaultValue={seal.height_mm ?? ''} placeholder="h"
+                     className="w-11 px-1 py-0.5 rounded bg-white text-xs" style={border}
+                     onChange={e => sizeSeal(seal.width_mm ?? null, e.target.value === '' ? null : Number(e.target.value))} />
+              <button type="button" onClick={() => void dropSeal()} disabled={busy}
+                      className={`${miniBtn} text-vermilion`} style={border} title="Remove the seal — the ༀ glyph returns">
+                <Trash2 size={11} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   const renderBlock = (b: Block) => {
     const E = (i: number, cls: string) =>
       <Editable key={i} className={cls} html={b.parts[i] ?? ''} onChange={h => editPart(b.id, i, h)} />;
     switch (b.kind) {
-      case 'title': return <div className="bk-titlepage"><div className="bk-seal">ༀ</div>{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}</div>;
+      case 'title': return <div className="bk-titlepage">{sealSlot()}{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}</div>;
       case 'section_1': return <div className="bk-line">{E(0, 'bk-section bk-section-l1')}</div>;
       case 'section_2': return <div className="bk-line">{E(0, 'bk-section bk-section-l2')}</div>;
       case 'section_3': return <div className="bk-line">{E(0, 'bk-section bk-section-l3')}</div>;
@@ -300,7 +391,21 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       <div className="flex-1 flex overflow-hidden">
         {/* Specimen */}
         <div className="flex-1 overflow-auto p-6" style={{ background: 'var(--cream)' }}>
-          <div className="booklet-root style-specimen mx-auto bg-white" style={{ maxWidth: '148mm', padding: '12mm 16mm' }}>
+          {/* The booklet's REAL geometry (layout_config): page width, and the margins of a recto
+              page (spine on the left). The specimen flows past one page, so the guides are drawn
+              by page-tall frames laid behind the content — see `.specimen-page`. */}
+          <div ref={specimenRef}
+               className="booklet-root style-specimen bk-guides mx-auto bg-white"
+               style={{ ...(config ? rootVars(config) : {}),
+                        width: 'var(--page-w)',
+                        padding: 'var(--m-top) var(--m-outer) var(--m-bottom) var(--m-bind)' }}>
+            <div className="specimen-pages" aria-hidden="true">
+              {Array.from({ length: pageCount }, (_, i) => (
+                <div key={i} className="specimen-page" style={{ top: `calc(${i} * var(--page-h))` }}>
+                  <span className="specimen-folio" />
+                </div>
+              ))}
+            </div>
             <style dangerouslySetInnerHTML={{ __html: styleCss }} />
             {blocks.map(b => (
               <div key={`${b.id}:${b.kind}`} className="specimen-block"

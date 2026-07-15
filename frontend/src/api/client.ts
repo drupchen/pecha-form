@@ -371,6 +371,34 @@ export async function uploadOrgFont(
 export const deleteOrgFont = (fontId: number) =>
   fetch(`${API_BASE}/org-fonts/${fontId}`, { method: 'DELETE' });
 
+/** The org's cover SEAL — a template-level image printed where the ༀ ornament sits, on every
+ *  booklet's cover. A booklet's own cover image (uploadItemImage) overrides it. */
+export interface OrgSeal { has_image: boolean; width_mm: number | null; height_mm: number | null }
+
+export const getOrgSeal = (orgId = 1): Promise<OrgSeal> =>
+  fetch(`${API_BASE}/org-seal?org_id=${orgId}`).then(r => r.json());
+export const orgSealUrl = (orgId = 1) => `${API_BASE}/org-seal/file?org_id=${orgId}`;
+export async function uploadOrgSeal(file: File, orgId = 1): Promise<OrgSeal> {
+  const fd = new FormData();
+  fd.append('file', file); fd.append('org_id', String(orgId));
+  const res = await fetch(`${API_BASE}/org-seal`, { method: 'PUT', body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+/** Display size in mm; null on a dimension = the image's natural size. */
+export async function setOrgSealSize(
+  widthMm: number | null, heightMm: number | null, orgId = 1,
+): Promise<OrgSeal> {
+  const res = await fetch(`${API_BASE}/org-seal?org_id=${orgId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+export const deleteOrgSeal = (orgId = 1) =>
+  fetch(`${API_BASE}/org-seal?org_id=${orgId}`, { method: 'DELETE' });
+
 // docx style templates
 export const styleTemplateUrl = (target: 'org' | 'document', documentId?: number, orgId = 1) =>
   `${API_BASE}/style-template.docx?target=${target}&org_id=${orgId}` +
@@ -444,7 +472,14 @@ export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/do
 
 // ── D2 pagination layout: shared page breaks + per-line balancing, on the document ──
 
-export type DocumentLayoutKind = 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut';
+/** `width_*` = a signed per-line-block width delta in mm (see `WidthTarget` in
+ *  bookletRender): positive overflows the block toward its page's right physical border,
+ *  negative narrows it so the text wraps. One kind per rendered block — the layout row's
+ *  unique key is (document, item, anchor_syl_id, kind, lang), so the target lives in the
+ *  kind. `wrap_extend` is the superseded positive-only predecessor (legacy rows only). */
+export type DocumentLayoutKind =
+  | 'page_break' | 'line_space' | 'line_nospace' | 'wrap_extend' | 'hairline' | 'recto_cut'
+  | 'width_tibetan' | 'width_phonetics' | 'width_translation' | 'width_section';
 
 export interface DocumentLayoutRow {
   id: number;
