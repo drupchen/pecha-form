@@ -33,7 +33,13 @@ export interface DerivedChunk {
   /** `movedAway` marks a token whose translation was picked up and integrated elsewhere
    *  (grayed in place, translate-tab display only); `movedIn` marks a READ-ONLY copy of
    *  such a token injected into its destination chunk. Both carry the move layout id. */
-  tokens: { id: string; render: string; small?: boolean; movedAway?: number; movedIn?: number }[];
+  /** `opId` is the derivation op that emitted the token (EditorToken.op_id). It NAMES THE
+   *  OCCURRENCE: a text that transcludes the same source twice repeats its syllable uuids,
+   *  so `id` alone cannot say which of them a given token is, but `(id, opId)` can. The
+   *  booklet anchors its page breaks and widths on that pair. Undefined for a text's own
+   *  syllables, which are position-unique already. */
+  tokens: { id: string; render: string; small?: boolean; opId?: number | null;
+            movedAway?: number; movedIn?: number }[];
   /** Set when this chunk's content was MOVED here by a scramble layout row —
    *  the translator sees it originally belonged elsewhere. `movedAnchorId` is that row's
    *  anchor (null = end of stream), so a placement bar drawn at this row anchors HERE and
@@ -372,7 +378,7 @@ export function deriveChunks(
   const chunks: DerivedChunk[] = [];
   let cur: EditorToken[] = [];
   let curText = '';
-  let curRenders: { id: string; render: string; small?: boolean }[] = [];
+  let curRenders: { id: string; render: string; small?: boolean; opId?: number | null }[] = [];
   let curType: { name: string; color: string | null } | null = null;
   // The move (scramble) layout id of the current chunk's tokens. A moved fragment is a
   // deliberately relocated SEGMENT, so its edges are hard chunk boundaries — it never gets
@@ -453,7 +459,8 @@ export function deriveChunks(
     cur.push(t);
     const render = (isReal ? '' : t.text) + (count >= 1 ? '\n' : '');
     curText += render;
-    curRenders.push(tokenSmall ? { id: t.id, render, small: true } : { id: t.id, render });
+    curRenders.push(tokenSmall ? { id: t.id, render, small: true, opId: t.op_id }
+                               : { id: t.id, render, opId: t.op_id });
     // Empty line AFTER this token: explicit count-2 override, or a real newline
     // pair (a blank line in the raw text). In line mode, ANY break flushes.
     const nxt = tokens[i + 1];

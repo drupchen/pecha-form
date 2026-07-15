@@ -157,6 +157,30 @@ export type BlockWidthOf = (key: string) => {
 /** No width control at all — the print page, and any caller that has not wired it. */
 const NO_WIDTH: BlockWidthOf = () => ({ valueMm: 0, min: 0, max: 0 });
 
+/**
+ * A line's anchor — what the booklet stores its breaks, widths and fills against.
+ *
+ * A syllable id is position-unique WITHIN a text, so for years it was identity enough. It is
+ * not, once a text transcludes: a transclusion reuses its source's syllables by design (that
+ * is what makes annotations ripple into every site), so a text that pulls the same source in
+ * twice repeats those uuids, and `(item, syllable)` names two different lines at once. This
+ * booklet has 168 such syllables, sitting under four separate transclusion ops.
+ *
+ * The occurrence is already named upstream: `op_id`, the derivation op that emitted the
+ * token. `(id, op_id)` is unique — verified on the real text: 168 repeated ids, zero repeated
+ * pairs. So the anchor is the syllable, plus the op where the op is what makes it ambiguous.
+ *
+ * A text's OWN syllables have no op and keep the bare uuid, which is what every row written
+ * before this used — so old rows go on resolving, and the vast majority of new ones are
+ * byte-for-byte what they always were. `#` cannot occur in a uuid, and a furniture block key
+ * already starts with one, so the three forms never collide.
+ */
+export const anchorOf = (l: DocLine): string =>
+  l.opId != null ? `${l.startSylId}#${l.opId}` : l.startSylId;
+
+/** The anchor a line's SPLIT rows hang off — the original line's, so head and tail agree. */
+export const splitAnchorOf = (l: DocLine): string => l.splitAnchor ?? anchorOf(l);
+
 /** The width props for one block of a line, from its `LineAdj`. */
 function widthProps(adj: LineAdj, target: WidthTarget, verso: boolean) {
   const r = adj.widthRange ?? DEFAULT_RANGE;
@@ -549,8 +573,11 @@ export function gapFillVars(
   if (!line) return {};
   const kind = GAP_FILL_KIND[side];
   const rowLang = gapFillLang(side, lang);
+  // The line's anchor, or the bare syllable a row written before the op was part of it used.
+  const a = anchorOf(line);
   const r = rows.find((x) => x.kind === kind && x.item_id === line.itemId
-                          && x.anchor_syl_id === line.startSylId && (x.lang ?? '') === rowLang);
+                          && (x.anchor_syl_id === a || x.anchor_syl_id === line.startSylId)
+                          && (x.lang ?? '') === rowLang);
   const mm = r?.value ?? 0;
   return mm ? ({ ['--gap-fill' as string]: `${mm}mm` } as React.CSSProperties) : {};
 }
@@ -645,13 +672,16 @@ function splitDocLine(l: DocLine, k: number, rectoCut: number | null): [DocLine,
   let hTrans = l.translation, tTrans: string | null = null;
   if (l.translation) [hTrans, tTrans] = splitHtmlAtWord(l.translation, rc);
   else if (l.phonetics) [hPhon, tPhon] = splitWordsPlain(l.phonetics, rc);
+  // Both halves remember the ORIGINAL line's anchor, so the split can be cleared from
+  // either — and the tail keeps the original's `opId`: it is still that same occurrence.
+  const anchor = anchorOf(l);
   const head: DocLine = {
     ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k), endSylId: l.tokens[k - 1].id,
-    phonetics: hPhon, translation: hTrans, emptyAfter: false, splitAnchor: l.startSylId,
+    phonetics: hPhon, translation: hTrans, emptyAfter: false, splitAnchor: anchor,
   };
   const tail: DocLine = {
     ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k), startSylId: l.tokens[k].id,
-    phonetics: tPhon, translation: tTrans, emptyAfter: l.emptyAfter, splitAnchor: l.startSylId,
+    phonetics: tPhon, translation: tTrans, emptyAfter: l.emptyAfter, splitAnchor: anchor,
   };
   return [head, tail];
 }
@@ -715,10 +745,14 @@ export function deriveBooklet(
   const lines: DocLine[] = [];
   const splitTails = new Set<number>();   // indices in `lines` that are split tails
   for (const l of srcLines) {
-    const key = `${l.itemId}:${l.startSylId}`;
-    const k = splitAt.get(key);
+    // The line's anchor, falling back to the bare syllable for rows written before the op
+    // was part of it (see `anchorOf`).
+    const key = `${l.itemId}:${anchorOf(l)}`;
+    const bare = `${l.itemId}:${l.startSylId}`;
+    const k = splitAt.get(key) ?? splitAt.get(bare);
     if (k != null && k > 0 && k < l.tokens.length && isSplittable(l)) {
-      const [head, tail] = splitDocLine(l, k, editRecto ? null : (rectoCutAt.get(key) ?? null));
+      const cut = rectoCutAt.get(key) ?? rectoCutAt.get(bare) ?? null;
+      const [head, tail] = splitDocLine(l, k, editRecto ? null : cut);
       lines.push(head);
       splitTails.add(lines.length);
       lines.push(tail);
@@ -729,12 +763,24 @@ export function deriveBooklet(
 
   // One pass to index the stream — a row's anchor resolves by lookup, not by scanning every
   // line for every row (this runs on each `rows` change, and both are in the thousands).
+  // Two maps, because there are two vintages of anchor. `idxOf` is keyed by the real one
+  // (`anchorOf`, syllable + op) and is unique. `legacyIdx` is keyed by the bare syllable, for
+  // rows written before the op was part of it; on a transcluded syllable that is genuinely
+  // ambiguous, so it resolves to the first occurrence — which is exactly what those rows have
+  // always done. They are not migrated: nothing records which occurrence was meant, and
+  // guessing would move a page the user placed by hand.
   const idxOf = new Map<string, number>();
+  const legacyIdx = new Map<string, number>();
   lines.forEach((l, i) => {
-    const k = `${l.itemId}:${l.startSylId}`;
+    const k = `${l.itemId}:${anchorOf(l)}`;
     if (!idxOf.has(k)) idxOf.set(k, i);
+    const bare = `${l.itemId}:${l.startSylId}`;
+    if (!legacyIdx.has(bare)) legacyIdx.set(bare, i);
   });
-  const findIdx = (r: DocumentLayoutRow) => idxOf.get(`${r.item_id}:${r.anchor_syl_id}`) ?? -1;
+  const findIdx = (r: DocumentLayoutRow) => {
+    const k = `${r.item_id}:${r.anchor_syl_id}`;
+    return idxOf.get(k) ?? legacyIdx.get(k) ?? -1;
+  };
   const breakSet = new Set<number>();
   const hairlineSet = new Set<number>();
   const manualBreaks = new Set<number>();

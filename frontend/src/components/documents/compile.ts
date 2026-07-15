@@ -21,6 +21,11 @@ export interface DocLine {
   startSylId: string;
   endSylId: string;
   tokens: { id: string; render: string }[];   // Tibetan render (with its line breaks)
+  /** The derivation op that emitted this line's ANCHOR syllable, or null for the text's own.
+   *  A syllable id is position-unique within a text, but a text that transcludes the same
+   *  source twice repeats its uuids — so `(startSylId, opId)` is what actually names the
+   *  line, and the booklet anchors on that (see `anchorOf`). */
+  opId?: number | null;
   phonetics: string;           // matched phonetics for this line (selected language)
   /** This line's OWN translation (the chunk's i-th `<p>`), so the recto renders each
    *  phonetics line immediately followed by its translation (interlinear pairs). */
@@ -177,6 +182,9 @@ export async function compileTextItem(
       role: l.tagType,
       startSylId: l.startSylId,
       endSylId: l.endSylId,
+      // The op of the token the line ANCHORS on — its first substantial one — not of
+      // whatever whitespace happens to lead the render.
+      opId: l.tokens.find((t) => t.id === l.startSylId)?.opId ?? null,
       tokens: l.tokens,
       phonetics: phonFor(l),
       translation: translationByLine.get(i) ?? null,

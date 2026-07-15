@@ -10,6 +10,7 @@ import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, isSplittable, gapFillVars, gapFillLang, GAP_FILL_KIND,
+  anchorOf, splitAnchorOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
 } from './bookletRender';
@@ -319,13 +320,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         //  - a SPLIT HEAD: the head keeps the line's original `startSylId`, which the split's
         //    own row already owns, so writing a break there would upsert over it and null its
         //    `char_offset`, destroying the split.
-        const keys = renderLines.map((l) => `${l.itemId}:${l.startSylId}`);
+        const keys = renderLines.map((l) => `${l.itemId}:${anchorOf(l)}`);
         const firstOf = new Map<string, number>();
         keys.forEach((k, i) => { if (!firstOf.has(k)) firstOf.set(k, i); });
         const unbreakable = new Set<number>();
         renderLines.forEach((l, i) => {
-          if (firstOf.get(keys[i]) !== i) unbreakable.add(i);                     // ambiguous
-          if (l.splitAnchor != null && l.startSylId === l.splitAnchor) unbreakable.add(i);
+          // The anchor now names the occurrence, so this finds nothing on today's booklets.
+          // It stays as the backstop: if a stream ever did repeat an anchor, breaking there
+          // would silently paginate a different page than the one measured.
+          if (firstOf.get(keys[i]) !== i) unbreakable.add(i);
+          // A split head shares the split row's anchor — a break there would upsert over it.
+          if (l.splitAnchor != null && anchorOf(l) === l.splitAnchor) unbreakable.add(i);
         });
 
         const { starts, overfull } = flowPages(sides, {
@@ -355,7 +360,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               { item_id: r.item_id, anchor_syl_id: r.anchor_syl_id, kind: 'page_break' })));
         }
         await Promise.all(autoStarts.map((i) => putLayoutRow(documentId, {
-          item_id: renderLines[i].itemId, anchor_syl_id: renderLines[i].startSylId,
+          item_id: renderLines[i].itemId, anchor_syl_id: anchorOf(renderLines[i]),
           kind: 'page_break', value: BREAK_AUTO,   // explicit: legacy rows have NULL here
         })));
         // Record what these breaks fit, so the drift from here is measurable. One signature
@@ -431,15 +436,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
     if (breakSet.has(i)) {
-      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break' });
+      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break' });
       // A lifted break drops any hairline marking too.
       if (hairlineSet.has(i))
-        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline' });
     } else {
       // Flagged as the user's: a re-flow keeps it and flows around it, instead of treating
       // it as one of its own suggestions and sweeping it away.
       await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', value: BREAK_MANUAL });
+        item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', value: BREAK_MANUAL });
     }
     const lay = await getDocumentLayout(documentId);
     setRows(lay.rows);
@@ -452,15 +457,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
     if (hairlineSet.has(i)) {
-      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline' });
+      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline' });
     } else {
       // Also the user's break — and easy to miss, because a hairline writes its page break
       // through this path, not `toggleBreak`. Unflagged, a re-flow would delete the break and
       // strand the hairline row on a boundary that no longer exists, drawing nothing.
       if (!breakSet.has(i))
         await putLayoutRow(documentId, {
-          item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', value: BREAK_MANUAL });
-      await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'hairline', value: 1 });
+          item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', value: BREAK_MANUAL });
+      await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline', value: 1 });
     }
     setRows((await getDocumentLayout(documentId)).rows);
   };
@@ -468,7 +473,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   /** Mid-line split: click a verso syllable (token index `k`) to split the line there
    *  (Tibetan cuts on the syllable boundary); `k === -1` clears an existing split. */
   const setSplit = async (l: DocLine, k: number) => {
-    const anchor = l.splitAnchor ?? l.startSylId;
+    const anchor = splitAnchorOf(l);
     if (k === -1) {
       await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
       // Clearing a split drops its per-language recto cuts too.
@@ -476,14 +481,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg });
     } else if (k >= 1) {
       await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: l.startSylId, kind: 'page_break', char_offset: k });
+        item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', char_offset: k });
     } else return;
     setRows((await getDocumentLayout(documentId)).rows);
   };
 
   /** Set this edition's recto cut for a split line (the tail starts at word `w`). */
   const setRectoCut = async (l: DocLine, w: number) => {
-    const anchor = l.splitAnchor ?? l.startSylId;
+    const anchor = splitAnchorOf(l);
     await putLayoutRow(documentId, {
       item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', char_offset: w, lang });
     setRows((await getDocumentLayout(documentId)).rows);
@@ -498,20 +503,29 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     for (const r of rows) m.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r);
     return m;
   }, [rows]);
-  const rowVal = (l: DocLine, kind: string, rowLang = '') =>
-    layoutByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`)?.value ?? null;
-  const rowHas = (l: DocLine, kind: string, rowLang = '') =>
-    layoutByKey.has(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
+  // Read by the line's anchor, falling back to the bare syllable for rows written before the
+  // op was part of it (see `anchorOf`).
+  const rowOf = (l: DocLine, kind: string, rowLang: string) =>
+    layoutByKey.get(`${l.itemId}:${anchorOf(l)}:${kind}:${rowLang}`)
+    ?? layoutByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
+  const rowVal = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang)?.value ?? null;
+  const rowHas = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang) != null;
 
   const refreshLayout = async () => setRows((await getDocumentLayout(documentId)).rows);
   const putRow = async (l: DocLine, kind: DocumentLayoutKind, value: number, rowLang = '') => {
     await putLayoutRow(documentId,
-      { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, value, lang: rowLang });
+      { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, value, lang: rowLang });
     await refreshLayout();
   };
   const delRow = async (l: DocLine, kind: DocumentLayoutKind, rowLang = '') => {
+    // Delete BOTH vintages: a value the user is clearing may have been stored under the
+    // bare syllable before the anchor named the occurrence.
     await deleteLayoutRow(documentId,
-      { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang });
+      { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, lang: rowLang });
+    if (anchorOf(l) !== l.startSylId) {
+      await deleteLayoutRow(documentId,
+        { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang }).catch(() => {});
+    }
     await refreshLayout();
   };
   const adjustGap = (l: DocLine, delta: number) => {

@@ -7,7 +7,7 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, gapFillVars,
+  deriveBooklet, furnitureBodyOf, gapFillVars, anchorOf,
   type LineAdj, type WidthTarget, type BlockWidthOf,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -85,10 +85,13 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   // ''), the translated recto blocks are per edition.
   const rowByKey = new Map<string, DocumentLayoutRow>();
   for (const r of rows) rowByKey.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r);
-  const val = (l: DocLine, kind: string, rowLang = '') =>
-    rowByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`)?.value ?? null;
-  const has = (l: DocLine, kind: string, rowLang = '') =>
-    rowByKey.has(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
+  // By the line's anchor, falling back to the bare syllable for rows written before the op
+  // was part of it — the same two vintages the bench reads, through the same rule.
+  const rowOf = (l: DocLine, kind: string, rowLang: string) =>
+    rowByKey.get(`${l.itemId}:${anchorOf(l)}:${kind}:${rowLang}`)
+    ?? rowByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
+  const val = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang)?.value ?? null;
+  const has = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang) != null;
   const adjFor = (l: DocLine): LineAdj => ({
     // These two were hardcoded to 0/false, so the PDF quietly ignored the empty-line
     // balancing and printed every gap at full height — pages the bench had measured as
