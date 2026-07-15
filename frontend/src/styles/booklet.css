@@ -362,10 +362,11 @@
   border-radius: 2px;
   touch-action: none;   /* the pointer drag owns the gesture */
 }
-.bk-tibetan:hover > .bk-widthgrip,
-.bk-phonetics:hover > .bk-widthgrip,
-.bk-translation:hover > .bk-widthgrip,
-.bk-section:hover > .bk-widthgrip { display: block; }
+/* Any width-adjustable block reveals its own grip. Naming the individual roles here — as
+   this did — silently withheld the control from every block added later: the grip was in the
+   DOM and never shown. `.bk-widthline` is on the WidthLine itself, so the rule cannot fall
+   behind what is adjustable. */
+.bk-widthline:hover > .bk-widthgrip { display: block; }
 .bk-widthgrip:hover, .bk-widthgrip:active { border-right-color: var(--lapis, #2f6f9f); }
 
 @media print { .bk-widthgrip { display: none !important; } }

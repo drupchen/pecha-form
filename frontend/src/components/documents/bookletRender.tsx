@@ -123,7 +123,12 @@ export const WidthLine: React.FC<{
   };
 
   return (
-    <div className={className}
+    // `bk-widthline` marks EVERY width-adjustable block, and is what reveals the grip on
+    // hover. The reveal used to name the four body classes it knew about, so every block
+    // added afterwards — the titles, the copyright, the TOC entries — rendered a grip that
+    // was never shown: present in the DOM, invisible on the page. A block is adjustable
+    // because it is a WidthLine, so that is what the CSS should ask about.
+    <div className={`bk-widthline${className ? ` ${className}` : ''}`}
          style={{ ...style, marginRight: `${-cur}mm`, position: 'relative' }}>
       {children}
       {onCommit && (
