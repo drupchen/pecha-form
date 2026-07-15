@@ -326,6 +326,14 @@
   transition: opacity 0.12s;
 }
 .bk-linewrap:hover > .bk-breakctl-group { opacity: 1; }
+/* A break the USER placed stays visible without hovering: a page that stops early is then
+ * legibly their own decision, not the pagination going wrong. Vermilion marks "yours, and
+ * a re-flow will keep it"; an automatic page start stays quiet until hovered. */
+.bk-breakctl-group.bk-breakctl-manual { opacity: 1; }
+.bk-breakctl-manual .bk-breakctl {
+  color: var(--vermilion, #c53030);
+  border-color: var(--vermilion, #c53030);
+}
 .bk-breakctl {
   width: 14px;
   height: 12px;

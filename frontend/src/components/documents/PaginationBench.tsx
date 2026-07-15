@@ -459,6 +459,27 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       const globalIdx = s.start + k;
       return (
         <div key={l.key} className="bk-linewrap" style={{ position: 'relative' }}>
+          {/* The boundary this page OPENS on. A break always is a page start, so it can only
+              ever be reached from here — which is why lifting one used to be impossible: the
+              controls below only exist between lines, where by construction no break can be.
+              A break you placed is marked permanently (not on hover), so a page that ends
+              early reads as your decision rather than as the pagination misbehaving. Forced
+              starts — a new text, a split's tail — are structural and carry no control. */}
+          {k === 0 && globalIdx > 0 && !forcedStarts.has(globalIdx) && breakSet.has(globalIdx) && (
+            <span className={`bk-breakctl-group bk-pagestart${
+              manualBreaks.has(globalIdx) ? ' bk-breakctl-manual' : ''}`}>
+              <button
+                type="button"
+                onClick={() => void toggleBreak(globalIdx)}
+                className="bk-breakctl"
+                title={manualBreaks.has(globalIdx)
+                  ? 'You broke the page here. A re-flow keeps it and flows around it. Click to lift it.'
+                  : 'Broken here automatically — a re-flow may move it. Click to lift it.'}
+              >
+                <Scissors size={9} />
+              </button>
+            </span>
+          )}
           {/* Boundary controls between this line and the previous — plain page break
               (scissors) or a mid-content hairline split (rule). */}
           {k > 0 && (
