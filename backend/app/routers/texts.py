@@ -388,6 +388,7 @@ async def upload_text(
 
     cursor.execute("SELECT * FROM texts WHERE id = ?", (doc_id,))
     row = dict(cursor.fetchone())
+    units = _units_for(conn, doc_id)
     conn.close()
 
     return {
