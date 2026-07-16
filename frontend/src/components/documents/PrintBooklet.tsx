@@ -7,7 +7,7 @@ import {
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
-  deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG,
+  deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG, versoGapSuppressed,
   type LineAdj, type WidthTarget, type BlockWidthOf,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -118,7 +118,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
       <>
         {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
         {flowLines.slice(s.start, s.end).map((l, k) => (
-          <Comp key={l.key} l={l} adj={adjFor(l)} atPageTop={k === 0 && !opensWithRule} />
+          <Comp key={l.key} l={l} adj={adjFor(l)} atPageTop={k === 0 && !opensWithRule}
+                noGap={Comp === Verso && versoGapSuppressed(flowLines, s.start + k)} />
         ))}
         {hairlineSet.has(s.end) && <div className="bk-hairline" />}
       </>

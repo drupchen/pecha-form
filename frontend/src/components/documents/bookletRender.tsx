@@ -8,11 +8,24 @@ import { splitParagraphs, type DocLine, type OutlineHeading } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
 
 /**
- * Shared booklet rendering (Phase D2/D3). The pagination bench (interactive) and the
- * print page (static, for the Chromium PDF) use the SAME presentational components and
- * the SAME `deriveBooklet` composition so the on-screen bench and the printed PDF are
- * pixel-identical — the WYSIWYG guarantee. Interactivity (break controls, balancing
- * handlers) is layered on top by the bench via the optional `LineAdj` handlers.
+ * Shared booklet rendering (Phase D2/D3).
+ *
+ * THE RULE, in the user's words: "I aim at printing exactly what I see in the layout, except
+ * for the guides that will be removed."
+ *
+ * So the pagination bench (interactive) and the print page (static, for the Chromium PDF) use
+ * the SAME components here and the SAME `deriveBooklet` composition, and no layout rule is
+ * ever scoped to one of them. Anything that moves ink belongs in this file, or in a
+ * `booklet.css` rule that both pages match.
+ *
+ * The only things that may differ are the design aids, which the print root never carries and
+ * `@media print` blocks besides: the geometry guides, the width grips, the break and gap
+ * controls, the sliders, the overfull badge, the shift mark. Interactivity is layered on top
+ * by the bench through the optional `LineAdj` handlers.
+ *
+ * This is not a nicety. The auto-pagination MEASURES these very components: a rule that
+ * applied only to the printed page would flow every page against type the PDF does not set,
+ * and the guarantee that no page overflows would stop meaning anything.
  */
 
 export const MM_PX = 96 / 25.4;
@@ -225,14 +238,36 @@ export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
   );
 };
 
+/**
+ * Does the Tibetan line at `i` swallow its trailing blank line?
+ *
+ * A ས་བཅད topic runs straight into the text it heads, so no blank line stands between a topic
+ * group and the verse or prose under it. And inside a group a blank line means nothing at all:
+ * consecutive topics share one printed line, so "a blank line after this one" is a statement
+ * about a line that is not there — left in, it inflates the row they share.
+ *
+ * The Tibetan side only. On the recto a section heading carries its own space, above and
+ * below, from its role — that is what a heading's margins are for.
+ *
+ * Shared, because the bench and the print page must decide this identically or the PDF stops
+ * being what the bench showed.
+ */
+export function versoGapSuppressed(lines: DocLine[], i: number): boolean {
+  if (lines[i]?.role !== 'sapche') return false;
+  const next = lines[i + 1]?.role;
+  return next === 'sapche' || next === 'verse' || next === 'prose';
+}
+
 export const Verso: React.FC<{
   l: DocLine; adj?: LineAdj;
   /** This line opens a page: suppress its space-above (see `.bk-atpagetop`). */
   atPageTop?: boolean;
+  /** Drop this line's trailing blank line — see `versoGapSuppressed`. */
+  noGap?: boolean;
   /** Split mode (bench): click a syllable to split the line before it (`k` = token index).
    *  On a line that is already a split half, any click clears the split (`k` = -1). */
   onSplit?: (k: number) => void;
-}> = ({ l, adj = NO_ADJ, atPageTop, onSplit }) => {
+}> = ({ l, adj = NO_ADJ, atPageTop, noGap, onSplit }) => {
   const split = l.splitAnchor != null;
   return (
     <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`
@@ -257,7 +292,7 @@ export const Verso: React.FC<{
           </span>
         ))}
       </WidthLine>
-      {l.emptyAfter && <Gap adj={adj} />}
+      {l.emptyAfter && !noGap && <Gap adj={adj} />}
     </div>
   );
 };

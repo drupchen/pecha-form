@@ -211,6 +211,12 @@ export interface FlowInput {
    * Forced starts are exempt: they are not chosen, they simply are.
    */
   unbreakable?: Set<number>;
+  /** Lines that must never be a page's LAST line — the section headings (sapche/title
+   *  runs). A heading stranded at a page's foot announces content the reader has to turn
+   *  the page to find; the flow walks the break back so the heading opens the next page
+   *  with what it heads. The dual of `unbreakable`: that one says "no page may START at
+   *  line i", this one says "no page may END at line i". */
+  noTail?: Set<number>;
 }
 
 export interface FlowResult {
@@ -244,6 +250,7 @@ export interface FlowResult {
 export function flowPages(sides: LineMetrics[][], f: FlowInput): FlowResult {
   const { n, forced, hairlines, contentHpx, hairHpx } = f;
   const un = f.unbreakable ?? new Set<number>();
+  const noTail = f.noTail ?? new Set<number>();
   const starts: number[] = [];
   const overfull: number[] = [];
   if (n <= 0) return { starts, overfull };
@@ -285,14 +292,18 @@ export function flowPages(sides: LineMetrics[][], f: FlowInput): FlowResult {
   for (let i = 1; i < n; i++) {
     if (forced.has(i)) { starts.push(i); start = i; continue; }
     if (fits(start, i)) continue;
-    // The page is full at `i`. Break there if a row can actually be anchored on it;
-    // otherwise fall back to the last line that can carry one. Anything in (start, i) is a
-    // prefix of a run that fitted, so falling back is always safe — it only ever costs
-    // fill, never overflow.
+    // The page is full at `i`. Break there if a row can actually be anchored on it AND the
+    // page it closes does not end on a heading; otherwise fall back to the last line that
+    // satisfies both. Anything in (start, i) is a prefix of a run that fitted, so falling
+    // back is always safe — it only ever costs fill, never overflow. `noTail.has(b - 1)`
+    // reads: a break at `b` makes `b - 1` the page's last line, and a heading there is the
+    // stranded-sapche page the rule forbids — stepping back once per heading walks the
+    // whole run over to the next page.
     let b = i;
-    while (b > start + 1 && un.has(b)) b--;
-    if (un.has(b)) b = i;   // nothing anchorable in the whole run: take the overflow and
-                            // let `overfull` report it rather than move the break silently
+    while (b > start + 1 && (un.has(b) || noTail.has(b - 1))) b--;
+    if (un.has(b) || noTail.has(b - 1)) b = i;
+    // nothing valid in the whole run: take the overflow and let `overfull` report it
+    // rather than move the break silently
     starts.push(b);
     start = b;
     i = b;   // re-flow from the boundary we actually took

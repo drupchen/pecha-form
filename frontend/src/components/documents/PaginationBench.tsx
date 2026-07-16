@@ -10,7 +10,7 @@ import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, isSplittable, pageVars, gapFillLang, GAP_FILL_KIND,
-  PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG,
+  PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
 } from './bookletRender';
@@ -50,8 +50,11 @@ const DEFAULT_REFLOW_DELAY_S = 20;
  *    re-wraps every line that holds one.
  * 3: consecutive ས་བཅད topics began sharing a line on the verso, which shortens every Tibetan
  *    page that has a pair.
+ * 4: a ས་བཅད topic stopped carrying a blank line into the text it heads.
+ * 5: the flow stopped ending a page on a heading (`noTail`) — not a geometry change but a
+ *    pagination-law change, which stored breaks equally cannot know about.
  */
-const RENDER_EPOCH = 3;
+const RENDER_EPOCH = 5;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
@@ -413,6 +416,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           if (l.splitAnchor != null && anchorOf(l) === l.splitAnchor) unbreakable.add(i);
         });
 
+        // Never end a page with only the sapche/toc run: a heading's job is to announce
+        // what follows it, and stranded at a page's foot it announces a page-turn. Same
+        // definition as the renderer's `isSection` — title and sapche lines.
+        const noTail = new Set<number>();
+        renderLines.forEach((l, i) => {
+          if (l.role === 'title' || l.role === 'sapche') noTail.add(i);
+        });
+
         const { starts, overfull } = flowPages(sides, {
           n: renderLines.length,
           // The flow fills the runs between the starts it may not touch: text boundaries and
@@ -423,6 +434,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           contentHpx,
           hairHpx: readHairlineAdvance(el),
           unbreakable,
+          noTail,
         });
 
         const autoStarts = starts.filter((i) =>
@@ -892,7 +904,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   }
 
   const renderPageLines = (s: { start: number; end: number },
-                          Comp: React.FC<{ l: DocLine; adj?: LineAdj; atPageTop?: boolean }>) => {
+                          Comp: React.FC<{
+                            l: DocLine; adj?: LineAdj; atPageTop?: boolean; noGap?: boolean;
+                          }>) => {
     // Space-above is suppressed on whatever opens the page — the continuation rule if there
     // is one, else the first line. This is also what makes the page reproduce the measured
     // height exactly (see `.bk-atpagetop`).
@@ -948,7 +962,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
             ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
             : splitMode && isSplittable(l) && Comp === Recto
             ? <Recto l={l} onWordSplit={(w) => void setRectoCut(l, w)} />
-            : <Comp l={l} adj={adjFor(l, true)} atPageTop={k === 0 && !opensWithRule} />}
+            : <Comp l={l} adj={adjFor(l, true)} atPageTop={k === 0 && !opensWithRule}
+                    noGap={Comp === Verso && versoGapSuppressed(renderLines, globalIdx)} />}
         </div>
       );
     });

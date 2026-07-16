@@ -109,6 +109,48 @@ describe('flowPages', () => {
     });
   });
 
+  describe('noTail — never end a page with only the sapche/toc run', () => {
+    it('walks a break back so a heading opens the next page instead of closing this one', () => {
+      // 350px budget, 100px lines: the natural break is at 3 — but line 2 is a heading,
+      // and a break at 3 would leave it stranded as the page's last line.
+      expect(flowPages([stack(Array(6).fill(100))], flow({
+        n: 6, noTail: new Set([2]),
+      })).starts).toEqual([0, 2, 5]);
+    });
+
+    it('walks back past a whole run of headings', () => {
+      // Lines 1 and 2 are both headings: a break at 3 strands 2, a break at 2 strands 1 —
+      // the run travels together to the next page.
+      expect(flowPages([stack(Array(6).fill(100))], flow({
+        n: 6, noTail: new Set([1, 2]),
+      })).starts).toEqual([0, 1, 4]);
+    });
+
+    it('composes with unbreakable — both constraints hold at once', () => {
+      // The natural break at 3 strands heading 2; stepping to 2 is forbidden by
+      // `unbreakable`; 1 is the first position satisfying both.
+      expect(flowPages([stack(Array(6).fill(100))], flow({
+        n: 6, noTail: new Set([2]), unbreakable: new Set([2]),
+      })).starts).toEqual([0, 1, 4]);
+    });
+
+    it('accepts the overflow rather than emptying the page', () => {
+      // Every candidate closes on a heading: nothing valid remains in (start, i), so the
+      // flow keeps the natural boundary and reports the page overfull, exactly like an
+      // unanchorable run — it never silently deletes a page.
+      const r = flowPages([stack(Array(5).fill(100))], flow({
+        n: 5, noTail: new Set([0, 1, 2, 3, 4]),
+      }));
+      expect(r.starts).toEqual([0, 3]);
+    });
+
+    it('leaves a page ending before a forced start alone — it is not chosen', () => {
+      expect(flowPages([stack(Array(4).fill(100))], flow({
+        n: 4, forced: new Set([2]), noTail: new Set([1]),
+      })).starts).toEqual([0, 2]);
+    });
+  });
+
   it('does not crash on an empty stream', () => {
     expect(flowPages([], flow({ n: 0 }))).toEqual({ starts: [], overfull: [] });
     expect(flowPages([[]], flow({ n: 0 }))).toEqual({ starts: [], overfull: [] });
