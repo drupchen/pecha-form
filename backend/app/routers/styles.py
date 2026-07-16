@@ -77,6 +77,11 @@ class StyleProps(BaseModel):
     props: dict
 
 
+class OrgLayoutIn(BaseModel):
+    # Page format / guides, in mm. Partial: only the keys being changed.
+    config: dict
+
+
 class StyleRow(BaseModel):
     role: str
     props: dict
@@ -134,6 +139,68 @@ def delete_org_style(role: str, org_id: int = DEFAULT_ORG):
         conn.execute("DELETE FROM style_roles WHERE org_id = ? AND role = ?", (org_id, role))
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ── Organization-wide page format and guides ─────────────────────────────────
+# The sheet size and the four margins the text block and the binding/folio guides are drawn
+# from. Resolved default ← org ← document by `documents._effective_config`, so a booklet that
+# says nothing about its geometry follows the house and one that does keeps its own.
+
+@router.get("/org-layout")
+def get_org_layout(org_id: int = DEFAULT_ORG):
+    """The org's page format. Always complete: the built-in geometry, then whatever the org
+    has said, so the caller never has to render the word "inherit"."""
+    from .documents import DEFAULT_LAYOUT_CONFIG, ORG_LAYOUT_KEYS
+    conn = get_db()
+    try:
+        cfg = {k: DEFAULT_LAYOUT_CONFIG[k] for k in ORG_LAYOUT_KEYS}
+        row = conn.execute("SELECT config FROM org_layout WHERE org_id = ?", (org_id,)).fetchone()
+        if row and row["config"]:
+            try:
+                stored = json.loads(row["config"])
+                if isinstance(stored, dict):
+                    cfg.update({k: v for k, v in stored.items() if k in ORG_LAYOUT_KEYS})
+            except (ValueError, TypeError):
+                pass
+        return cfg
+    finally:
+        conn.close()
+
+
+@router.put("/org-layout")
+def put_org_layout(payload: OrgLayoutIn, org_id: int = DEFAULT_ORG):
+    """Merge geometry onto the org template. Unknown keys are dropped rather than stored: the
+    template speaks for the page format and the guides, not for type sizes (the roles own
+    those) or for the bench's reflow delay."""
+    from .documents import DEFAULT_LAYOUT_CONFIG, ORG_LAYOUT_KEYS
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT config FROM org_layout WHERE org_id = ?", (org_id,)).fetchone()
+        cfg = {k: DEFAULT_LAYOUT_CONFIG[k] for k in ORG_LAYOUT_KEYS}
+        if row and row["config"]:
+            try:
+                cfg.update(json.loads(row["config"]))
+            except (ValueError, TypeError):
+                pass
+        for k, v in payload.config.items():
+            if k not in ORG_LAYOUT_KEYS:
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{k} must be a number")
+            if not (f > 0):
+                raise HTTPException(400, f"{k} must be greater than 0")
+            cfg[k] = f
+        cfg = {k: cfg[k] for k in ORG_LAYOUT_KEYS}   # complete, and in a stable order
+        conn.execute(
+            "INSERT INTO org_layout (org_id, config) VALUES (?, ?) "
+            "ON CONFLICT(org_id) DO UPDATE SET config = excluded.config",
+            (org_id, json.dumps(cfg)))
+        conn.commit()
+        return cfg
     finally:
         conn.close()
 

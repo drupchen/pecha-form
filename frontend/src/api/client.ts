@@ -345,6 +345,21 @@ export const putOrgStyle = (role: string, props: Record<string, unknown>, orgId 
 export const deleteOrgStyle = (role: string, orgId = 1) =>
   fetch(`${API_BASE}/styles/${role}?org_id=${orgId}`, { method: 'DELETE' });
 
+/** The org's page format and guides: sheet size + the four margins the text block and the
+ *  binding/folio guides are drawn from. Always complete — never a blank meaning "inherit".
+ *  A booklet that states no geometry of its own follows this. */
+export type OrgLayout = {
+  page_width_mm: number; page_height_mm: number;
+  margin_top_mm: number; margin_bottom_mm: number;
+  margin_bind_mm: number; margin_outer_mm: number;
+};
+export const getOrgLayout = (orgId = 1): Promise<OrgLayout> =>
+  fetch(`${API_BASE}/org-layout?org_id=${orgId}`).then(r => r.json());
+export const putOrgLayout = (config: Partial<OrgLayout>, orgId = 1): Promise<OrgLayout> =>
+  fetch(`${API_BASE}/org-layout?org_id=${orgId}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config }),
+  }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+
 export const getDocStyles = (docId: number): Promise<StyleMap> =>
   fetch(`${API_BASE}/documents/${docId}/styles`).then(r => r.json());
 export const putDocStyle = (docId: number, role: string, props: Record<string, unknown>) =>

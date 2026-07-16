@@ -657,6 +657,22 @@ CREATE TABLE IF NOT EXISTS org_seal (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- The org's page format and guides: sheet size and the four margins the text block and the
+-- binding/folio guides are all drawn from. Geometry resolves default ← org ← document, the
+-- same way a role's props do, so a booklet that says nothing follows the house.
+--
+-- Full values, not overrides. An org template is the single source of truth — nothing sits
+-- above it to inherit from — so every key it offers states what it is. (Contrast
+-- document_style_overrides, which are partial by design: they only say what they CHANGE.)
+--
+-- Type sizes and reflow_delay_s deliberately stay out. Sizes are the ROLES' business now that
+-- every role names its own; reflow_delay_s is about how the bench behaves while you work, not
+-- about what prints.
+CREATE TABLE IF NOT EXISTS org_layout (
+    org_id INTEGER PRIMARY KEY DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    config TEXT NOT NULL DEFAULT '{}'
+);
+
 -- The Style Studio's editable specimen (a JSON list of blocks) — a per-org sample that
 -- covers every role, so a style template can be designed/tested in one place.
 CREATE TABLE IF NOT EXISTS style_samples (

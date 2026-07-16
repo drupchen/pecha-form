@@ -7,10 +7,11 @@ import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
   putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
   getStyleSample, putStyleSample, getOrgSeal, uploadOrgSeal, deleteOrgSeal, setOrgSealSize,
-  orgSealUrl, getDocumentLayout, type OrgFont, type OrgSeal, type LayoutConfig,
+  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout,
+  type OrgFont, type OrgSeal, type LayoutConfig, type OrgLayout,
 } from '../../api/client';
 import {
-  ROLE_DEFS, BUNDLED_FONTS, resolveStyles, compileStyleCss,
+  ROLE_DEFS, ORG_BASE, BUNDLED_FONTS, resolveStyles, compileStyleCss,
   type StyleProps, type RoleDef, type StudioFormat,
 } from './bookletStyles';
 import { MM_PX, rootVars } from './bookletRender';
@@ -148,6 +149,14 @@ const Editable: React.FC<{
               onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
   };
 
+/** The org's page format, in the order a person reads a page: the sheet, then its margins.
+ *  `bind` is the spine side and `outer` the open edge — the pair the recto/verso guides mirror. */
+const ORG_LAYOUT_FIELDS: [keyof OrgLayout, string][] = [
+  ['page_width_mm', 'width'], ['page_height_mm', 'height'],
+  ['margin_top_mm', 'top'], ['margin_bottom_mm', 'bottom'],
+  ['margin_bind_mm', 'bind'], ['margin_outer_mm', 'outer'],
+];
+
 export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
   const [scope, setScope] = useState<Scope>('doc');
   const [layout, setLayout] = useState<StudioFormat>('twopage');
@@ -161,6 +170,9 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   const [activeRoles, setActiveRoles] = useState<string[]>([]);
   const [seal, setSeal] = useState<OrgSeal | null>(null);
   const [sealBust, setSealBust] = useState(0);   // cache-buster for the seal preview
+  // The org's page format. Always complete — the endpoint fills it from the built-in geometry
+  // before it answers, so there is no blank here that could mean "inherit".
+  const [orgLayout, setOrgLayout] = useState<OrgLayout | null>(null);
   // The booklet's page geometry — the specimen is laid out on it, so what you style here is
   // measured by the page it prints on.
   const [config, setConfig] = useState<LayoutConfig | null>(null);
@@ -169,6 +181,18 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   const saveTimer = useRef<number>(0);
 
   useEffect(() => { void getOrgSeal().then(setSeal).catch(() => {}); }, []);
+  useEffect(() => { void getOrgLayout().then(setOrgLayout).catch(() => {}); }, []);
+
+  /** Write one geometry field. Re-reads the document's own resolved config afterwards, because
+   *  the specimen is laid out on it — so the guides here move with the house, unless this
+   *  booklet overrides the field, in which case they correctly do not. */
+  const saveOrgLayout = async (key: keyof OrgLayout, mm: number) => {
+    if (!Number.isFinite(mm) || mm <= 0) { void getOrgLayout().then(setOrgLayout).catch(() => {}); return; }
+    try {
+      setOrgLayout(await putOrgLayout({ [key]: mm }));
+      setConfig((await getDocumentLayout(documentId)).config);
+    } catch (e) { setMsg(`Page format: ${(e as Error).message}`.slice(0, 140)); }
+  };
 
   useEffect(() => {
     void getDocumentLayout(documentId).then(l => setConfig(l.config)).catch(() => {});
@@ -241,7 +265,20 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   const remove = (id: string) => mutate(blocks.filter(b => b.id !== id));
 
   // ── role styling ──
-  const own = (role: string): StyleProps => scopeMap[role] ?? {};
+  /**
+   * What this scope's cards show and write.
+   *
+   * At ORG scope the template is the organisation's single source of truth, so every field
+   * carries a real value: there is nothing above it to inherit FROM but the built-in defaults,
+   * which nobody can see. `ORG_BASE` is those defaults with their CSS vars resolved to what
+   * they actually render, so the card can state them — and once a field is touched the whole
+   * role is written down, holes and all, rather than leaving some of it implicit.
+   *
+   * At DOCUMENT scope blank keeps its meaning, and a real one: inherit from the org template,
+   * which is right there to be read.
+   */
+  const own = (role: string): StyleProps =>
+    scope === 'org' ? { ...ORG_BASE[role], ...(scopeMap[role] ?? {}) } : (scopeMap[role] ?? {});
   const setProp = async (role: string, key: keyof StyleProps, value: unknown) => {
     const next: StyleProps = { ...own(role) };
     if (value === '' || value == null) delete next[key]; else (next as any)[key] = value;
@@ -252,8 +289,16 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     } catch { /* ignore */ }
   };
   const resetRole = async (role: string) => {
+    if (scope === 'org') {
+      // The template cannot be emptied — an empty field there would mean "inherit from
+      // something you cannot see". Reset puts the built-in default back, in full.
+      const base = { ...ORG_BASE[role] };
+      setScopeMap(m => ({ ...m, [role]: base }));
+      try { await putOrgStyle(role, base as any); } catch { /* ignore */ }
+      return;
+    }
     setScopeMap(m => { const n = { ...m }; delete n[role]; return n; });
-    try { scope === 'org' ? await deleteOrgStyle(role) : await deleteDocStyle(documentId, role); } catch { /* ignore */ }
+    try { await deleteDocStyle(documentId, role); } catch { /* ignore */ }
   };
 
   const doUpload = async (file?: File) => {
@@ -467,6 +512,31 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
           </div>
 
           <div className="flex-1 overflow-auto px-3 py-2 flex flex-col gap-3">
+            {/* Page format and guides — the org's, and only the org's. The guides are drawn
+                from these very margins, so this panel edits the guides by editing what they
+                are guides TO. A booklet may still override its own geometry in Documents. */}
+            {scope === 'org' && orgLayout && (
+              <div className="flex flex-col gap-1.5">
+                <div className="text-[10px] uppercase tracking-wide text-ink-soft">Page format & guides</div>
+                <div className="rounded-md bg-white p-2 grid grid-cols-2 gap-1.5">
+                  {ORG_LAYOUT_FIELDS.map(([key, label]) => (
+                    <label key={key} className="flex items-center justify-between gap-1 text-[11px]">
+                      <span className="text-ink-soft">{label}</span>
+                      <span className="inline-flex items-center gap-0.5">
+                        <input type="number" min={1} step={0.1} className={`${sel} w-14 text-right`} style={border}
+                               value={orgLayout[key]}
+                               onChange={e => setOrgLayout(l => (l ? { ...l, [key]: Number(e.target.value) } : l))}
+                               onBlur={e => void saveOrgLayout(key, Number(e.target.value))} />
+                        <span className="text-ink-soft">mm</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="text-[10px] text-ink-soft">
+                  Every booklet that sets no geometry of its own follows this. Changing it re-flows them.
+                </div>
+              </div>
+            )}
             {(() => {
               // Group the selected format's roles by their header, preserving ROLE_DEFS order.
               const groups: { header: string; roles: RoleDef[] }[] = [];
@@ -479,7 +549,13 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
               }
               const card = (rd: RoleDef) => {
               const p = own(rd.role);
-              const dirty = Object.keys(p).length > 0;
+              // At org scope every field is set by definition, so "changed" has to mean
+              // "differs from the built-in default" rather than "has any value at all".
+              const dirty = scope === 'org'
+                ? JSON.stringify(p) !== JSON.stringify({ ...ORG_BASE[rd.role] })
+                : Object.keys(p).length > 0;
+              // The template holds no blanks, so it offers none.
+              const inherit = scope === 'org' ? null : <option value="">inherit</option>;
               const active = activeRoles.includes(rd.role);
               return (
                 <div key={rd.role} className="rounded-md bg-white p-2"
@@ -490,28 +566,30 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                   </div>
                   <div className="grid grid-cols-2 gap-1">
                     <select className={sel} style={border} value={p.fontFamily ?? ''} onChange={e => void setProp(rd.role, 'fontFamily', e.target.value)}>
-                      <option value="">font: inherit</option>
+                      {inherit}
+                      {p.fontFamily && !fontOptions.includes(p.fontFamily)
+                        && <option value={p.fontFamily}>{p.fontFamily}</option>}
                       {fontOptions.map(f => <option key={f} value={f}>{f}</option>)}
                     </select>
                     <select className={sel} style={border} value={p.fontSize ?? ''} onChange={e => void setProp(rd.role, 'fontSize', e.target.value)}>
-                      <option value="">size: inherit</option>
+                      {inherit}
                       {p.fontSize && !SIZES.includes(p.fontSize) && <option value={p.fontSize}>{p.fontSize}</option>}
                       {SIZES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
                     <select className={sel} style={border} value={p.fontWeight ?? ''} onChange={e => void setProp(rd.role, 'fontWeight', e.target.value ? Number(e.target.value) : '')}>
-                      <option value="">weight: inherit</option>
+                      {inherit}
                       {[300, 400, 500, 600, 700, 800].map(w => <option key={w} value={w}>{w}</option>)}
                     </select>
                     <select className={sel} style={border} value={p.italic == null ? '' : (p.italic ? 'italic' : 'upright')} onChange={e => void setProp(rd.role, 'italic', e.target.value === '' ? '' : e.target.value === 'italic')}>
-                      <option value="">style: inherit</option><option value="italic">italic</option><option value="upright">upright</option>
+                      {inherit}<option value="italic">italic</option><option value="upright">upright</option>
                     </select>
                     <select className={sel} style={border} value={p.align ?? ''} onChange={e => void setProp(rd.role, 'align', e.target.value)}>
-                      <option value="">align: inherit</option>
+                      {inherit}
                       {['left', 'center', 'right', 'justify'].map(a => <option key={a} value={a}>{a}</option>)}
                     </select>
                     <input className={sel} style={border} value={p.color ?? ''} placeholder="colour (#hex)" onChange={e => void setProp(rd.role, 'color', e.target.value)} />
                     <select className={sel} style={border} value={p.indent ?? ''} onChange={e => void setProp(rd.role, 'indent', e.target.value)}>
-                      <option value="">indent: inherit</option>
+                      {inherit}
                       {p.indent && !INDENTS.includes(p.indent) && <option value={p.indent}>{p.indent}</option>}
                       {INDENTS.map(i => <option key={i} value={i}>{i}</option>)}
                     </select>

@@ -324,8 +324,37 @@ def document_toc(document_id: int):
 
 # ─── Pagination layout (Phase D2) ───────────────────────────────────────────────
 
-def _effective_config(row) -> dict:
+# The page format and the guides: sheet size, and the four margins the text block and the
+# binding/folio guides are drawn from. These are the keys the ORG template may state; the rest
+# of DEFAULT_LAYOUT_CONFIG stays code-and-document. Type sizes are the roles' business now that
+# every role names its own size, and reflow_delay_s is about how the bench behaves while you
+# work rather than about what prints.
+ORG_LAYOUT_KEYS = (
+    "page_width_mm", "page_height_mm",
+    "margin_top_mm", "margin_bottom_mm", "margin_bind_mm", "margin_outer_mm",
+)
+
+
+def _org_layout(conn, org_id: int = 1) -> dict:
+    """The org template's geometry, filtered to the keys it is allowed to speak for."""
+    row = conn.execute("SELECT config FROM org_layout WHERE org_id = ?", (org_id,)).fetchone()
+    if row is None or not row["config"]:
+        return {}
+    try:
+        cfg = json.loads(row["config"])
+    except (ValueError, TypeError):
+        return {}
+    return {k: v for k, v in cfg.items() if k in ORG_LAYOUT_KEYS} if isinstance(cfg, dict) else {}
+
+
+def _effective_config(conn, row) -> dict:
+    """default ← org ← document, exactly as a role's props resolve.
+
+    The org sits between so a booklet that says nothing about its geometry follows the house,
+    and one that does keeps its own — doc 7's margins are its own and stay that way.
+    """
     cfg = dict(DEFAULT_LAYOUT_CONFIG)
+    cfg.update(_org_layout(conn))
     raw = row["layout_config"] if "layout_config" in row.keys() else None
     if raw:
         try:
@@ -345,7 +374,7 @@ def get_layout(document_id: int):
             (document_id,)).fetchall()
         keys = row.keys()
         return DocumentLayoutOut(
-            config=_effective_config(row),
+            config=_effective_config(conn, row),
             rows=[DocumentLayoutRow(**dict(r)) for r in rows],
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
             pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)
@@ -398,7 +427,7 @@ def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
                             (document_id,)).fetchall()
         keys = row.keys()
         return DocumentLayoutOut(
-            config=_effective_config(row),
+            config=_effective_config(conn, row),
             rows=[DocumentLayoutRow(**dict(r)) for r in rows],
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
             pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)

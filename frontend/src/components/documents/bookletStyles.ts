@@ -127,6 +127,50 @@ type StyleMap = Record<string, StyleProps>;
 
 /** Merge default ← org template ← per-document override for every role. A legacy `section`
  *  override (before section titles split into three tiers) folds into `section_1`. */
+/**
+ * What a role's every field actually IS, concretely — the org template's floor.
+ *
+ * An organisation's template is its single source of truth, so "inherit" has no meaning at that
+ * level: there is nothing above it a person can look at. Every field it offers must say what it
+ * is. Two things stand between `RAW_ROLE_DEFS` and that. The defaults are written with CSS vars
+ * (`var(--font-tibetan)`) because `booklet.css` is where those live — a real value, but not one
+ * a dropdown can show. And a default only names the props its role CHANGES, leaving the rest to
+ * the cascade.
+ *
+ * MEASURED, not reasoned (`/tmp/orgbase.mjs`, and worth re-running if booklet.css moves):
+ * `def[prop] ?? computed[prop]`, read off a real element of each role with the compiled sheet
+ * switched off. Deriving the silent props by assumption got them wrong — `text-align` INHERITS,
+ * and `ruleFor` scopes its output under `.booklet-root`, so it OVERRIDES booklet.css. Writing a
+ * plausible `left` into `copyright`, `image_caption` or `folio` would have left-aligned three
+ * pages that print centred. The measurement is what says `center`.
+ *
+ * Render-neutral: every value is the one already reaching the page. Two honest consequences —
+ * a role's size stops following `layout_config`'s type sizes once written down (the trade a
+ * template exists to make), and a family is stored as ONE name, so `var(--font-tibetan)`'s
+ * 'Jomolhari' fallback goes. That is the convention the org already had: the moment anyone
+ * picked Chogyal in the Studio, the stack was already gone.
+ */
+export const ORG_BASE: Record<string, StyleProps> = {
+  tibetan_title: { fontFamily: 'Chogyal', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '4mm', lineHeight: '1.2' },
+  tibetan_small: { fontFamily: 'Chogyal', fontSize: '12pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  tibetan_body: { fontFamily: 'Chogyal', fontSize: '16pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  section_1: { fontFamily: 'Libertinus Serif Display', fontSize: '15pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  section_2: { fontFamily: 'Libertinus Serif Display', fontSize: '13.5pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  section_3: { fontFamily: 'Libertinus Serif Display', fontSize: '12pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  tibetan_inline: { fontFamily: 'Chogyal', fontSize: '16pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  phonetics: { fontFamily: 'Raleway', fontSize: '10pt', fontWeight: 600, italic: false, color: INK, align: 'left', indent: '10mm', lineHeight: '1.25' },
+  translation: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '15mm', lineHeight: '1.2' },
+  mantra: { fontFamily: 'Gentium Basic', fontSize: '12pt', fontWeight: 700, italic: false, color: INK, align: 'left', indent: '10mm', lineHeight: '1.25' },
+  small: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
+  title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_sub: { fontFamily: 'Calibri', fontSize: '12pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  copyright: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.5' },
+  toc: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.5' },
+  folio: { fontFamily: 'Georgia', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'right', indent: '0', lineHeight: '1' },
+  image_caption: { fontFamily: 'Gentium Basic', fontSize: '12pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.5' },
+};
+
 export function resolveStyles(org: StyleMap, doc: StyleMap): Record<string, StyleProps> {
   const legacy = (m: StyleMap, role: string) =>
     role === 'section_1' ? (m['section_1'] ?? m['section']) : m[role];
