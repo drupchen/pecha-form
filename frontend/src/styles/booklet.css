@@ -37,11 +37,65 @@
   --font-title: 'Libertinus Serif', 'Libertinus Serif Display', Georgia, serif;
 }
 
-/* A spread = two facing pages: Tibetan verso (left) + phonetics/translation recto. */
+/* A spread = two facing pages: Tibetan verso (left) + phonetics/translation recto.
+   The overview renders MORE pages in the one spread — the verso plus one recto per
+   edition — and the 10mm gap is part of the bench's row-width arithmetic there
+   (PaginationBench's `naturalWpx`): change one, change both. */
 .booklet-spread {
   display: flex;
   gap: 10mm;
   justify-content: center;
+}
+
+/* ── Overview mode (bench only) ──────────────────────────────────────────────
+   The scale rides HERE, on a wrapper ABOVE `.booklet-spread`, and nowhere lower. Never move
+   it onto `.booklet-content` or any line context (see the `.bk-shift` warning below): the
+   pagination measures those boxes, and a transform there would make the measured page and
+   the printed one disagree. */
+.booklet-ov-row { position: relative; }
+.booklet-ov-scale { transform-origin: top left; }
+/* A column's name, floating over the page's top margin (inside the page — it clips its
+   overflow). The font-size is set inline, counter-scaled against the row's shrink, so
+   everything else here is in em and follows it. The recto ones are buttons: the way back
+   to the detailed view, opened on that edition. */
+.bk-col-label {
+  position: absolute; top: 0.3em; left: 50%; transform: translateX(-50%);
+  z-index: 30; padding: 0.1em 0.7em; border-radius: 1em;
+  background: rgba(47, 76, 141, 0.08); color: #2f4c8d;
+  border: 1px solid rgba(47, 76, 141, 0.3);
+  font-family: sans-serif; line-height: 1.5; white-space: nowrap;
+}
+button.bk-col-label-btn { cursor: pointer; }
+button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
+/* An edition that cannot render (still compiling / out of step / compile failed): the
+   column keeps a full-size page so the row's geometry holds; the reason sits in it. */
+.bk-col-placeholder {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  text-align: center; color: #999; font-style: italic; padding: 1em;
+}
+/* The interactive controls stay at their NATURAL size under the overview's scale — they
+   are already small, and shrinking them with the page makes them unusable. Each is an
+   absolutely-positioned hover overlay, so counter-scaling it moves no layout the
+   pagination measures; the origin is each control's own anchor corner, so it grows into
+   the page rather than off it. `--ov-inv` = 1/scale, set inline on `.booklet-ov-scale`.
+   The page-shift TRACK is the exception: it spans the page's whole text block, so it keeps
+   the page's scale and only its readout label counter-scales. */
+.booklet-ov-scale .bk-gapctl-group,
+.booklet-ov-scale .bk-gap-removed .bk-gapctl {
+  transform: scale(var(--ov-inv, 1));
+  transform-origin: top right;
+}
+.booklet-ov-scale .bk-breakctl-group {
+  transform: scale(var(--ov-inv, 1));
+  transform-origin: top left;
+}
+.booklet-ov-scale .bk-gapfill {
+  transform: scale(var(--ov-inv, 1));
+  transform-origin: bottom left;
+}
+.booklet-ov-scale .bk-pageshift span {
+  transform: scale(var(--ov-inv, 1));
+  transform-origin: left center;
 }
 
 .booklet-page {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { flowPages, streamSignature, dirtySyllables, hash, toSigLines,
-         type LineMetrics, type SigLine, type FlowInput } from './bookletMeasure';
+         type LineMetrics, type SigLine, type FlowInput,
+         type ColBoundaries } from './bookletMeasure';
 
 /**
  * The pagination's arithmetic, tested without a DOM.
@@ -152,9 +153,188 @@ describe('flowPages', () => {
   });
 
   it('does not crash on an empty stream', () => {
-    expect(flowPages([], flow({ n: 0 }))).toEqual({ starts: [], overfull: [] });
-    expect(flowPages([[]], flow({ n: 0 }))).toEqual({ starts: [], overfull: [] });
+    expect(flowPages([], flow({ n: 0 }))).toEqual({ starts: [], overfull: [], splits: [] });
+    expect(flowPages([[]], flow({ n: 0 }))).toEqual({ starts: [], overfull: [], splits: [] });
     expect(flowPages([], flow({ n: 3 })).starts).toEqual([0]);
+  });
+
+  describe('mid-line splits (subBoundaries)', () => {
+    // The scenario every case builds on: a 350px block, two full 100px lines, then line 2 —
+    // too tall to follow them whole, with rendered rows inside it the flow may cut at.
+    // Boundaries are keyed [side][line]; anything unkeyed is uncuttable, as in real life.
+    const SUB = (map: Record<number, Record<number, ColBoundaries>>) =>
+      (side: number, line: number) => map[side]?.[line] ?? null;
+    // Verso line 2: three 60px token rows (tokens 0-3, 4-7, 8-11), sitting at y 200-380.
+    const versoRows: ColBoundaries = {
+      kind: 'units', units: 12,
+      rows: [{ start: 0, topPx: 200, bottomPx: 260 },
+             { start: 4, topPx: 260, bottomPx: 320 },
+             { start: 8, topPx: 320, bottomPx: 380 }],
+    };
+
+    it('splits at the LARGEST verso row boundary whose head still fits', () => {
+      // budgetSplit = 350 − 10 (the split's own foot rule). Two head rows end at 320 ≤ 340,
+      // all three at 380 > 340 — so the cut lands before token 8, not before 4.
+      const r = flowPages([stack([100, 100, 180])],
+                          flow({ n: 3, hairHpx: 10, subBoundaries: SUB({ 0: { 2: versoRows } }) }));
+      expect(r.splits).toEqual([{ index: 2, cuts: [{ kind: 'unit', at: 8 }] }]);
+      expect(r.starts).toEqual([0, 2]);
+      expect(r.overfull).toEqual([]);
+    });
+
+    it('cuts a recto pair to fill ITS page — both halves keeping both elements', () => {
+      // The pair: 2 phonetics rows (30px, words 0-2 / 3-5) + 10px gap + 3 translation rows
+      // (30px, words 0-3 / 4-7 / 8-11). Whole pair = 160px > the 140 left; the best interior
+      // combination is 1 phonetics row + 2 translation rows = 100px → (a=3, b=8).
+      const pair: ColBoundaries = {
+        kind: 'pair',
+        phonWords: 6,
+        phon: [{ start: 0, topPx: 200, bottomPx: 230 }, { start: 3, topPx: 230, bottomPx: 260 }],
+        transWords: 12,
+        trans: [{ start: 0, topPx: 270, bottomPx: 300 }, { start: 4, topPx: 300, bottomPx: 330 },
+                { start: 8, topPx: 330, bottomPx: 360 }],
+        gapPx: 10,
+      };
+      const r = flowPages(
+        [stack([100, 100, 180, 100, 100]), stack([100, 100, 160, 100, 100])],
+        flow({ n: 5, hairHpx: 10,
+               subBoundaries: SUB({ 0: { 2: versoRows }, 1: { 2: pair } }) }));
+      expect(r.splits).toEqual([{
+        index: 2,
+        cuts: [{ kind: 'unit', at: 8 }, { kind: 'pair', a: 3, b: 8 }],
+      }]);
+      // The page after the split flows from each column's own boundary: the verso tail
+      // (60px) plus two 100px lines fit, so nothing else breaks.
+      expect(r.starts).toEqual([0, 2]);
+      expect(r.overfull).toEqual([]);
+    });
+
+    it('breaks a fill tie toward the Tibetan\'s fraction', () => {
+      // 1+2 rows and 2+1 rows both make a 100px head. The verso cut is token 8 of 16
+      // (halfway), so the proportional targets are a≈4 of 8 and b≈6 of 12 — and
+      // (a=3, b=8) sits closer to that than (a=6, b=4).
+      const verso: ColBoundaries = {
+        kind: 'units', units: 16,
+        rows: [{ start: 0, topPx: 200, bottomPx: 260 },
+               { start: 8, topPx: 260, bottomPx: 320 },
+               { start: 12, topPx: 320, bottomPx: 380 }],
+      };
+      const pair: ColBoundaries = {
+        kind: 'pair',
+        phonWords: 8,
+        phon: [{ start: 0, topPx: 200, bottomPx: 230 }, { start: 3, topPx: 230, bottomPx: 260 },
+               { start: 6, topPx: 260, bottomPx: 290 }],
+        transWords: 12,
+        trans: [{ start: 0, topPx: 300, bottomPx: 330 }, { start: 4, topPx: 330, bottomPx: 360 },
+                { start: 8, topPx: 360, bottomPx: 390 }],
+        gapPx: 10,
+      };
+      const r = flowPages(
+        [stack([100, 100, 180]), stack([100, 100, 190])],
+        flow({ n: 3, contentHpx: 310, hairHpx: 10,
+               subBoundaries: SUB({ 0: { 2: verso }, 1: { 2: pair } }) }));
+      expect(r.splits[0].cuts[1]).toEqual({ kind: 'pair', a: 3, b: 8 });
+    });
+
+    it('vetoes the split when ANY column cannot afford the head page\'s foot rule', () => {
+      // The recto page holds 345 of 350: fine for a plain break, but the split's rule needs
+      // 10 more — the page would close 5px overfull. The verso's room does not override the
+      // veto; the flow breaks whole instead.
+      const r = flowPages(
+        [stack([100, 100, 180]), stack([172.5, 172.5, 130])],
+        flow({ n: 3, hairHpx: 10, subBoundaries: SUB({ 0: { 2: versoRows } }) }));
+      expect(r.splits).toEqual([]);
+      expect(r.starts).toEqual([0, 2]);
+      expect(r.overfull).toEqual([]);
+    });
+
+    it('sends the whole pair to the tail when not even its smallest head fits', () => {
+      // The recto page already holds 330 of 340: no combination fits, and a mixed cut that
+      // strands one element is not an option — so (0,0), and the pair opens the tail page.
+      const pair: ColBoundaries = {
+        kind: 'pair',
+        phonWords: 6,
+        phon: [{ start: 0, topPx: 330, bottomPx: 360 }, { start: 3, topPx: 360, bottomPx: 390 }],
+        transWords: 8,
+        trans: [{ start: 0, topPx: 400, bottomPx: 430 }, { start: 4, topPx: 430, bottomPx: 460 }],
+        gapPx: 10,
+      };
+      const r = flowPages(
+        [stack([100, 100, 180]), stack([165, 165, 130])],
+        flow({ n: 3, hairHpx: 10,
+               subBoundaries: SUB({ 0: { 2: versoRows }, 1: { 2: pair } }) }));
+      expect(r.splits[0].cuts[1]).toEqual({ kind: 'pair', a: 0, b: 0 });
+    });
+
+    it('keeps the whole pair on the head when it fits entire', () => {
+      const pair: ColBoundaries = {
+        kind: 'pair',
+        phonWords: 6,
+        phon: [{ start: 0, topPx: 100, bottomPx: 130 }],
+        transWords: 8,
+        trans: [{ start: 0, topPx: 140, bottomPx: 180 }],
+        gapPx: 10,
+      };
+      const r = flowPages(
+        [stack([100, 100, 180]), stack([50, 50, 80])],
+        flow({ n: 3, hairHpx: 10,
+               subBoundaries: SUB({ 0: { 2: versoRows }, 1: { 2: pair } }) }));
+      expect(r.splits[0].cuts[1]).toEqual({ kind: 'pair', a: 6, b: 8 });
+    });
+
+    it('cuts a single-text recto (mantra/homage) at its own word rows', () => {
+      const mantra: ColBoundaries = {
+        kind: 'units', units: 14,
+        rows: [{ start: 0, topPx: 200, bottomPx: 230 }, { start: 5, topPx: 230, bottomPx: 260 },
+               { start: 9, topPx: 260, bottomPx: 290 }],
+      };
+      const r = flowPages(
+        [stack([100, 100, 180]), stack([100, 100, 90])],
+        flow({ n: 3, hairHpx: 10,
+               subBoundaries: SUB({ 0: { 2: versoRows }, 1: { 2: mantra } }) }));
+      expect(r.splits[0].cuts[1]).toEqual({ kind: 'unit', at: 9 });
+    });
+
+    it('never splits an unsplittable or noTail line', () => {
+      const subs = SUB({ 0: { 2: versoRows } });
+      expect(flowPages([stack([100, 100, 180])],
+        flow({ n: 3, hairHpx: 10, subBoundaries: subs, unsplittable: new Set([2]) })).splits)
+        .toEqual([]);
+      expect(flowPages([stack([100, 100, 180])],
+        flow({ n: 3, hairHpx: 10, subBoundaries: subs, noTail: new Set([2]) })).splits)
+        .toEqual([]);
+    });
+
+    it('skips a split not worth its hairline', () => {
+      // The page holds 340 of the 340 the split could use: the head-side gain is zero.
+      const r = flowPages([stack([170, 170, 180])],
+        flow({ n: 3, hairHpx: 10, subBoundaries: SUB({ 0: { 2: {
+          kind: 'units', units: 12,
+          rows: [{ start: 0, topPx: 340, bottomPx: 400 }, { start: 6, topPx: 400, bottomPx: 460 }],
+        } } }) }));
+      expect(r.splits).toEqual([]);
+      expect(r.starts).toEqual([0, 2]);
+    });
+
+    it('charges the split\'s rule to the head page it closes', () => {
+      // One head row ends at 341: within the raw 350 budget, but not once the page has to
+      // close with the continuation rule. No other boundary fits → no split.
+      const r = flowPages([stack([100, 100, 180])],
+        flow({ n: 3, hairHpx: 10, subBoundaries: SUB({ 0: { 2: {
+          kind: 'units', units: 12,
+          rows: [{ start: 0, topPx: 200, bottomPx: 341 }, { start: 6, topPx: 341, bottomPx: 380 }],
+        } } }) }));
+      expect(r.splits).toEqual([]);
+    });
+
+    it('flows the page AFTER a split from each column\'s own boundary', () => {
+      // Verso tail = 60px (from y 320); with the tail page opening on a rule (budget 340)
+      // it holds the tail plus lines 3 and 4 (260 used), and line 5 starts the next page.
+      const r = flowPages([stack([100, 100, 180, 100, 100, 100, 100])],
+        flow({ n: 7, hairHpx: 10, subBoundaries: SUB({ 0: { 2: versoRows } }) }));
+      expect(r.splits.map((s) => s.index)).toEqual([2]);
+      expect(r.starts).toEqual([0, 2, 5]);
+    });
   });
 });
 

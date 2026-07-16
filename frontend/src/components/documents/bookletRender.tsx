@@ -6,6 +6,7 @@ import {
 } from '../../api/client';
 import { splitParagraphs, type DocLine, type OutlineHeading } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
+import { forEachWord } from './bookletMeasure';
 
 /**
  * Shared booklet rendering (Phase D2/D3).
@@ -210,12 +211,20 @@ function widthProps(adj: LineAdj, target: WidthTarget, verso: boolean) {
   };
 }
 
-/** The empty-line gap between chunks — the primary balancing lever. */
-export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
+/** The empty-line gap between chunks — the primary balancing lever. Tuned per SIDE and per
+ *  EDITION (the rows ride `gapFillLang`'s seam, like the page fill): the verso's gaps are
+ *  the Tibetan's, set once for every booklet; a recto's are that edition's own. `side` only
+ *  feeds the buttons' tooltips — the values arrive already resolved in `adj`. */
+export const Gap: React.FC<{ adj: LineAdj; side?: PageSide }> = ({ adj, side }) => {
+  const scope = side === 'verso'
+    ? ' The Tibetan page only — every edition prints the same one, so this is set once.'
+    : side === 'recto'
+    ? ' This edition’s translation page only.'
+    : '';
   if (adj.noSpace) {
     return adj.onToggleNoSpace ? (
       <div className="bk-gap-removed">
-        <button type="button" className="bk-gapctl" title="Restore blank line"
+        <button type="button" className="bk-gapctl" title={`Restore blank line.${scope}`}
                 onClick={adj.onToggleNoSpace}>+ line</button>
       </div>
     ) : null;
@@ -229,9 +238,9 @@ export const Gap: React.FC<{ adj: LineAdj }> = ({ adj }) => {
                         + ` + ${adj.gapDeltaMm}mm + var(--gap-fill, 0mm))` }}>
       {adj.onGap && (
         <span className="bk-gapctl-group">
-          <button type="button" className="bk-gapctl" title="Less space" onClick={() => adj.onGap!(-1)}>−</button>
-          <button type="button" className="bk-gapctl" title="More space" onClick={() => adj.onGap!(1)}>+</button>
-          <button type="button" className="bk-gapctl" title="Remove blank line" onClick={adj.onToggleNoSpace}>×</button>
+          <button type="button" className="bk-gapctl" title={`Less space.${scope}`} onClick={() => adj.onGap!(-1)}>−</button>
+          <button type="button" className="bk-gapctl" title={`More space.${scope}`} onClick={() => adj.onGap!(1)}>+</button>
+          <button type="button" className="bk-gapctl" title={`Remove blank line.${scope}`} onClick={adj.onToggleNoSpace}>×</button>
         </span>
       )}
     </div>
@@ -292,7 +301,7 @@ export const Verso: React.FC<{
           </span>
         ))}
       </WidthLine>
-      {l.emptyAfter && !noGap && <Gap adj={adj} />}
+      {l.emptyAfter && !noGap && <Gap adj={adj} side="verso" />}
     </div>
   );
 };
@@ -306,30 +315,47 @@ export const Recto: React.FC<{
   l: DocLine; adj?: LineAdj;
   /** This line opens a page: suppress its space-above (see `.bk-atpagetop`). */
   atPageTop?: boolean;
-  /** Split mode (bench): render the single recto text as clickable words; clicking word
-   *  `w` sets this edition's recto cut (the tail starts at word `w`). */
-  onWordSplit?: (w: number) => void;
+  /** Split mode (bench): render the recto text(s) as clickable words; clicking word `w`
+   *  sets this edition's cut in that ELEMENT (the tail starts at word `w`). A pair offers
+   *  both its blocks — the phonetics cut and the translation cut are adjusted apart. */
+  onWordSplit?: (element: 'phonetics' | 'translation', w: number) => void;
 }> = ({ l, adj = NO_ADJ, atPageTop, onWordSplit }) => {
   const isSection = l.role === 'title' || l.role === 'sapche';
   const isMantra = l.role === 'mantra';
   const lineCls = `bk-line bk-pair bk-role-${l.role}` + (atPageTop ? ' bk-atpagetop' : '');
 
-  // Split mode on a splittable line: show the single recto text as clickable words.
-  if (onWordSplit && isSplittable(l) && (l.translation || l.phonetics)) {
+  // Split mode: every recto text becomes clickable words. On a pair BOTH blocks do — one
+  // click sets that element's cut and leaves the other's where it stands. The words shown
+  // are the words the cut counts: `htmlWords` walks the translation exactly as
+  // `splitHtmlAtWord` will, so clicking word `w` cuts at word `w`, inline tags or not.
+  if (onWordSplit && (l.translation || l.phonetics)) {
+    const wordSpans = (words: string[], element: 'phonetics' | 'translation') =>
+      words.map((w, i) => (
+        <span key={i} className="bk-word" onClick={() => onWordSplit(element, i)}>{w} </span>
+      ));
+    const phonWords = l.phonetics.split(/\s+/).filter(Boolean);
+    if (l.phonetics && l.translation != null && !isSection && !isMantra) {
+      return (
+        <div className={lineCls}>
+          <div className="bk-phonetics bk-wordsplit">{wordSpans(phonWords, 'phonetics')}</div>
+          <div className="bk-translation bk-wordsplit">
+            {wordSpans(htmlWords(l.translation), 'translation')}
+          </div>
+          {l.emptyAfter && <Gap adj={adj} side="recto" />}
+        </div>
+      );
+    }
     const isTrans = l.translation != null;
-    const text = isTrans ? plainTextOf(l.translation!) : l.phonetics;
-    const words = text.split(/\s+/).filter(Boolean);
     const cls = isTrans
       ? (isSection ? `bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}` : 'bk-translation')
       : 'bk-phonetics';
     return (
       <div className={lineCls}>
         <div className={`${cls} bk-wordsplit`}>
-          {words.map((w, i) => (
-            <span key={i} className="bk-word" onClick={() => onWordSplit(i)}>{w} </span>
-          ))}
+          {isTrans ? wordSpans(htmlWords(l.translation!), 'translation')
+                   : wordSpans(phonWords, 'phonetics')}
         </div>
-        {l.emptyAfter && <Gap adj={adj} />}
+        {l.emptyAfter && <Gap adj={adj} side="recto" />}
       </div>
     );
   }
@@ -356,7 +382,7 @@ export const Recto: React.FC<{
           )}
         </>
       )}
-      {l.emptyAfter && <Gap adj={adj} />}
+      {l.emptyAfter && <Gap adj={adj} side="recto" />}
     </div>
   );
 };
@@ -731,12 +757,6 @@ const plainTextOf = (h: string): string => {
     ?.replace(/\s+/g, ' ').trim() ?? '';
 };
 
-/** A line is splittable (mid-line) only when its recto is a SINGLE element — a homage/
- *  `small` line (translation only) or a mantra (phonetics only). Interlinear phonetics+
- *  translation pairs are never split. */
-export const isSplittable = (l: { phonetics: string; translation: string | null }): boolean =>
-  !(l.phonetics && l.translation);
-
 /** Split a space-separated plain string at word index `w`. */
 function splitWordsPlain(s: string, w: number): [string, string] {
   const parts = s.split(/\s+/).filter(Boolean);
@@ -744,22 +764,40 @@ function splitWordsPlain(s: string, w: number): [string, string] {
   return [parts.slice(0, cut).join(' '), parts.slice(cut).join(' ')];
 }
 
+/** How many words a plain string holds — `splitWordsPlain`'s own tokenization. */
+export const countWordsPlain = (s: string): number => s.split(/\s+/).filter(Boolean).length;
+
+/** The words of an inline-HTML body, as display strings — `forEachWord`'s tokenization,
+ *  which is also `splitHtmlAtWord`'s. NOT `textContent.split`: adjacent text nodes would
+ *  merge two words across an inline tag boundary into one, and the indices shown would
+ *  disagree with the cut they set. */
+export function htmlWords(html: string): string[] {
+  if (!html) return [];
+  const tmpl = document.createElement('template');
+  tmpl.innerHTML = html;
+  const out: string[] = [];
+  forEachWord(tmpl.content, (node, start, end) => {
+    out.push((node.nodeValue || '').slice(start, end));
+  });
+  return out;
+}
+
+/** How many words an inline-HTML body holds — see `htmlWords`. */
+export const countWordsHtml = (html: string): number => htmlWords(html).length;
+
 /** Split an inline-HTML translation at word index `w`, preserving inline tags via a DOM
- *  Range (cloneContents closes partially-selected ancestors). */
+ *  Range (cloneContents closes partially-selected ancestors). Words are walked by
+ *  `forEachWord` — the same walk the measurer reads rects with, so a measured index cuts
+ *  exactly the word it measured. */
 function splitHtmlAtWord(html: string, w: number): [string, string] {
   if (w <= 0) return ['', html];
   const tmpl = document.createElement('template');
   tmpl.innerHTML = html;
   const frag = tmpl.content;
-  const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
-  let count = 0; let target: Node | null = null; let offset = 0; let node: Node | null;
-  outer: while ((node = walker.nextNode())) {
-    const re = /\S+/g; let m: RegExpExecArray | null;
-    while ((m = re.exec(node.nodeValue || ''))) {
-      if (count === w) { target = node; offset = m.index; break outer; }
-      count++;
-    }
-  }
+  let target: Node | null = null; let offset = 0;
+  forEachWord(frag, (node, start, _end, word) => {
+    if (word === w) { target = node; offset = start; return false; }
+  });
   if (!target || !frag.firstChild) return [html, ''];
   const ser = (f: DocumentFragment) => { const d = document.createElement('div'); d.appendChild(f); return d.innerHTML.trim(); };
   const head = document.createRange();
@@ -769,16 +807,50 @@ function splitHtmlAtWord(html: string, w: number): [string, string] {
   return [ser(head.cloneContents()), ser(tail.cloneContents())];
 }
 
-/** Split a line at token (syllable) index `k` (Tibetan, shared across editions — never
- *  cuts a syllable) into head + tail. The SINGLE recto text (translation for a homage
- *  line, phonetics for a mantra) is cut at the per-language word index `rectoCut`; with
- *  none set the whole recto text stays on the head. */
-function splitDocLine(l: DocLine, k: number, rectoCut: number | null): [DocLine, DocLine] {
-  const rc = rectoCut ?? Number.MAX_SAFE_INTEGER;   // undefined → whole recto on head
+/** An edition's recto cut for a split PAIR line: `a` words of the phonetics and `b` of the
+ *  translation stay on the head. Phonetics and translation are unbreakable pairs, so the
+ *  two are one decision — never one without the other (see `defaultPairCut`). */
+export interface PairCut { a: number; b: number }
+
+/**
+ * The pair cut an edition renders when none is stored: both elements cut at the Tibetan's
+ * own fraction, so the head pair reads roughly with the head Tibetan. Pure arithmetic on
+ * counts — no measurement — so `deriveBooklet` computes it identically on the bench, the
+ * print page and the seed's virgin streams. Clamped INTERIOR (each half keeps ≥1 word of
+ * each element); an element too short to cut sends the whole pair to the tail — the safe
+ * side: an underfull head is a nuisance, an overfull one is a defect.
+ */
+export function defaultPairCut(
+  k: number, totalTokens: number, phonWords: number, transWords: number,
+): PairCut {
+  if (phonWords < 2 || transWords < 2 || totalTokens <= 0) return { a: 0, b: 0 };
+  const frac = k / totalTokens;
+  const clamp = (v: number, max: number) => Math.max(1, Math.min(max - 1, Math.round(v)));
+  return { a: clamp(frac * phonWords, phonWords), b: clamp(frac * transWords, transWords) };
+}
+
+/**
+ * Split a line at token (syllable) index `k` (Tibetan, shared across editions — never cuts
+ * a syllable) into head + tail. The recto follows per the edition's cut:
+ *  - a PAIR (`{a, b}`): the head keeps `a` phonetics words and `b` translation words, the
+ *    tail the rest — both halves stay interlinear pairs;
+ *  - a single text (`{w}`): the translation of a homage line, or the phonetics of a mantra,
+ *    cut at word `w`;
+ *  - null: the whole recto text stays on the head (the legacy default, and split-edit mode).
+ */
+function splitDocLine(
+  l: DocLine, k: number, cut: PairCut | { w: number } | null,
+): [DocLine, DocLine] {
   let hPhon = l.phonetics, tPhon = '';
   let hTrans = l.translation, tTrans: string | null = null;
-  if (l.translation) [hTrans, tTrans] = splitHtmlAtWord(l.translation, rc);
-  else if (l.phonetics) [hPhon, tPhon] = splitWordsPlain(l.phonetics, rc);
+  if (cut && 'a' in cut && l.phonetics && l.translation != null) {
+    [hPhon, tPhon] = splitWordsPlain(l.phonetics, cut.a);
+    [hTrans, tTrans] = splitHtmlAtWord(l.translation, cut.b);
+  } else {
+    const w = cut == null ? Number.MAX_SAFE_INTEGER : ('w' in cut ? cut.w : cut.b);
+    if (l.translation) [hTrans, tTrans] = splitHtmlAtWord(l.translation, w);
+    else if (l.phonetics) [hPhon, tPhon] = splitWordsPlain(l.phonetics, w);
+  }
   // Both halves remember the ORIGINAL line's anchor, so the split can be cleared from
   // either — and the tail keeps the original's `opId`: it is still that same occurrence.
   const anchor = anchorOf(l);
@@ -836,17 +908,19 @@ export function deriveBooklet(
   /** Per text item: its translation-pane headings — the source of the nav outline (bookmarks). */
   headingsByItem?: Map<number, OutlineHeading[]>,
 ): DerivedBooklet {
-  // Apply mid-line splits first: a page_break row carrying a `char_offset` splits its
-  // (non-pair) line at that syllable (token) index into head + tail, reusing the hairline-
-  // break machinery between them. The recto text is cut at the per-language `recto_cut`
-  // word index. Everything downstream operates on the augmented `lines`.
+  // Apply mid-line splits first: a page_break row carrying a `char_offset` splits its line
+  // at that syllable (token) index into head + tail, reusing the hairline-break machinery
+  // between them. The recto follows per this edition's `recto_cut` row — `char_offset` = the
+  // translation word cut, `value` = the phonetics word cut (pairs only). A pair with no row
+  // renders the proportional default; a single text with no row keeps the legacy
+  // whole-on-head. Everything downstream operates on the augmented `lines`.
   const splitAt = new Map<string, number>();
-  const rectoCutAt = new Map<string, number>();
+  const rectoCutAt = new Map<string, { b: number; a: number | null }>();
   for (const r of rows) {
     if (r.kind === 'page_break' && r.char_offset != null && r.char_offset > 0) {
       splitAt.set(`${r.item_id}:${r.anchor_syl_id}`, r.char_offset);
     } else if (r.kind === 'recto_cut' && r.char_offset != null && (r.lang ?? '') === (lang ?? '')) {
-      rectoCutAt.set(`${r.item_id}:${r.anchor_syl_id}`, r.char_offset);
+      rectoCutAt.set(`${r.item_id}:${r.anchor_syl_id}`, { b: r.char_offset, a: r.value ?? null });
     }
   }
   const lines: DocLine[] = [];
@@ -857,9 +931,22 @@ export function deriveBooklet(
     const key = `${l.itemId}:${anchorOf(l)}`;
     const bare = `${l.itemId}:${l.startSylId}`;
     const k = splitAt.get(key) ?? splitAt.get(bare);
-    if (k != null && k > 0 && k < l.tokens.length && isSplittable(l)) {
-      const cut = rectoCutAt.get(key) ?? rectoCutAt.get(bare) ?? null;
-      const [head, tail] = splitDocLine(l, k, editRecto ? null : cut);
+    if (k != null && k > 0 && k < l.tokens.length) {
+      const rc = rectoCutAt.get(key) ?? rectoCutAt.get(bare) ?? null;
+      const isPair = !!(l.phonetics && l.translation != null);
+      let cut: PairCut | { w: number } | null;
+      if (editRecto) {
+        cut = null;                       // whole recto on the head, for word-picking
+      } else if (isPair) {
+        // A stored row missing either index falls back to the default's — the pair stays a
+        // pair whatever half-written state the rows are in.
+        const def = defaultPairCut(k, l.tokens.length,
+                                   countWordsPlain(l.phonetics), countWordsHtml(l.translation!));
+        cut = { a: rc?.a ?? def.a, b: rc?.b ?? def.b };
+      } else {
+        cut = rc ? { w: rc.b } : null;
+      }
+      const [head, tail] = splitDocLine(l, k, cut);
       lines.push(head);
       splitTails.add(lines.length);
       lines.push(tail);

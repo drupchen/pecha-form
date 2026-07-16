@@ -8,7 +8,8 @@ import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
   deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG, versoGapSuppressed,
-  type LineAdj, type WidthTarget, type BlockWidthOf,
+  gapFillLang,
+  type LineAdj, type WidthTarget, type BlockWidthOf, type PageSide,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
@@ -81,8 +82,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
 
   // Every balancing row the bench stores, read back and applied with NO handlers — the
   // printed page must CARRY what the user set without offering to change it. Keyed exactly
-  // as the bench writes them: the empty-line gaps and the Tibetan width are shared (lang
-  // ''), the translated recto blocks are per edition.
+  // as the bench writes them: the Tibetan (verso gaps, width_tibetan) is shared (lang ''),
+  // everything on the recto — widths AND its empty-line gaps — is per edition.
   const rowByKey = new Map<string, DocumentLayoutRow>();
   for (const r of rows) rowByKey.set(`${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`, r);
   // By the line's anchor, falling back to the bare syllable for rows written before the op
@@ -92,13 +93,15 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
     ?? rowByKey.get(`${l.itemId}:${l.startSylId}:${kind}:${rowLang}`);
   const val = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang)?.value ?? null;
   const has = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang) != null;
-  const adjFor = (l: DocLine): LineAdj => ({
+  const adjFor = (l: DocLine, side: PageSide): LineAdj => ({
     // These two were hardcoded to 0/false, so the PDF quietly ignored the empty-line
     // balancing and printed every gap at full height — pages the bench had measured as
     // fitting then ran past the text block. The pagination is flowed against these values;
     // the print has to render against them too or it is paginating a different document.
-    gapDeltaMm: val(l, 'line_space') ?? 0,
-    noSpace: has(l, 'line_nospace'),
+    // Keyed per side and per edition, exactly as the bench now writes them: the verso's
+    // gaps under '' (one Tibetan, set once), this edition's recto gaps under its lang.
+    gapDeltaMm: val(l, 'line_space', gapFillLang(side, lang)) ?? 0,
+    noSpace: has(l, 'line_nospace', gapFillLang(side, lang)),
     widths: {
       tibetan: val(l, 'width_tibetan', '') ?? 0,
       phonetics: val(l, 'width_phonetics', lang) ?? 0,
@@ -118,7 +121,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
       <>
         {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
         {flowLines.slice(s.start, s.end).map((l, k) => (
-          <Comp key={l.key} l={l} adj={adjFor(l)} atPageTop={k === 0 && !opensWithRule}
+          <Comp key={l.key} l={l} adj={adjFor(l, Comp === Verso ? 'verso' : 'recto')}
+                atPageTop={k === 0 && !opensWithRule}
                 noGap={Comp === Verso && versoGapSuppressed(flowLines, s.start + k)} />
         ))}
         {hairlineSet.has(s.end) && <div className="bk-hairline" />}
