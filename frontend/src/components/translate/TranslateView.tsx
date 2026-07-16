@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Languages, Check, GitBranch, Undo2, ArrowUpToLine, MoveRight, Plus, Trash2, Link } from 'lucide-react';
+import { Languages, Check, GitBranch, Undo2, ArrowUpToLine, MoveRight, Plus, Trash2, Link, ChevronUp, ChevronDown } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -208,6 +208,42 @@ export const TranslateView: React.FC = () => {
       document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)
         ?.scrollIntoView({ block: 'nearest' });
     });
+  };
+
+  /** Walk the rows wearing the "copy — trim to fit" badge (they carry `data-copy`), relative
+   *  to whatever is on screen now: down = the first one below the viewport's midline, up = the
+   *  last one above it, wrapping at the ends. Midline, not top edge, because the jump centres
+   *  its target — a top-edge comparison would find the row it just centred and stick there.
+   *
+   *  A click during the previous jump's smooth scroll would measure MID-FLIGHT geometry and
+   *  re-find the very row already being scrolled to — rapid clicking would feel stuck. So for
+   *  a moment after a jump the walk advances from the remembered target instead; after that,
+   *  geometry (which by then means the settled viewport) takes over again. */
+  const trimNav = useRef<{ el: HTMLElement | null; at: number; pulse: number }>({ el: null, at: 0, pulse: 0 });
+  const gotoCopy = (dir: 1 | -1) => {
+    const list = listRef.current;
+    if (!list) return;
+    const els = [...list.querySelectorAll<HTMLElement>('[data-copy]')];
+    if (!els.length) return;
+    const nav = trimNav.current;
+    const prevIdx = nav.el ? els.indexOf(nav.el) : -1;
+    let target: HTMLElement;
+    if (prevIdx >= 0 && performance.now() - nav.at < 1600) {
+      target = els[(prevIdx + dir + els.length) % els.length];
+    } else {
+      const mid = list.getBoundingClientRect().top + list.clientHeight / 2;
+      target = dir === 1
+        ? els.find(el => el.getBoundingClientRect().top > mid + 1) ?? els[0]
+        : [...els].reverse().find(el => el.getBoundingClientRect().bottom < mid - 1) ?? els[els.length - 1];
+    }
+    nav.el = target;
+    nav.at = performance.now();
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // One pulse at a time: a stale timer from the previous jump must not cut this one short.
+    window.clearTimeout(nav.pulse);
+    els.forEach(el => el.classList.remove('link-pulse'));
+    target.classList.add('link-pulse');
+    nav.pulse = window.setTimeout(() => target.classList.remove('link-pulse'), 1300);
   };
 
   // Esc cancels an armed placement or a pending selection button.
@@ -636,8 +672,22 @@ export const TranslateView: React.FC = () => {
               </span>
             )}
             {counts.copies > 0 && (
-              <span className="px-1.5 rounded-full bg-cream text-ink-soft" title="Units pre-filled with a copy of a wider unit's translation — trim each to fit">
-                {counts.copies} to trim
+              <span className="flex items-center gap-0.5">
+                <span className="px-1.5 rounded-full bg-cream text-ink-soft" title="Units pre-filled with a copy of a wider unit's translation — trim each to fit">
+                  {counts.copies} to trim
+                </span>
+                <button type="button" onClick={() => gotoCopy(-1)}
+                        className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                        style={{ border: '1px solid var(--cline)' }}
+                        title="Previous unit to trim">
+                  <ChevronUp size={11} />
+                </button>
+                <button type="button" onClick={() => gotoCopy(1)}
+                        className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                        style={{ border: '1px solid var(--cline)' }}
+                        title="Next unit to trim">
+                  <ChevronDown size={11} />
+                </button>
               </span>
             )}
           </span>
@@ -932,6 +982,8 @@ export const TranslateView: React.FC = () => {
                   {placeBar(barAnchor, `bar-${u.key}`)}
                   <div
                     data-link-key={u.startOffset}
+                    // The "N to trim" chevrons walk exactly the rows wearing the badge below.
+                    data-copy={isCopy && u.tagType !== 'mantra' ? '' : undefined}
                     className="grid grid-cols-2 gap-4 rounded-xl bg-white p-4"
                     style={{ border: `2px solid ${u.tagType === 'mantra' ? 'var(--cline)' : (u.tagColor ?? 'var(--cline)')}` }}
                   >
