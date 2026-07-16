@@ -92,7 +92,17 @@
   text-overflow: ellipsis; }
 .bk-toc-dots { flex: 1 0 8mm; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
 .bk-toc-page { flex: none; white-space: nowrap; }
+/* "Nothing here yet" — not content, so it should not read as content. */
 .bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
+/* The copyright placeholder is the one that carries a ROLE class and `.bk-placeholder` on the
+   SAME element, so the template's `.booklet-root .bk-copyright` (0-2-0) outranks the single
+   class above and set the marker upright the moment the template stated a `font-style`. The
+   other placeholders sit INSIDE their role's element, where no role rule targets them, so they
+   need nothing. Matching both classes (0-3-0) wins; `.booklet-root .bk-placeholder` would only
+   tie, and a tie goes to whichever sheet comes last — which is the compiled one.
+   Only the slant is defended: this role's colour and size have been the template's since long
+   before it was materialised, and taking them back here would change the page. */
+.booklet-root .bk-copyright.bk-placeholder { font-style: italic; }
 .bk-imagepage { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 4mm; }
 /* An explicit mm width/height (inline style) always wins. `.bk-image-nat` (no size set)
@@ -131,13 +141,27 @@
   .booklet-print .booklet-page { margin: 0; box-shadow: none; }
 }
 
-/* Recto page number (verso is unnumbered). */
+/* Recto page number (verso is unnumbered).
+ *
+ * The box STRETCHES across the text block — bind margin to outer margin, which on a recto is
+ * exactly its own padding — so the `folio` role's `align` decides where the number sits: at the
+ * spine side, centred, or at the outer edge. Pinned to `right: var(--m-outer)` and shrink-to-fit,
+ * the box was the width of the digits, and `text-align` had nothing to bite on: the Style
+ * Studio's align dropdown for this role did NOTHING, while the template happily stored a value
+ * for it. The `text-align` below is only the fallback for a template that says nothing; the role
+ * rule is scoped under `.booklet-root` and wins whenever it does.
+ *
+ * `pointer-events: none` because the box now spans the whole foot: it is a number, never a
+ * target, and it must not sit on top of the page's controls.  */
 .booklet-folio {
   position: absolute;
   bottom: calc(var(--m-bottom) / 2);
+  left: var(--m-bind);
   right: var(--m-outer);
   font: 400 9pt/1 Georgia, serif;
+  text-align: right;
   color: #666;
+  pointer-events: none;
 }
 
 /* ── Geometry guides ─────────────────────────────────────────────────────────
@@ -173,12 +197,17 @@
 .bk-guides .booklet-page.verso::before { right: 0; border-left: 1px dashed rgba(197, 48, 48, 0.35); }
 .bk-guides .booklet-page.recto::before { left: 0; border-right: 1px dashed rgba(197, 48, 48, 0.35); }
 .bk-guides .booklet-page.furniture::before { display: none; }   /* symmetric — no spine side */
-/* The folio zone: the box the page number prints in (see .booklet-folio above). The RECTO
-   alone is numbered, so only it gets the guide. */
+/* The folio zone: the BAND the page number prints in (see .booklet-folio above). The RECTO
+   alone is numbered, so only it gets the guide.
+   It spans the text block rather than marking a 10mm box at the outer edge, because the number
+   is no longer pinned there — the `folio` role's `align` puts it at either end or in the middle.
+   A box drawn at one end would be a guide that lies at two settings out of three, and a guide
+   that can lie is worse than none: it is the thing the geometry is checked against. The band is
+   the honest statement — this strip, wherever along it the role says. */
 .bk-guides .booklet-page.recto .booklet-content::after {
+  left: var(--m-bind);
   right: var(--m-outer);
   bottom: calc(var(--m-bottom) / 2);
-  width: 10mm;
   height: 4mm;
   transform: translate(0, 50%);
   border: 1px dashed rgba(180, 140, 30, 0.5);
@@ -604,11 +633,11 @@
   right: var(--m-outer);
   border: 1px dashed rgba(47, 111, 159, 0.35);
 }
-.bk-guides .specimen-folio {               /* the folio zone (see .booklet-folio) */
+.bk-guides .specimen-folio {               /* the folio zone — the band, as on a real recto */
   position: absolute;
+  left: var(--m-bind);
   right: var(--m-outer);
   bottom: calc(var(--m-bottom) / 2);
-  width: 10mm;
   height: 4mm;
   transform: translate(0, 50%);
   border: 1px dashed rgba(180, 140, 30, 0.5);
