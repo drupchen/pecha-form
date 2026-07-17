@@ -273,11 +273,13 @@ export const Verso: React.FC<{
   atPageTop?: boolean;
   /** Drop this line's trailing blank line — see `versoGapSuppressed`. */
   noGap?: boolean;
-  /** Split mode (bench): click a syllable to split the line before it (`k` = token index).
-   *  On a line that is already a split half, any click clears the split (`k` = -1). */
+  /** Split mode (bench): click a syllable to cut the line before it (`k` = token index
+   *  within THIS line — the bench translates a tail's index back to the original). The
+   *  same gesture places a new split or MOVES an existing one; clearing lives on the
+   *  split's × chip, never on a syllable click (a click that destroys what the same click
+   *  creates elsewhere is a slip machine). */
   onSplit?: (k: number) => void;
 }> = ({ l, adj = NO_ADJ, atPageTop, noGap, onSplit }) => {
-  const split = l.splitAnchor != null;
   return (
     <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`
                     + (atPageTop ? ' bk-atpagetop' : '')}>
@@ -296,7 +298,7 @@ export const Verso: React.FC<{
           <span key={i}
                 className={[onSplit ? 'bk-syl' : '', t.small ? 'bk-tibetan-small' : '']
                             .filter(Boolean).join(' ') || undefined}
-                onClick={onSplit ? () => onSplit(split ? -1 : i) : undefined}>
+                onClick={onSplit ? () => onSplit(i) : undefined}>
             {t.render}
           </span>
         ))}
@@ -359,6 +361,19 @@ export const Recto: React.FC<{
       </div>
     );
   }
+  // Instruction line(s) merged onto this line: the continuation rule is a TIBETAN-side
+  // rule — the verso concatenates, while the translation side keeps looking exactly as it
+  // did before the merge existed. Each merged instruction renders as its OWN small block,
+  // with the blank line that stood before it (`gapBefore`) reproduced — the pre-rule
+  // standalone small line, minus the line-stream line. Never spliced into the paragraph.
+  const trailBlocks = l.smallTrails?.map((t, i) => (
+    <React.Fragment key={i}>
+      {t.gapBefore && <Gap adj={adj} side="recto" />}
+      <WidthLine className="bk-smalltrail" {...widthProps(adj, 'translation', false)}>
+        <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(t.html) }} />
+      </WidthLine>
+    </React.Fragment>
+  ));
   return (
     <div className={lineCls}>
       {isSection ? (
@@ -382,6 +397,7 @@ export const Recto: React.FC<{
           )}
         </>
       )}
+      {trailBlocks}
       {l.emptyAfter && <Gap adj={adj} side="recto" />}
     </div>
   );
@@ -857,6 +873,8 @@ function splitDocLine(
   const head: DocLine = {
     ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k), endSylId: l.tokens[k - 1].id,
     phonetics: hPhon, translation: hTrans, emptyAfter: false, splitAnchor: anchor,
+    // The merged-instruction trails sit at the END of the line, so they follow the tail.
+    smallTrails: undefined,
   };
   const tail: DocLine = {
     ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k), startSylId: l.tokens[k].id,

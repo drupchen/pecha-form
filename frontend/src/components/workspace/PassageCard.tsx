@@ -265,7 +265,7 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
                 .join(', ');
               style.background = `repeating-linear-gradient(45deg, ${stops})`;
             }
-            if (anns.some(a => ['small', 'sapche'].includes(a.tag.name.trim().toLowerCase()))) {
+            if (anns.some(a => { const n = a.tag.name.trim().toLowerCase(); return n.startsWith('small') || n === 'sapche'; })) {
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';

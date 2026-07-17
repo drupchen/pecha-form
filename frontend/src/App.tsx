@@ -37,16 +37,17 @@ export default function App() {
   const currentDocId = useTextStore(s => s.currentText?.id ?? null);
   const workspaceFullscreen = useUIStore(s => s.workspaceFullscreen);
 
-  // Global Ctrl/Cmd+Z to undo. Skip when the user is typing in an input/textarea/contentEditable.
+  // Global Ctrl/Cmd+Z to undo, Ctrl/Cmd+Shift+Z to redo. Skip when the user is typing in
+  // an input/textarea/contentEditable.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.shiftKey) return; // leave Ctrl+Shift+Z for a future redo
       if (e.key !== 'z' && e.key !== 'Z') return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || (t as any).isContentEditable)) return;
       e.preventDefault();
-      void useUndoStore.getState().undo();
+      if (e.shiftKey) void useUndoStore.getState().redo();
+      else void useUndoStore.getState().undo();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

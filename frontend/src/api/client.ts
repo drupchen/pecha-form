@@ -499,7 +499,11 @@ export type DocumentLayoutKind =
   /** `page_shift_*`: SIGNED mm the whole page's content is moved down (+) or up (-) — what is
    *  left once opening the empty lines has reached the limit of decent spacing. It may
    *  legitimately place ink between the text block's foot and the sheet's edge. */
-  | 'page_shift_verso' | 'page_shift_recto';
+  | 'page_shift_verso' | 'page_shift_recto'
+  /** The user's vetoes on the auto-flow: it must not SPLIT this line / not re-place a
+   *  lifted automatic BREAK here. Written by the explicit removal paths, deleted by
+   *  placing a split/break there again. Flow constraints only — never rendered. */
+  | 'no_split' | 'no_break';
 
 export interface DocumentLayoutRow {
   id: number;

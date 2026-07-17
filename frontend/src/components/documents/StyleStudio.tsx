@@ -42,6 +42,7 @@ const KINDS: { kind: string; label: string; roles: string[]; parts: number }[] =
   { kind: 'integrated', label: 'Tibetan + phonetics + translation', roles: ['tibetan_inline', 'phonetics', 'translation'], parts: 3 },
   { kind: 'mantra', label: 'Mantra', roles: ['mantra'], parts: 1 },
   { kind: 'small', label: 'Small letters / homage', roles: ['small'], parts: 1 },
+  { kind: 'intro', label: 'Introduction', roles: ['intro'], parts: 1 },
   { kind: 'copyright', label: 'Copyright', roles: ['copyright'], parts: 1 },
   { kind: 'toc', label: 'Table-of-contents entry', roles: ['toc'], parts: 2 },
   { kind: 'folio', label: 'Page number (folio)', roles: ['folio'], parts: 1 },
@@ -83,6 +84,7 @@ const DEFAULT_BLOCKS: Block[] = [
   { id: uid(), kind: "pair", parts: ["khyen tsé nü pé daknyi la", "The very embodiment of knowledge, love, and capability,"] },
   { id: uid(), kind: "pair", parts: ["miché depé kyab su chi", "With unshakable faith, I go for refuge. X3"] },
   { id: uid(), kind: "small", parts: ["Le refuge, qui commence la préparation."] },
+  { id: uid(), kind: "intro", parts: ["This practice, drawn from the Heart Essence of the Self-Arisen Padma, is recited before the main sadhana."] },
   { id: uid(), kind: "integrated", parts: ["ན་མོ༔ བླ་མ་སངས་རྒྱས་རིན་པོ་ཆེ༔", "namo lama sangyé rinpoché", "Namo ! Lama, précieux Bouddha,"] },
   { id: uid(), kind: "integrated", parts: ["སྐྱབས་གནས་རྒྱ་མཚོའི་ཡེ་ཤེས་སྐུ༔", "kyabné gyatsö yéshé kou", "Corps de sagesse de l’océan des objets de refuge,"] },
   { id: uid(), kind: "mantra", parts: ["Om Ah Hung Vajra Guru Padma Thotrengsal Vajra Samaya Dza Siddhi Phala Hung Ah"] },
@@ -417,6 +419,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       case 'integrated': return <div className="bk-line bk-integrated">{E(0, 'bk-tibetan-inline')}{E(1, 'bk-phonetics')}{E(2, 'bk-translation')}</div>;
       case 'mantra': return <div className="bk-line bk-role-mantra">{E(0, 'bk-phonetics')}</div>;
       case 'small': return <div className="bk-line bk-role-small">{E(0, 'bk-translation')}</div>;
+      case 'intro': return <div className="bk-line bk-role-intro">{E(0, 'bk-translation')}</div>;
       case 'copyright': return E(0, 'bk-copyright');
       case 'toc': return <div className="bk-toc"><div className="bk-toc-entry">{E(0, 'bk-toc-title')}<span className="bk-toc-dots" />{E(1, 'bk-toc-page')}</div></div>;
       case 'folio': return <div className="bk-foliobox">{E(0, 'booklet-folio')}</div>;

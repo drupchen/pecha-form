@@ -21,11 +21,15 @@ export interface DerivedChunk {
    *  `[data-link-key="<segment start>"]`) land on it. */
   startOffset: number;
   /** Content type — the tag class of the chunk ('mantra' | 'small' | 'sapche' |
-   *  'title' | 'verse' | 'prose' | 'plain'). Chunks are type-homogeneous: a tag
+   *  'title' | 'intro' | 'verse' | 'prose' | 'plain'). Chunks are type-homogeneous: a tag
    *  change starts a new chunk. */
   tagType: string;
   /** The classifying tag's color (pill tint), null for 'plain'. */
   tagColor: string | null;
+  /** `small` chunks only: which member of the small family tagged this run —
+   *  'instructions' | 'verses' | 'colophon' | 'intro' (see `smallKindOf`). All render
+   *  the same today; the PDF continuation rule will key on it. */
+  smallKind?: string;
   /** Per-token render strings (token text + synthesized line breaks) so the bench
    *  can render the Tibetan as selectable syllable spans (data-syl-id). `small` marks
    *  a token that came from a small connector re-merged into a mantra line (`mergeChunks`),
@@ -72,7 +76,20 @@ export interface DerivedChunk {
  *  classifies as `small` — an editable, non-recited translation unit the translator
  *  types in bold, not a phoneticised mantra. A pure mantra run (no small) stays mantra.
  *  (A `[mantra][small][mantra]` connector stays one line via the inline-minor rule below.) */
-export const TYPE_PRIORITY = ['small', 'mantra', 'sapche', 'title', 'verse', 'prose'];
+export const TYPE_PRIORITY = ['small', 'mantra', 'sapche', 'title', 'intro', 'verse', 'prose'];
+
+/**
+ * The `small` FAMILY: any tag whose name begins with "small" classifies as type `small` —
+ * "small - instructions", "small - verses", "small - colophon", "small - intro" (and the
+ * bare legacy "small") all render identically today. What follows the dash rides along as
+ * the chunk's `smallKind`: the coming PDF rule keys on it (a small-INSTRUCTIONS line after
+ * verse/prose continues that line; the other kinds stand alone). A bare "small" reads as
+ * instructions — the meaning every pre-split run migrates to.
+ */
+export const smallKindOf = (tagName: string): string => {
+  const rest = tagName.trim().toLowerCase().replace(/^small\s*-?\s*/, '').trim();
+  return rest || 'instructions';
+};
 
 /** Types rendered SMALL in the Tibetan (small letters, sapche topic runs). They are
  *  transparent to chunking when inline — a break-inhibited minor run rides inside the
@@ -187,6 +204,7 @@ export function applyMoveDisplays(
         startOffset: -1,                 // synthetic row: the origin keeps the scroll target
         tagType: src?.tagType ?? 'plain',
         tagColor: src?.tagColor ?? null,
+        ...(src?.smallKind ? { smallKind: src.smallKind } : {}),
         movedLayoutId: pl.layoutId,
         movedAnchorId: pl.anchorId,
       };
@@ -279,7 +297,7 @@ export function insertPassageChunks(
     const merged: DerivedChunk[] = [];
     for (const u of units) {
       const prev = merged[merged.length - 1];
-      if (prev && prev.tagType === u.tagType) {
+      if (prev && prev.tagType === u.tagType && prev.smallKind === u.smallKind) {
         prev.tokens = [...prev.tokens, ...u.tokens];
         prev.text = `${prev.text}\n${u.text}`;
         prev.endSylId = u.endSylId;
@@ -295,6 +313,7 @@ export function insertPassageChunks(
         text: g.text, sylIds: [], startOffset: -1,
         tokens: g.tokens,
         tagType: g.tagType, tagColor: g.tagColor,
+        ...(g.smallKind ? { smallKind: g.smallKind } : {}),
         passage: first,
         passageSrcOffset: srcChunk ? srcChunk.startOffset : undefined,
         passageUnitStart: g.startSylId,
@@ -341,11 +360,16 @@ export function deriveChunks(
     a.start_offset <= t.start_offset && a.end_offset >= t.end_offset
     && spanSpaceOf(a) === spaceOf(t.id));
   // Content type of a substantial token: highest-priority covering tag, or 'plain'.
-  const typeOf = (t: EditorToken): { name: string; color: string | null } => {
+  // The `small` slot matches the whole small FAMILY by name prefix (see `smallKindOf`).
+  const typeOf = (t: EditorToken): { name: string; color: string | null; smallKind?: string } => {
     const anns = annsFor(t);
     for (const name of TYPE_PRIORITY) {
-      const hit = anns.find(a => a.tag.name.trim().toLowerCase() === name);
-      if (hit) return { name, color: hit.tag.color };
+      const hit = anns.find(a => name === 'small'
+        ? a.tag.name.trim().toLowerCase().startsWith('small')
+        : a.tag.name.trim().toLowerCase() === name);
+      if (!hit) continue;
+      if (name === 'small') return { name, color: hit.tag.color, smallKind: smallKindOf(hit.tag.name) };
+      return { name, color: hit.tag.color };
     }
     return { name: 'plain', color: null };
   };
@@ -379,7 +403,7 @@ export function deriveChunks(
   let cur: EditorToken[] = [];
   let curText = '';
   let curRenders: { id: string; render: string; small?: boolean; opId?: number | null }[] = [];
-  let curType: { name: string; color: string | null } | null = null;
+  let curType: { name: string; color: string | null; smallKind?: string } | null = null;
   // The move (scramble) layout id of the current chunk's tokens. A moved fragment is a
   // deliberately relocated SEGMENT, so its edges are hard chunk boundaries — it never gets
   // absorbed into a neighbour by the inline-minor rule (which would drop it, e.g., into a
@@ -408,6 +432,7 @@ export function deriveChunks(
         startOffset: cur[0].start_offset,
         tagType: curType?.name ?? 'plain',
         tagColor: curType?.color ?? null,
+        ...(curType?.smallKind ? { smallKind: curType.smallKind } : {}),
         movedLayoutId: movedBy?.get(first.id),
       });
     }
@@ -438,6 +463,13 @@ export function deriveChunks(
       // the neighbour it was dropped next to.
       if (curType != null && curMoved !== curMovedId) { flush(); sawBreak = false; }
       const ty = typeOf(t);
+      // Two ADJACENT members of the small family (instructions beside verses, say) are
+      // distinct units even though they share the type — a kind change flushes like a
+      // type change would.
+      if (curType != null && ty.name === 'small' && curType.name === 'small'
+          && ty.smallKind !== curType.smallKind) {
+        flush(); sawBreak = false;
+      }
       if (curType != null && ty.name !== curType.name) {
         let minorInline = (MINOR.has(ty.name) || MINOR.has(curType.name)) && !sawBreak;
         // A small run fuses into a mantra ONLY when it is a whitelisted abbreviation

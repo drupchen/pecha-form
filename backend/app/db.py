@@ -23,6 +23,8 @@ LAYOUT_KINDS = (
     'gap_fill_recto',   # ...on a translation page (per edition)
     'page_shift_verso', # SIGNED mm the whole Tibetan page is moved down (+) or up (-) (shared)
     'page_shift_recto', # ...on a translation page (per edition)
+    'no_split',         # the user removed a split here — the auto-flow must not re-split this line
+    'no_break',         # the user lifted an automatic break here — the flow must not re-place it
 )
 # NB: `_rebuild_document_layout_kinds` reads the kinds back out of the stored CHECK with
 # `'([a-z_]+)'`. A name carrying a digit or a hyphen would never match, so the set comparison
@@ -1224,6 +1226,42 @@ def _make_tags_text_id_nullable(conn) -> None:
 # each child's FK back at `tags` (table rebuild — SQLite can't alter an FK in place) and drop
 # the scratch table. Idempotent: does nothing once `tags__old` is gone. Must run OUTSIDE a
 # transaction (it toggles PRAGMAs), like the migrations above.
+def _split_small_tag_family(conn) -> None:
+    """Split the single shared `small` tag into its named family.
+
+    The `small` runs (ཡིག་ཆུང) are about to behave differently by PURPOSE — in the PDF a
+    "small - instructions" run following verse/prose will continue that line, while small
+    verses / colophon / intro stand alone. The frontend classifies by NAME PREFIX (any tag
+    starting with "small" is the small family; the part after the dash is its kind), so:
+
+     - the legacy shared `small` row is RENAMED "small - instructions" — every existing
+       span follows its tag_id, which is the whole migration for them;
+     - the three sibling kinds plus the new line-level `intro` tag are seeded as shared
+       rows when absent. `UNIQUE(text_id, name)` does not deduplicate NULL text_id rows
+       (NULL <> NULL in SQLite), so seeding checks existence explicitly.
+
+    Idempotent: after the rename nothing matches `small` exactly, and existing names are
+    never re-inserted.
+    """
+    with conn:
+        conn.execute(
+            "UPDATE tags SET name = 'small - instructions' "
+            "WHERE text_id IS NULL AND lower(trim(name)) = 'small'")
+        for name, color in [
+            ("small - verses",   "#d97706"),
+            ("small - colophon", "#b45309"),
+            ("small - intro",    "#fbbf24"),
+            ("intro",            "#a855f7"),
+        ]:
+            exists = conn.execute(
+                "SELECT 1 FROM tags WHERE text_id IS NULL AND lower(trim(name)) = ?",
+                (name,)).fetchone()
+            if not exists:
+                conn.execute(
+                    "INSERT INTO tags (text_id, name, color, tag_kind) "
+                    "VALUES (NULL, ?, ?, 'regular')", (name, color))
+
+
 def _repair_tag_fks(conn) -> None:
     stale = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='tags__old'"
@@ -1298,4 +1336,7 @@ def init_db():
     _make_tags_text_id_nullable(conn)
     # …then repair DBs whose earlier tags rebuild left the children FK-ing `tags__old`.
     _repair_tag_fks(conn)
+    # Part 9: split the `small` tag into its named family. Runs after the tags rebuilds so
+    # it sees the final table.
+    _split_small_tag_family(conn)
     conn.close()

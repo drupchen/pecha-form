@@ -92,8 +92,16 @@ const RAW_ROLE_DEFS: RoleDef[] = [
     def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '15mm', align: 'left' }, place: { twopage: G_TR, running: G_RUN } },  // Gentium 11, indent 42.5pt
   { role: 'mantra', label: 'Mantra', selector: '.bk-role-mantra .bk-phonetics',
     def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', fontWeight: 700, italic: false, indent: '10mm' }, place: { twopage: G_TR, running: G_RUN } },  // Mantras (Words) Gentium 12 bold, upright
-  { role: 'small', label: 'Small letters / homage', selector: '.bk-role-small .bk-translation',
+  // TWO shapes: a line that is WHOLLY small, and the `.bk-smalltrail` block — instruction
+  // translations merged onto a line by the (Tibetan-side) continuation rule, standing as
+  // their own small block under that line's content. Both are blocks; all props behave.
+  { role: 'small', label: 'Small letters / homage', selector: '.bk-role-small .bk-translation, .booklet-root .bk-smalltrail',
     def: { fontFamily: 'var(--font-small)', fontSize: '9pt', italic: false, indent: '0' }, place: { twopage: G_TR, running: G_RUN } },  // Small Letters Libertinus Serif Display 9, upright
+  // The whole small FAMILY ("small - instructions/verses/colophon/intro") shares this one
+  // `small` role: the variants differ by PURPOSE (the coming continuation rule), not by
+  // type — until a variant needs its own face, one style speaks for all four.
+  { role: 'intro', label: 'Introduction', selector: '.bk-role-intro .bk-translation',
+    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '0' }, place: { twopage: G_TR, running: G_RUN } },  // a normal reading line, unindented
   // ── Covers & matter (shown under every format) ──
   { role: 'title_tib', label: 'Title page — Tibetan', selector: '.bk-title-tib',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '24pt', align: 'center', lineHeight: '1.4' }, place: { twopage: G_MATTER, running: G_MATTER } },  // ཁ་བྱང 24, centred
@@ -162,6 +170,7 @@ export const ORG_BASE: Record<string, StyleProps> = {
   translation: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '15mm', lineHeight: '1.2' },
   mantra: { fontFamily: 'Gentium Basic', fontSize: '12pt', fontWeight: 700, italic: false, color: INK, align: 'left', indent: '10mm', lineHeight: '1.25' },
   small: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
+  intro: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.25' },
   title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
   title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   title_sub: { fontFamily: 'Calibri', fontSize: '12pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },

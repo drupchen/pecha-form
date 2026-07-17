@@ -45,6 +45,20 @@ export interface DocLine {
   /** Sapche outline nesting depth (0 = top-level) when this line heads a tree node,
    *  so section headings size by depth; null otherwise. */
   level: number | null;
+  /** `small` lines only: which member of the small tag family tagged this line —
+   *  'instructions' | 'verses' | 'colophon' | 'intro'. The continuation rule keys on it:
+   *  an INSTRUCTIONS line after verse/prose is merged onto that line (see the merge pass
+   *  in `compileTextItem`); the other kinds stand alone. */
+  smallKind?: string;
+  /** The TRANSLATIONS of instruction line(s) merged onto this line by the (Tibetan-side)
+   *  continuation rule. The verso concatenates the Tibetan; the recto renders each entry
+   *  as its OWN small block (`.bk-smalltrail`) with `gapBefore` reproducing the blank line
+   *  that stood before it — so the translation side reads exactly as it did when the
+   *  instruction was its own line. One entry per merged instruction (chains stay separate
+   *  paragraphs). A separate field, not spliced into `translation`, so the mid-line cut
+   *  machinery keeps operating on the pure translation. On a mid-line split the trails
+   *  follow the TAIL (the end of the line). */
+  smallTrails?: { html: string; gapBefore: boolean }[];
   /** Set on the head/tail of a mid-line split — the original line's anchor syllable, so
    *  the split can be cleared from either half. */
   splitAnchor?: string;
@@ -53,6 +67,13 @@ export interface DocLine {
    *  as the subtitle. Set on every title line (they share their chunk's paragraphs). */
   paragraphs?: string[];
 }
+
+/** A fresh identity per EVALUATION of this module. In dev, a hot update replaces the
+ *  module and importers re-render against a new object — the bench compares identities to
+ *  notice that its compile CACHE was produced by code that no longer exists, and flushes
+ *  it (a stale cache once kept rendering old rules for a whole session). In production the
+ *  module evaluates once and this never changes. */
+export const COMPILE_BUILD: object = {};
 
 const rk = (a: string, b: string) => `${a}-${b}`;
 
@@ -216,9 +237,63 @@ export async function compileTextItem(
       translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
       level: depthBySyl.get(l.startSylId) ?? null,
+      ...(l.smallKind ? { smallKind: l.smallKind } : {}),
       ...(paragraphs && paragraphs.length ? { paragraphs } : {}),
     });
   });
+  // ── The continuation rule ──
+  // A small-INSTRUCTIONS line never stands on its own line: it is concatenated onto
+  // WHATEVER line precedes it — verse, prose, mantra, a section heading, another small —
+  // "the rule overrides everything that precedes it" (the user's words), including the
+  // empty lines the translate pane needs for its chunking. Its Tibetan is appended in
+  // small letters; its translation rides along as the line's `smallTrail`, rendered
+  // inline in the small face at the end of the line's LAST text block. Only a text's
+  // very first line has nothing to continue and stays standalone. Chains concatenate
+  // (the merged line keeps its own role, so the next instruction merges too).
+  //
+  // HERE, in the booklet compile, and nowhere upstream: the translate bench, workspace
+  // and phonetics keep their own line pictures, and the print page inherits the rule
+  // through this shared compile. The decision reads only roles/smallKind, which derive
+  // from the SHARED spans — every edition merges the same lines, so the streams stay
+  // index-aligned and the shared break set keeps working.
+  //
+  // A stray phonetics row anchored on an instruction is DROPPED by the merge (none exist
+  // today; instructions are not recited): the rule overrides, and a silently skipped
+  // merge is the bug this passage replaced.
+  const mergedOut: DocLine[] = [];
+  for (const l of out) {
+    const prev = mergedOut[mergedOut.length - 1];
+    if (l.role === 'small' && l.smallKind === 'instructions' && prev) {
+      // Every line-level chunk's last token carries a trailing `\n` (the display break
+      // deriveChunks appends at `count>=1`), and `.bk-tibetan` is `white-space: pre-wrap` —
+      // so appended as-is that `\n` would force the small run onto a NEW visual line. Strip
+      // ONLY that artificial newline (not other whitespace), so the run flows straight on
+      // after the source's own separator — Tibetan joins on the tsheg (་) / shad, never a
+      // space. The tokens are appended UNMODIFIED, reproducing the editor's text exactly.
+      // The clone never mutates the shared token; chains strip each prior run's `\n` at
+      // their own join.
+      const last = prev.tokens[prev.tokens.length - 1];
+      prev.tokens = [
+        ...prev.tokens.slice(0, -1),
+        ...(last ? [{ ...last, render: last.render.replace(/\n+$/u, '') }] : []),
+        ...l.tokens.map((t) => ({ ...t, small: true })),
+      ];
+      prev.endSylId = l.endSylId;
+      if (l.translation) {
+        // `gapBefore` = the blank line that stood between this instruction and what it
+        // follows — consumed on the VERSO (one concatenated line), reproduced on the
+        // RECTO so its spacing stays exactly what it was.
+        prev.smallTrails = [...(prev.smallTrails ?? []),
+                            { html: l.translation, gapBefore: prev.emptyAfter }];
+      }
+      prev.emptyAfter = l.emptyAfter;   // the gap follows the merged unit
+      continue;
+    }
+    mergedOut.push(l);
+  }
+  out.length = 0;
+  out.push(...mergedOut);
+
   // ── Navigation outline: the TRANSLATION pane's headings, per language ──
   // The booklet reads in one language, so its navigation is the sequence of headings the
   // translator sees, labelled with the SELECTED language's string (never the Tibetan tree

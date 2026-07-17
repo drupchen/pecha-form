@@ -648,6 +648,7 @@ DocumentLayoutKind = Literal[
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
     'gap_fill_verso', 'gap_fill_recto', 'width_furniture',
     'page_shift_verso', 'page_shift_recto',
+    'no_split', 'no_break',
 ]
 
 class DocumentLayoutRow(BaseModel):

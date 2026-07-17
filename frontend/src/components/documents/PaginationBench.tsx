@@ -1,12 +1,12 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus, FileDown, Type, Frame, Columns3 } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus, FileDown, Type, Frame, Columns3, Pencil } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   getOrgSeal, putPaginationStamp, putLayoutConfig,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
-import { compileDocument, type DocLine, type OutlineHeading } from './compile';
+import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
@@ -24,6 +24,7 @@ import { loadBookletStyleCss } from './bookletStyles';
 import { StyleStudio } from './StyleStudio';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
+import { useUndoStore } from '../../store/useUndoStore';
 import '../../styles/booklet.css';
 
 /** One edition's compiled stream, awaiting measurement. Every edition indexes the same
@@ -73,8 +74,12 @@ const DEFAULT_REFLOW_DELAY_S = 20;
  *    pagination-law change: pages that used to end short can now fill through the pair.
  * 7: the blank-line controls (`line_space`/`line_nospace`) went per side and per edition —
  *    the legacy shared rows now speak for the verso only, so recto heights change.
+ * 8: the continuation rule — small-instructions lines merge onto the verse/prose line
+ *    before them, so the line streams shorten wherever the user has tagged instructions.
+ * 9: the merged small run flows inline (the forced break at the join was stripped), so a
+ *    merged line takes fewer wrapped rows — a height change the signature can't see.
  */
-const RENDER_EPOCH = 7;
+const RENDER_EPOCH = 9;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
@@ -108,8 +113,15 @@ const GapFillSlider: React.FC<{
       + `by the same amount, to use up the space the shared page break left here. Up to `
       + `${cap.toFixed(1)}mm each before this page overflows. ${scope}`}>
       <input type="range" min={0} max={Math.max(cap, value)} step={0.1} value={value}
-             onChange={(e) => onChange(Number(e.target.value))} />
+             onChange={(e) => onChange(Number(e.target.value))}
+             onDoubleClick={() => onChange(0)} />
       <span>{value ? `+${value.toFixed(1)}mm` : (side === 'verso' ? 'fill བོད' : 'fill')}</span>
+      {/* Reset: back to the system's auto state (0 → the row is deleted). Shown only when
+          there is something to reset, so an untouched page carries no extra chrome. */}
+      {!!value && (
+        <button type="button" className="bk-slider-reset" title="Reset this page fill to the automatic amount"
+                onClick={() => onChange(0)}>↺</button>
+      )}
     </div>
   );
 };
@@ -156,6 +168,10 @@ const PageShiftSlider: React.FC<{
              onChange={(e) => onChange(Number(e.target.value))}
              onDoubleClick={() => onChange(0)} />
       <span>{label}</span>
+      {Math.abs(value) > 0.05 && (
+        <button type="button" className="bk-slider-reset" title="Reset this page's shift (put the content back on the guide)"
+                onClick={() => onChange(0)}>↺</button>
+      )}
     </div>
   );
 };
@@ -192,6 +208,16 @@ const ShiftMark: React.FC<{ mm: number }> = ({ mm }) => {
 const BALANCE_KINDS = new Set([
   'line_space', 'line_nospace', 'recto_cut',
   'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
+]);
+
+/** The per-line/per-page balancing rows the "my edits" overlay marks — every kind a re-flow
+ *  leaves untouched (spacing, blank-line removal, block widths, page fill/shift). The
+ *  page-level fill/shift are anchored on a page's first line, so they surface on that line's
+ *  mark. Splits/breaks/vetoes carry their OWN always-on marks and are not repeated here. */
+const MANUAL_MARK_KINDS = new Set([
+  'line_space', 'line_nospace',
+  'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
+  'gap_fill_verso', 'gap_fill_recto', 'page_shift_verso', 'page_shift_recto',
 ]);
 function balanceFpOf(rows: DocumentLayoutRow[]): string {
   const parts = rows
@@ -265,6 +291,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     useState<Map<string, CompiledEdition | 'error'> | null>(null);
   // Geometry guides (text block, spine side, folio zone) — a design aid; never exported.
   const [guides, setGuides] = useState(true);
+  // "My edits" overlay: surface a vermilion mark on every line/page carrying a manual
+  // balancing edit (spacing, blank line, width, fill, shift) — the ones a re-flow will
+  // NEVER overwrite (unlike the auto placements it re-decides). Default off; a toggle so a
+  // heavily tuned booklet is not permanently marked up. The popover a mark opens is keyed
+  // by line+column so only one is open at a time.
+  const [showEdits, setShowEdits] = useState(false);
+  const [editPop, setEditPop] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
   // A seed that refused to run has to say so — silence would read as "the pagination is
@@ -285,6 +318,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const [delayS, setDelayS] = useState(DEFAULT_REFLOW_DELAY_S);
   // Seconds left in the current quiet period; null = nothing has drifted, nothing pending.
   const [countdown, setCountdown] = useState<number | null>(null);
+  // What the last re-flow did ("re-flowed · 3 break changes") — shown while settled,
+  // cleared when the next quiet period starts.
+  const [flowNote, setFlowNote] = useState<string | null>(null);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -314,6 +350,22 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     compileCache.current.clear();
     setAllCompiles(null);
   }, [treeVersion, trVersion, documentId]);
+  // The cache must not outlive the CODE either. A bench left open across dev hot updates
+  // kept rendering streams compiled by old modules — the screen repeatedly presented
+  // outdated behavior as current, and no content edit had happened to clear it. After a
+  // hot update, Fast Refresh re-renders this component against the NEW compile module
+  // while hook state survives, so comparing the module's identity token catches the swap
+  // exactly once and takes the same path a treeVersion bump takes. In production the
+  // module evaluates once and this effect never fires.
+  const [codeTick, setCodeTick] = useState(0);
+  const compileBuildRef = useRef(COMPILE_BUILD);
+  useEffect(() => {
+    if (compileBuildRef.current === COMPILE_BUILD) return;
+    compileBuildRef.current = COMPILE_BUILD;
+    compileCache.current.clear();
+    setAllCompiles(null);
+    setCodeTick((t) => t + 1);
+  });
 
   useEffect(() => {
     let alive = true;
@@ -359,7 +411,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setHeadingsByItem(compiled.headingsByItem);
     })();
     return () => { alive = false; };
-  }, [lang, treeVersion, trVersion]);
+  }, [lang, treeVersion, trVersion, codeTick]);
 
   // The overview's columns: every edition compiled (through the cache — after the first
   // toggle this is instant). Per-edition try/catch: an edition that fails to compile becomes
@@ -478,9 +530,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    * the flow with lines already halved and forced apart, and it could never reconsider.
    * Manual splits stay: they are the user's, forced structure to flow around.
    */
-  const requestSeed = async (replace: boolean) => {
+  const seedUndoRef = useRef<{
+    rows: DocumentLayoutRow[]; sig: Record<string, string> | null; fp: string | null;
+  } | null>(null);
+  const requestSeed = async (replace: boolean, source: 'user' | 'auto' = 'auto') => {
     if (!lines.length || seeding || !doc) return;
     pendingReplace.current = replace;
+    // The USER's re-flow click is one undoable action (rows + stamp together); the
+    // AUTOMATIC one is not — undoing it would only buy delayS seconds before it re-fires,
+    // and the durable protections are the vetoes and the promote-on-restore rule.
+    seedUndoRef.current = source === 'user'
+      ? { rows, sig: stamp.sig, fp: stamp.fp } : null;
     setMsg('');
     setSeeding(true);
     try {
@@ -579,6 +639,19 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         // be split again: their anchor already carries a split row.
         const unsplittable = new Set<number>(unbreakable);
         flowLines.forEach((l, i) => { if (l.splitAnchor != null) unsplittable.add(i); });
+        // The user's standing vetoes: a removed split/break must STAY removed, or the
+        // removal gesture "works" and silently un-works at the next re-flow — the exact
+        // failure this pass exists to end.
+        const vetoKeysOf = (kind: string) => new Set(rows
+          .filter((r) => r.kind === kind)
+          .map((r) => `${r.item_id}:${r.anchor_syl_id}`));
+        const noSplitKeys = vetoKeysOf('no_split');
+        const noBreakKeys = vetoKeysOf('no_break');
+        flowLines.forEach((l, i) => {
+          const key = `${l.itemId}:${anchorOf(l)}`;
+          if (noSplitKeys.has(key)) unsplittable.add(i);
+          if (noBreakKeys.has(key)) unbreakable.add(i);
+        });
 
         // Never end a page with only the sapche/toc run: a heading's job is to announce
         // what follows it, and stranded at a page's foot it announces a page-turn. Same
@@ -697,12 +770,43 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         if (!alive) return;
         setStamp({ sig, fp: styleFp });
         setRows(lay.rows);
+        // Say what happened: the flow acts on its own schedule, and a system that
+        // rearranges pages without announcing it reads as haunted.
+        {
+          const bk = (r: DocumentLayoutRow) =>
+            `${r.item_id}:${r.anchor_syl_id}:${r.char_offset ?? 0}`;
+          const beforeB = new Set(rows.filter((r) => r.kind === 'page_break').map(bk));
+          const afterB = new Set(lay.rows.filter((r) => r.kind === 'page_break').map(bk));
+          let changed = 0;
+          for (const k of afterB) if (!beforeB.has(k)) changed++;
+          for (const k of beforeB) if (!afterB.has(k)) changed++;
+          setFlowNote(`re-flowed · ${changed} break change${changed === 1 ? '' : 's'}`);
+        }
+        // The user's own re-flow click: one undoable entry, pagination + stamp together.
+        const snap = seedUndoRef.current;
+        seedUndoRef.current = null;
+        if (snap) {
+          const afterRows = lay.rows;
+          useUndoStore.getState().push({
+            description: 're-flowed pagination',
+            undo: () => restorePagination(snap.rows, snap.sig, snap.fp),
+            redo: () => restorePagination(afterRows, sig, styleFp),
+          });
+        }
         // A page the flow could not make fit holds ONE line that is taller than the text
         // block in some edition — it has nowhere else to go, so the flow leaves it and says
         // so rather than pretending. The remedy is the user's: split the line, or narrow it.
         if (overfull.length) {
+          // If a no-split veto stands on such a line, the advice "split it" is exactly what
+          // the flow is being forbidden to do — say so, or the guidance contradicts the
+          // system's own silent obedience.
+          const vetoed = overfull.some((s) =>
+            noSplitKeys.has(`${flowLines[s].itemId}:${anchorOf(flowLines[s])}`));
           setMsg(`${overfull.length} page${overfull.length > 1 ? 's hold' : ' holds'} a single ` +
-                 `line too tall for the page in some edition — split it, or narrow it.`);
+                 `line too tall for the page in some edition — split it, or narrow it.` +
+                 (vetoed ? ' One such line carries your no-split mark, which blocks the ' +
+                           'automatic remedy — lift the mark (the slashed chip), split by ' +
+                           'hand, or narrow the line.' : ''));
         }
       } finally {
         if (alive) { setMeasure(null); setSeeding(false); }
@@ -743,6 +847,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // This effect re-runs whenever the drift changes — i.e. on every upstream edit — and its
     // cleanup drops the pending clock. So each change restarts the quiet period; idling lets
     // it run down, because an unchanged `dirty` leaves the deps alone.
+    setFlowNote(null);
     setCountdown(delayS);
     const started = performance.now();
     const tick = window.setInterval(() => {
@@ -761,19 +866,37 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const toggleBreak = async (i: number) => {
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
+    const a = anchorOf(l);
+    const slots: RowSlot[] = [
+      { item_id: l.itemId, anchor_syl_id: a, kind: 'page_break' },
+      { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline' },
+      { item_id: l.itemId, anchor_syl_id: a, kind: 'no_break' },
+    ];
     if (breakSet.has(i)) {
-      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break' });
-      // A lifted break drops any hairline marking too.
-      if (hairlineSet.has(i))
-        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline' });
+      await withUndo('page break lifted', slots, async () => {
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: a, kind: 'page_break' });
+        // A lifted break drops any hairline marking too.
+        if (hairlineSet.has(i))
+          await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline' });
+        // Lifting one of the FLOW's breaks is overruling the flow, and the removal must
+        // stick: without the veto, the next quiet-period re-flow would put the break right
+        // back — the removal "works" and silently un-works seconds later. Lifting a MANUAL
+        // break is the user un-doing themselves; no veto, the flow may break here again.
+        if (!manualBreaks.has(i)) {
+          await putLayoutRow(documentId, {
+            item_id: l.itemId, anchor_syl_id: a, kind: 'no_break', value: 1 });
+        }
+      });
     } else {
-      // Flagged as the user's: a re-flow keeps it and flows around it, instead of treating
-      // it as one of its own suggestions and sweeping it away.
-      await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', value: BREAK_MANUAL });
+      await withUndo('page break placed', slots, async () => {
+        // Flagged as the user's: a re-flow keeps it and flows around it, instead of
+        // treating it as one of its own suggestions and sweeping it away. Placing a break
+        // overrides any veto standing on the line.
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: a, kind: 'page_break', value: BREAK_MANUAL });
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: a, kind: 'no_break' });
+      });
     }
-    const lay = await getDocumentLayout(documentId);
-    setRows(lay.rows);
   };
 
   /** Toggle a hairline (mid-content) break at line `i`: a page break drawn with a thin
@@ -782,37 +905,81 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const toggleHairline = async (i: number) => {
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
+    const a = anchorOf(l);
+    const slots: RowSlot[] = [
+      { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline' },
+      { item_id: l.itemId, anchor_syl_id: a, kind: 'page_break' },
+    ];
     if (hairlineSet.has(i)) {
-      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline' });
+      await withUndo('hairline split lifted', slots, async () => {
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline' });
+      });
     } else {
-      // Also the user's break — and easy to miss, because a hairline writes its page break
-      // through this path, not `toggleBreak`. Unflagged, a re-flow would delete the break and
-      // strand the hairline row on a boundary that no longer exists, drawing nothing.
-      if (!breakSet.has(i))
-        await putLayoutRow(documentId, {
-          item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', value: BREAK_MANUAL });
-      await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'hairline', value: 1 });
+      await withUndo('hairline split placed', slots, async () => {
+        // Also the user's break — and easy to miss, because a hairline writes its page
+        // break through this path, not `toggleBreak`. Unflagged, a re-flow would delete the
+        // break and strand the hairline row on a boundary that no longer exists, drawing
+        // nothing.
+        if (!breakSet.has(i))
+          await putLayoutRow(documentId, {
+            item_id: l.itemId, anchor_syl_id: a, kind: 'page_break', value: BREAK_MANUAL });
+        await putLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline', value: 1 });
+      });
     }
-    setRows((await getDocumentLayout(documentId)).rows);
   };
 
-  /** Mid-line split: click a verso syllable (token index `k`) to split the line there
-   *  (Tibetan cuts on the syllable boundary); `k === -1` clears an existing split. Flagged
-   *  MANUAL: a re-flow keeps it and flows around it — unlike the flow's own splits, which
-   *  it re-decides. */
+  /**
+   * Mid-line split: click a verso syllable (token index `i` within the CLICKED line) to
+   * split there. On a whole line that PLACES the split; on a half of an existing split it
+   * MOVES the split to that syllable — same gesture, same meaning everywhere: "cut here".
+   * (Clicking a half used to CLEAR the whole split — the same click that creates on one
+   * line destroyed on the next, the textbook slip. Clearing now lives only on the split's
+   * own × chip.)
+   *
+   * `k === -1` (the × chip) clears the split AND writes the `no_split` veto: the removal
+   * must stick — without it the next quiet-period re-flow would simply re-split the line.
+   * Placing or moving a split deletes any veto: placement is an explicit override.
+   * Either way the result is MANUAL — the user's, kept and flowed around.
+   */
   const setSplit = async (l: DocLine, k: number) => {
     const anchor = splitAnchorOf(l);
+    const owner = rows.find((r) => r.kind === 'page_break' && r.item_id === l.itemId
+                                && r.anchor_syl_id === anchor && (r.char_offset ?? 0) > 0);
+    const langs = [...(doc?.languages ?? []), ''];
+    const slots: RowSlot[] = [
+      { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' },
+      { item_id: l.itemId, anchor_syl_id: anchor, kind: 'no_split' },
+      ...langs.map((lg): RowSlot => (
+        { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg })),
+    ];
     if (k === -1) {
-      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
-      // Clearing a split drops its per-language recto cuts too.
-      for (const lg of [...(doc?.languages ?? []), ''])
-        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg });
-    } else if (k >= 1) {
-      await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: anchorOf(l), kind: 'page_break', char_offset: k,
-        value: BREAK_MANUAL });
-    } else return;
-    setRows((await getDocumentLayout(documentId)).rows);
+      await withUndo('split removed', slots, async () => {
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
+        // Clearing a split drops its per-language recto cuts too.
+        for (const lg of langs)
+          await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg });
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: anchor, kind: 'no_split', value: 1 });
+      });
+    } else if (k >= 0) {
+      // The clicked index is within the clicked LINE; a tail's syllables sit `currentK`
+      // tokens into the original. The head keeps the original's start syllable — that is
+      // what tells the halves apart.
+      const isHalf = l.splitAnchor != null;
+      const isHead = !isHalf || anchorOf(l) === l.splitAnchor;
+      const K = isHead ? k : (owner?.char_offset ?? 0) + k;
+      // The cut must leave both halves a syllable, and a move must actually move.
+      const orig = lines.find((x) => x.itemId === l.itemId && anchorOf(x) === anchor);
+      const total = orig?.tokens.length
+        ?? (isHalf ? (owner?.char_offset ?? 0) + l.tokens.length : l.tokens.length);
+      if (K < 1 || K >= total || K === owner?.char_offset) return;
+      await withUndo(owner ? 'split moved' : 'split placed', slots, async () => {
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break', char_offset: K,
+          value: BREAK_MANUAL });
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'no_split' });
+      });
+    }
   };
 
   /**
@@ -832,39 +999,44 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const owner = rows.find((r) => r.kind === 'page_break' && r.item_id === l.itemId
                                 && r.anchor_syl_id === anchor && (r.char_offset ?? 0) > 0);
     const isPair = !!(l.phonetics && l.translation != null);
-    if (!isPair) {
-      // The single recto text — the legacy row, one word index, whichever element it is.
-      await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', char_offset: w,
-        lang: forLang });
-    } else {
-      // In split-edit mode the head shows the WHOLE pair (editRecto), so `l` carries the
-      // full texts and `w` indexes them directly. The head holds only the first `k` tokens,
-      // though — the original's count comes from the unsplit compile (`lines`), which every
-      // edition shares token-for-token.
-      const orig = lines.find((x) => x.itemId === l.itemId && anchorOf(x) === anchor);
-      const tokensTotal = orig?.tokens.length ?? l.tokens.length;
-      const k = owner?.char_offset ?? Math.max(1, Math.round(tokensTotal / 2));
-      const def = defaultPairCut(k, tokensTotal,
-                                 countWordsPlain(l.phonetics), countWordsHtml(l.translation!));
-      const stored = rows.find((r) => r.kind === 'recto_cut' && r.item_id === l.itemId
-                                   && r.anchor_syl_id === anchor && (r.lang ?? '') === forLang);
-      let a = stored?.value ?? def.a;
-      let b = stored?.char_offset ?? def.b;
-      if (element === 'phonetics') a = w; else b = w;
-      // Pairs stay pairs: cutting either element at 0 sends the WHOLE pair to the tail —
-      // a head fragment of one element with none of the other is not a thing.
-      if (a === 0 || b === 0) { a = 0; b = 0; }
-      await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut',
-        char_offset: b, value: a, lang: forLang });
-    }
-    if (owner && (owner.value ?? BREAK_MANUAL) === BREAK_AUTO) {
-      await putLayoutRow(documentId, {
-        item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break',
-        char_offset: owner.char_offset, value: BREAK_MANUAL });
-    }
-    setRows((await getDocumentLayout(documentId)).rows);
+    const slots: RowSlot[] = [
+      { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: forLang },
+      { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' },
+    ];
+    await withUndo(`recto cut (${forLang})`, slots, async () => {
+      if (!isPair) {
+        // The single recto text — the legacy row, one word index, whichever element it is.
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', char_offset: w,
+          lang: forLang });
+      } else {
+        // In split-edit mode the head shows the WHOLE pair (editRecto), so `l` carries the
+        // full texts and `w` indexes them directly. The head holds only the first `k`
+        // tokens, though — the original's count comes from the unsplit compile (`lines`),
+        // which every edition shares token-for-token.
+        const orig = lines.find((x) => x.itemId === l.itemId && anchorOf(x) === anchor);
+        const tokensTotal = orig?.tokens.length ?? l.tokens.length;
+        const k = owner?.char_offset ?? Math.max(1, Math.round(tokensTotal / 2));
+        const def = defaultPairCut(k, tokensTotal,
+                                   countWordsPlain(l.phonetics), countWordsHtml(l.translation!));
+        const stored = rows.find((r) => r.kind === 'recto_cut' && r.item_id === l.itemId
+                                     && r.anchor_syl_id === anchor && (r.lang ?? '') === forLang);
+        let a = stored?.value ?? def.a;
+        let b = stored?.char_offset ?? def.b;
+        if (element === 'phonetics') a = w; else b = w;
+        // Pairs stay pairs: cutting either element at 0 sends the WHOLE pair to the tail —
+        // a head fragment of one element with none of the other is not a thing.
+        if (a === 0 || b === 0) { a = 0; b = 0; }
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut',
+          char_offset: b, value: a, lang: forLang });
+      }
+      if (owner && (owner.value ?? BREAK_MANUAL) === BREAK_AUTO) {
+        await putLayoutRow(documentId, {
+          item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break',
+          char_offset: owner.char_offset, value: BREAK_MANUAL });
+      }
+    }, slotStr(slots[0]));
   };
 
   // ── Per-line balancing (empty-line spacing, remove) + per-block width ──
@@ -885,22 +1057,168 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const rowVal = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang)?.value ?? null;
   const rowHas = (l: DocLine, kind: string, rowLang = '') => rowOf(l, kind, rowLang) != null;
 
-  const refreshLayout = async () => setRows((await getDocumentLayout(documentId)).rows);
-  const putRow = async (l: DocLine, kind: DocumentLayoutKind, value: number, rowLang = '') => {
-    await putLayoutRow(documentId,
-      { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, value, lang: rowLang });
-    await refreshLayout();
+  // The user's standing vetoes on the auto-flow, plus each split's provenance — read by
+  // the at-rest markers, the split chips, and the seed (which turns the vetoes into the
+  // flow's unbreakable/unsplittable inputs). Keyed `${item}:${anchor}`.
+  const vetoInfo = useMemo(() => {
+    const noSplit = new Set<string>();
+    const noBreak = new Set<string>();
+    const manualSplit = new Map<string, boolean>();
+    for (const r of rows) {
+      const key = `${r.item_id}:${r.anchor_syl_id}`;
+      if (r.kind === 'no_split') noSplit.add(key);
+      else if (r.kind === 'no_break') noBreak.add(key);
+      else if (r.kind === 'page_break' && (r.char_offset ?? 0) > 0) {
+        manualSplit.set(key, (r.value ?? BREAK_MANUAL) === BREAK_MANUAL);
+      }
+    }
+    return { noSplit, noBreak, manualSplit };
+  }, [rows]);
+  // Every hand-tuned balancing row, bucketed by the anchor it was written on (both anchor
+  // vintages resolve through the two-key read below). Feeds the "my edits" marks — a line
+  // or page shows a mark when it has any row here for its column.
+  const manualEditIndex = useMemo(() => {
+    const m = new Map<string, DocumentLayoutRow[]>();
+    for (const r of rows) {
+      if (!MANUAL_MARK_KINDS.has(r.kind)) continue;
+      const key = `${r.item_id}:${r.anchor_syl_id}`;
+      (m.get(key) ?? m.set(key, []).get(key)!).push(r);
+    }
+    return m;
+  }, [rows]);
+  /** Lift a standing veto — the marker's own click. The flow is allowed back in. */
+  const clearVeto = async (l: DocLine, kind: 'no_split' | 'no_break') => {
+    await withUndo(kind === 'no_split' ? 'no-split mark lifted' : 'no-break mark lifted',
+      [{ item_id: l.itemId, anchor_syl_id: anchorOf(l), kind }],
+      async () => {
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind });
+      });
   };
-  const delRow = async (l: DocLine, kind: DocumentLayoutKind, rowLang = '') => {
-    // Delete BOTH vintages: a value the user is clearing may have been stored under the
-    // bare syllable before the anchor named the occurrence.
-    await deleteLayoutRow(documentId,
-      { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, lang: rowLang });
-    if (anchorOf(l) !== l.startSylId) {
-      await deleteLayoutRow(documentId,
-        { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang }).catch(() => {});
+
+  const refreshLayout = async () => setRows((await getDocumentLayout(documentId)).rows);
+
+  // ── Undo plumbing: every bench mutation is one reversible entry ──
+  // Each mutator names the exact row slots it will touch, captures them BEFORE and AFTER,
+  // and pushes {undo, redo} closures that put those snapshots back. Restoring a
+  // `page_break` the FLOW owned promotes it to the user's (BREAK_MANUAL): undo of a user
+  // action is a user action, and without the promotion the next quiet-period re-flow would
+  // silently re-sweep what the user just brought back — the incident's failure mode
+  // wearing a keyboard shortcut. The seed's write-back pushes nothing here; the re-flow
+  // BUTTON pushes one whole-pagination entry of its own (rows + stamp together, so the
+  // restored state reads as settled rather than as fresh drift).
+  interface RowSlot { item_id: number; anchor_syl_id: string; kind: DocumentLayoutKind; lang?: string | null }
+  const slotStr = (s: RowSlot) => `${s.item_id}:${s.anchor_syl_id}:${s.kind}:${s.lang ?? ''}`;
+  const findIn = (rs: DocumentLayoutRow[], s: RowSlot) =>
+    rs.find((r) => r.item_id === s.item_id && r.anchor_syl_id === s.anchor_syl_id
+                && r.kind === s.kind && (r.lang ?? '') === (s.lang ?? ''));
+  const applySnapshot = async (
+    slots: RowSlot[], snapshot: (DocumentLayoutRow | undefined)[], promoteBreaks: boolean,
+  ) => {
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i], r = snapshot[i];
+      if (!r) {
+        await deleteLayoutRow(documentId, {
+          item_id: s.item_id, anchor_syl_id: s.anchor_syl_id, kind: s.kind, lang: s.lang });
+      } else {
+        await putLayoutRow(documentId, {
+          item_id: r.item_id, anchor_syl_id: r.anchor_syl_id,
+          kind: r.kind as DocumentLayoutKind, char_offset: r.char_offset,
+          value: promoteBreaks && r.kind === 'page_break' ? BREAK_MANUAL : r.value,
+          lang: r.lang,
+        });
+      }
     }
     await refreshLayout();
+  };
+  /**
+   * Restore a WHOLE pagination (the re-flow button's undo): diff the current rows against
+   * the target and write only what differs. The stamp travels WITH the rows — restored
+   * rows under the new stamp would read as drift and the flow would re-do what was just
+   * undone; rows + their own stamp read as settled, which is what "undo the re-flow"
+   * means.
+   */
+  const restorePagination = async (
+    to: DocumentLayoutRow[], sig: Record<string, string> | null, fp: string | null,
+  ) => {
+    const cur = (await getDocumentLayout(documentId)).rows;
+    const keyOf = (r: DocumentLayoutRow) => `${r.item_id}:${r.anchor_syl_id}:${r.kind}:${r.lang ?? ''}`;
+    const want = new Map(to.map((r) => [keyOf(r), r]));
+    for (const c of cur) {
+      if (!want.has(keyOf(c))) {
+        await deleteLayoutRow(documentId, {
+          item_id: c.item_id, anchor_syl_id: c.anchor_syl_id,
+          kind: c.kind as DocumentLayoutKind, lang: c.lang });
+      }
+    }
+    const curBy = new Map(cur.map((r) => [keyOf(r), r]));
+    for (const [k, w] of want) {
+      const c = curBy.get(k);
+      if (!c || c.value !== w.value || c.char_offset !== w.char_offset) {
+        await putLayoutRow(documentId, {
+          item_id: w.item_id, anchor_syl_id: w.anchor_syl_id,
+          kind: w.kind as DocumentLayoutKind, char_offset: w.char_offset,
+          value: w.value, lang: w.lang });
+      }
+    }
+    if (sig) await putPaginationStamp(documentId, JSON.stringify(sig), fp ?? styleFp);
+    setStamp({ sig, fp });
+    setRows((await getDocumentLayout(documentId)).rows);
+  };
+
+  /** Run `mutate`, then push one undo/redo entry for the named slots. `coalesceKey`
+   *  merges bursts on the same slot (a +/+/+ run, a slider drag) into one entry. */
+  const withUndo = async (
+    description: string, slots: RowSlot[], mutate: () => Promise<void>, coalesceKey?: string,
+  ) => {
+    const before = slots.map((s) => findIn(rows, s));
+    await mutate();
+    const lay = await getDocumentLayout(documentId);
+    setRows(lay.rows);
+    const after = slots.map((s) => findIn(lay.rows, s));
+    useUndoStore.getState().push({
+      description, coalesceKey,
+      undo: () => applySnapshot(slots, before, true),
+      redo: () => applySnapshot(slots, after, false),
+    });
+  };
+
+  /** What a row kind is called in an undo description. */
+  const KIND_LABEL: Partial<Record<DocumentLayoutKind, string>> = {
+    line_space: 'blank-line spacing', line_nospace: 'blank line removal',
+    gap_fill_verso: 'Tibetan page fill', gap_fill_recto: 'page fill',
+    page_shift_verso: 'Tibetan page shift', page_shift_recto: 'page shift',
+    width_tibetan: 'Tibetan width', width_phonetics: 'phonetics width',
+    width_translation: 'translation width', width_section: 'heading width',
+    width_furniture: 'block width',
+  };
+  /** Both anchor vintages of a per-line row, so a restore reaches rows written before the
+   *  op was part of the anchor (see `anchorOf`). */
+  const slotsFor = (l: DocLine, kind: DocumentLayoutKind, rowLang = ''): RowSlot[] => {
+    const slots: RowSlot[] = [{ item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, lang: rowLang }];
+    if (anchorOf(l) !== l.startSylId) {
+      slots.push({ item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang });
+    }
+    return slots;
+  };
+  const putRow = async (l: DocLine, kind: DocumentLayoutKind, value: number, rowLang = '') => {
+    const slots = slotsFor(l, kind, rowLang);
+    await withUndo(`${KIND_LABEL[kind] ?? kind} changed`, slots, async () => {
+      await putLayoutRow(documentId,
+        { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, value, lang: rowLang });
+    }, slotStr(slots[0]));
+  };
+  const delRow = async (l: DocLine, kind: DocumentLayoutKind, rowLang = '') => {
+    const slots = slotsFor(l, kind, rowLang);
+    await withUndo(`${KIND_LABEL[kind] ?? kind} cleared`, slots, async () => {
+      // Delete BOTH vintages: a value the user is clearing may have been stored under the
+      // bare syllable before the anchor named the occurrence.
+      await deleteLayoutRow(documentId,
+        { item_id: l.itemId, anchor_syl_id: anchorOf(l), kind, lang: rowLang });
+      if (anchorOf(l) !== l.startSylId) {
+        await deleteLayoutRow(documentId,
+          { item_id: l.itemId, anchor_syl_id: l.startSylId, kind, lang: rowLang }).catch(() => {});
+      }
+    }, slotStr(slots[0]));
   };
   // Keyed like every other balancing row (see `gapFillLang`): '' = the Tibetan verso, a
   // lang = that edition's recto. The two sides — and the editions among themselves — tune
@@ -975,6 +1293,70 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     maxVerso: config ? config.margin_bind_mm : 10,
     maxRecto: config ? config.margin_outer_mm : 10,
   }), [config, contentWmm]);
+
+  /** Revert a manual split ENTIRELY: delete the split break + all its per-edition recto
+   *  cuts, WITHOUT writing a `no_split` veto — "revert my split" means the flow may split
+   *  here again (unlike the split-mode × chip, which vetoes so the removal sticks). */
+  const clearSplit = async (l: DocLine) => {
+    const anchor = splitAnchorOf(l);
+    const langs = [...(doc?.languages ?? []), ''];
+    const slots: RowSlot[] = [
+      { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' },
+      ...langs.map((lg): RowSlot => ({ item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg })),
+    ];
+    await withUndo('split reverted', slots, async () => {
+      await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'page_break' });
+      for (const lg of langs)
+        await deleteLayoutRow(documentId, { item_id: l.itemId, anchor_syl_id: anchor, kind: 'recto_cut', lang: lg });
+    });
+  };
+
+  /**
+   * The hand-tuned balancing rows touching one line in one COLUMN, each as a human label +
+   * a revert dispatcher over the existing clear paths. `pageStart` is the line's page-start
+   * index (or -1) so the page-level fill/shift (anchored on the first line) surface on it.
+   * Reverting DELETES the row — the line returns to the flow's natural state, undoable.
+   */
+  const lineManualRows = (
+    l: DocLine, colLang: string, side: PageSide, pageStart: number,
+  ): { label: string; revert: () => void }[] => {
+    const bucket = [
+      ...(manualEditIndex.get(`${l.itemId}:${anchorOf(l)}`) ?? []),
+      ...(anchorOf(l) !== l.startSylId ? (manualEditIndex.get(`${l.itemId}:${l.startSylId}`) ?? []) : []),
+    ];
+    if (!bucket.length) return [];
+    const gapLang = gapFillLang(side, colLang);
+    const out: { label: string; revert: () => void }[] = [];
+    const seen = new Set<string>();
+    for (const r of bucket) {
+      const rl = r.lang ?? '';
+      const dedupe = `${r.kind}:${rl}`;
+      if (seen.has(dedupe)) continue;
+      const v = r.value ?? 0;
+      if (r.kind === 'line_space' && rl === gapLang) {
+        seen.add(dedupe);
+        out.push({ label: `spacing ${v > 0 ? '+' : ''}${v}mm`, revert: () => void delRow(l, 'line_space', gapLang) });
+      } else if (r.kind === 'line_nospace' && rl === gapLang) {
+        seen.add(dedupe);
+        out.push({ label: 'blank line removed', revert: () => void delRow(l, 'line_nospace', gapLang) });
+      } else if (r.kind === 'width_tibetan' && rl === '') {
+        seen.add(dedupe);
+        out.push({ label: `Tibetan width ${v > 0 ? '+' : ''}${v}mm`, revert: () => void setWidth(l, 'tibetan', null, colLang) });
+      } else if ((r.kind === 'width_phonetics' || r.kind === 'width_translation' || r.kind === 'width_section') && rl === colLang) {
+        seen.add(dedupe);
+        const t = r.kind.slice('width_'.length) as WidthTarget;
+        const name = t === 'phonetics' ? 'phonetics' : t === 'translation' ? 'translation' : 'heading';
+        out.push({ label: `${name} width ${v > 0 ? '+' : ''}${v}mm`, revert: () => void setWidth(l, t, null, colLang) });
+      } else if (pageStart >= 0 && r.kind === GAP_FILL_KIND[side] && rl === gapLang) {
+        seen.add(dedupe);
+        out.push({ label: `page fill +${v}mm`, revert: () => setGapFill(pageStart, side, 0, colLang) });
+      } else if (pageStart >= 0 && r.kind === PAGE_SHIFT_KIND[side] && rl === gapLang) {
+        seen.add(dedupe);
+        out.push({ label: `page shift ${v > 0 ? '↓' : '↑'}${Math.abs(v)}mm`, revert: () => setPageShift(pageStart, side, 0, colLang) });
+      }
+    }
+    return out;
+  };
 
   const adjFor = (l: DocLine, interactive: boolean, forLang = lang,
                   side: PageSide = 'recto'): LineAdj => {
@@ -1201,9 +1583,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       onCommit: (mm: number | null) => {
         void (async () => {
           const body = { item_id: item.id, anchor_syl_id: key, kind, lang: rowLang };
-          mm == null ? await deleteLayoutRow(documentId, body)
-                     : await putLayoutRow(documentId, { ...body, value: mm });
-          await refreshLayout();
+          await withUndo(`${KIND_LABEL[kind] ?? kind} changed`, [body], async () => {
+            mm == null ? await deleteLayoutRow(documentId, body)
+                       : await putLayoutRow(documentId, { ...body, value: mm });
+          }, slotStr(body));
         })();
       },
     };
@@ -1242,53 +1625,103 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // is one, else the first line. This is also what makes the page reproduce the measured
     // height exactly (see `.bk-atpagetop`).
     const opensWithRule = hairlineSet.has(s.start);
+    const side: PageSide = Comp === Verso ? 'verso' : 'recto';
     const els = streamLines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
+      // The hand-tuned balancing edits touching this line in THIS column (spacing, widths;
+      // and, on the page's first line, the page fill/shift). Only computed when the overlay
+      // is on.
+      const edits = showEdits ? lineManualRows(l, colLang, side, k === 0 ? s.start : -1) : [];
+      const popKey = `${l.key}:${side}`;
       return (
         <div key={l.key} className="bk-linewrap" style={{ position: 'relative' }}>
-          {/* The boundary this page OPENS on. A break always is a page start, so it can only
-              ever be reached from here — which is why lifting one used to be impossible: the
-              controls below only exist between lines, where by construction no break can be.
-              A break you placed is marked permanently (not on hover), so a page that ends
-              early reads as your decision rather than as the pagination misbehaving. Forced
-              starts — a new text, a split's tail — are structural and carry no control. */}
-          {k === 0 && globalIdx > 0 && !forcedStarts.has(globalIdx) && breakSet.has(globalIdx) && (
-            <span className={`bk-breakctl-group bk-pagestart${
-              manualBreaks.has(globalIdx) ? ' bk-breakctl-manual' : ''}`}>
+          {/* One horizontal rail per line for every gutter control, so it can never grow
+              taller than its own line and pile onto the next. `row-reverse` keeps the
+              primary control nearest the text and grows the rail out into the margin.
+              Order in source = right-to-left on screen: the always-on VERMILION marks
+              (manual break, vetoes, edit mark) come first so they sit nearest the text and
+              ride the top z-layer (never buried); the hover-only NEGOTIABLE controls (auto
+              page-start, boundary break + hairline) come after. */}
+          <span className="bk-gutter">
+            {/* "My edits" mark — every hand-tuned balancing change on this line, revertible
+                one at a time from the popover. A pencil, NOT scissors, so it never reads as a
+                break control; vermilion, like every mark a re-flow keeps. */}
+            {edits.length > 0 && (
+              <span className="bk-editmark-wrap bk-vermilion-mark">
+                <button type="button" className="bk-editmark"
+                        title={`${edits.length} hand-tuned change${edits.length > 1 ? 's' : ''} here — click to review and revert`}
+                        onClick={() => setEditPop(editPop === popKey ? null : popKey)}>✎</button>
+                {editPop === popKey && (
+                  <div className="bk-editpop">
+                    {edits.map((e, i) => (
+                      <div key={i} className="bk-editpop-row">
+                        <span>{e.label}</span>
+                        <button type="button" title="Revert this change"
+                                onClick={() => { e.revert(); setEditPop(null); }}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </span>
+            )}
+            {/* The boundary this page OPENS on. A break always is a page start; a break you
+                placed is marked permanently (vermilion, always on), an automatic one stays
+                quiet until the line is hovered. Forced starts (a new text, a split tail)
+                are structural and carry no control. */}
+            {k === 0 && globalIdx > 0 && !forcedStarts.has(globalIdx) && breakSet.has(globalIdx) && (
               <button
                 type="button"
                 onClick={() => void toggleBreak(globalIdx)}
-                className="bk-breakctl"
+                className={`bk-breakctl${manualBreaks.has(globalIdx)
+                  ? ' bk-vermilion-mark bk-breakctl-manual' : ' bk-negotiable'}`}
                 title={manualBreaks.has(globalIdx)
                   ? 'You broke the page here. A re-flow keeps it and flows around it. Click to lift it.'
                   : 'Broken here automatically — a re-flow may move it. Click to lift it.'}
               >
                 <Scissors size={9} />
               </button>
-            </span>
-          )}
-          {/* Boundary controls between this line and the previous — plain page break
-              (scissors) or a mid-content hairline split (rule). */}
-          {k > 0 && (
-            <span className="bk-breakctl-group">
-              <button
-                type="button"
-                onClick={() => void toggleBreak(globalIdx)}
-                className="bk-breakctl"
-                title={breakSet.has(globalIdx) ? 'Lift page break' : 'Break page here'}
-              >
+            )}
+            {/* Standing vetoes, visible AT REST in every mode — the flow may not re-place a
+                removed split/break here, and a decision the system honors silently must be
+                visible. Vermilion; the click lifts the veto. */}
+            {vetoInfo.noBreak.has(`${l.itemId}:${anchorOf(l)}`) && (
+              <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
+                      title="You lifted an automatic page break here — the flow will not re-place it. Click to allow it again."
+                      onClick={() => void clearVeto(l, 'no_break')}>
                 <Scissors size={9} />
               </button>
-              <button
-                type="button"
-                onClick={() => void toggleHairline(globalIdx)}
-                className={`bk-breakctl bk-hairctl${hairlineSet.has(globalIdx) ? ' bk-hairctl-on' : ''}`}
-                title={hairlineSet.has(globalIdx) ? 'Lift hairline split' : 'Hairline split here (break mid-content)'}
-              >
-                <Minus size={9} />
+            )}
+            {vetoInfo.noSplit.has(`${l.itemId}:${anchorOf(l)}`) && (
+              <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
+                      title="You removed a split here — the flow will not re-split this line. Click to allow it again."
+                      onClick={() => void clearVeto(l, 'no_split')}>
+                <Scissors size={9} />
               </button>
-            </span>
-          )}
+            )}
+            {/* Boundary controls between this line and the previous — plain page break
+                (scissors) or a mid-content hairline split (rule). Hover-only. */}
+            {k > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void toggleBreak(globalIdx)}
+                  className={`bk-breakctl bk-negotiable${
+                    manualBreaks.has(globalIdx) ? ' bk-vermilion-mark bk-breakctl-manual' : ''}`}
+                  title={breakSet.has(globalIdx) ? 'Lift page break' : 'Break page here'}
+                >
+                  <Scissors size={9} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void toggleHairline(globalIdx)}
+                  className={`bk-breakctl bk-hairctl bk-negotiable${hairlineSet.has(globalIdx) ? ' bk-hairctl-on' : ''}`}
+                  title={hairlineSet.has(globalIdx) ? 'Lift hairline split' : 'Hairline split here (break mid-content)'}
+                >
+                  <Minus size={9} />
+                </button>
+              </>
+            )}
+          </span>
           {splitMode && Comp === Verso
             ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
             : splitMode && Comp === Recto
@@ -1301,12 +1734,38 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     });
     // The reference's thin continuation rule: at the top if this page begins with a
     // hairline split (continued from the previous page); at the bottom if the next page
-    // does (content runs on). Only on the recto text column.
+    // does (content runs on). In split mode a SPLIT's rule carries its chip — the split's
+    // name (yours vs the flow's, the breaks' vermilion convention) and the ONE place a
+    // split is removed. The chip is a bench overlay; the rule's ink itself never changes,
+    // so the PDF stays exactly what the bench shows.
+    const rule = (idx: number, atTop: boolean) => {
+      const cls = `bk-hairline${atTop ? ' bk-atpagetop' : ''}`;
+      const title = 'Continuation rule — this line runs on across the page.';
+      const t = streamLines[idx];
+      const isTail = !!t && t.splitAnchor != null && anchorOf(t) !== t.splitAnchor;
+      if (!splitMode || !isTail) return <div className={cls} title={title} />;
+      const manual = vetoInfo.manualSplit.get(`${t.itemId}:${splitAnchorOf(t)}`) ?? true;
+      return (
+        <div className={cls} title={title}>
+          <span className={`bk-splitchip${manual ? ' bk-splitchip-manual' : ''}`}>
+            <span className="bk-splitchip-label">{manual ? '✂ your split' : '✂ auto split'}</span>
+            {/* Removing a split you MADE reverts it (the flow may re-split here later);
+                removing one the FLOW made rejects it (a no-split mark keeps it gone). */}
+            <button type="button" className="bk-splitchip-x"
+                    title={manual
+                      ? 'Your split — click to revert it. The flow may split here again on a re-flow.'
+                      : 'Placed by the automatic flow. Click to remove it; the flow will then never '
+                        + 're-split this line (a removable mark records that).'}
+                    onClick={() => void (manual ? clearSplit(t) : setSplit(t, -1))}>×</button>
+          </span>
+        </div>
+      );
+    };
     return (
       <>
-        {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
+        {opensWithRule && rule(s.start, true)}
         {els}
-        {hairlineSet.has(s.end) && <div className="bk-hairline" />}
+        {hairlineSet.has(s.end) && rule(s.end, false)}
       </>
     );
   };
@@ -1351,7 +1810,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           ))}
           {doc.languages.length === 0 && <span className="text-vermilion">set languages first</span>}
         </div>
-        <button type="button" onClick={() => void requestSeed(true)} disabled={seeding}
+        <button type="button" onClick={() => void requestSeed(true, 'user')} disabled={seeding}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
                 style={{ border: '1px solid var(--cline)' }}
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
@@ -1381,7 +1840,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               {countdown != null
                 ? `s quiet · ${countdown}s${dirty ? ` (${dirty} syllables changed)`
                                           : balanceStale ? ' (balancing changed)' : ''}`
-                : 's quiet · settled'}
+                : `s quiet · settled${flowNote ? ` · ${flowNote}` : ''}`}
             </span>
           </span>
         )}
@@ -1409,8 +1868,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         <button type="button" onClick={() => setSplitMode(v => !v)}
                 className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${splitMode ? 'text-vermilion' : 'text-ink-soft'}`}
                 style={{ border: '1px solid var(--cline)' }}
-                title="Mid-line split: click a Tibetan syllable to split a line across a page (hairline); click a split to clear it">
+                title="Mid-line split: click a Tibetan syllable to split a line across a page (a thin rule marks the continuation). Clicking a syllable of an existing split MOVES it there; the × on the split's rule removes it — and the flow won't re-split that line.">
           <Scissors size={12} /> split
+        </button>
+        <button type="button" onClick={() => { setShowEdits(v => !v); setEditPop(null); }}
+                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${showEdits ? 'text-vermilion' : 'text-ink-soft'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title="Show my edits: a vermilion mark on every line and page you tuned by hand (spacing, blank lines, widths, fills, shifts). These survive a re-flow; the system's automatic placements do not. Click a mark to see and revert each change.">
+          <Pencil size={12} /> my edits
         </button>
         {doc.languages.length > 1 && (
           <button type="button" onClick={() => setOverview(v => !v)}

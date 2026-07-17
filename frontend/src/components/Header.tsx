@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, FileText, Undo2, Languages, Volume2, Library, RefreshCw } from 'lucide-react';
+import { Layout, FileText, Undo2, Redo2, Languages, Volume2, Library, RefreshCw } from 'lucide-react';
 import type { Route } from '../App';
 import { useUndoStore } from '../store/useUndoStore';
 import { useTextStore } from '../store/useTextStore';
@@ -26,6 +26,10 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
   const topDescription = useUndoStore(s => s.topDescription());
   const undo = useUndoStore(s => s.undo);
   const canUndo = historyLen > 0;
+  const redoLen = useUndoStore(s => s.redoStack.length);
+  const topRedoDescription = useUndoStore(s => s.topRedoDescription());
+  const redo = useUndoStore(s => s.redo);
+  const canRedo = redoLen > 0;
   const hasText = useTextStore(s => s.currentText != null);
   const bumpRefresh = useUIStore(s => s.bumpRefresh);
   return (
@@ -66,11 +70,19 @@ export const Header: React.FC<HeaderProps> = ({ currentRoute, onNavigate }) => {
           <button
             onClick={() => { if (canUndo) void undo(); }}
             disabled={!canUndo}
-            className="px-2 py-1.5 mr-2 rounded-md flex items-center gap-1 text-sm font-medium text-mist-200 hover:text-gold hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1.5 rounded-md flex items-center gap-1 text-sm font-medium text-mist-200 hover:text-gold hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={canUndo ? `Undo: ${topDescription} (Ctrl+Z)` : 'Nothing to undo'}
           >
             <Undo2 size={16} />
             Undo
+          </button>
+          <button
+            onClick={() => { if (canRedo) void redo(); }}
+            disabled={!canRedo}
+            className="px-2 py-1.5 mr-2 rounded-md flex items-center gap-1 text-sm font-medium text-mist-200 hover:text-gold hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={canRedo ? `Redo: ${topRedoDescription} (Ctrl+Shift+Z)` : 'Nothing to redo'}
+          >
+            <Redo2 size={16} />
           </button>
           {TABS.map(t => {
             // Text-scoped tabs need a loaded document; Texts and Documents don't.

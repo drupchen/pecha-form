@@ -85,17 +85,27 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   transform: scale(var(--ov-inv, 1));
   transform-origin: top right;
 }
-.booklet-ov-scale .bk-breakctl-group {
-  transform: scale(var(--ov-inv, 1));
-  transform-origin: top left;
+.booklet-ov-scale .bk-gutter {
+  transform: translateY(-50%) scale(var(--ov-inv, 1));
+  transform-origin: right center;
 }
 .booklet-ov-scale .bk-gapfill {
   transform: scale(var(--ov-inv, 1));
   transform-origin: bottom left;
 }
-.booklet-ov-scale .bk-pageshift span {
+.booklet-ov-scale .bk-pageshift span,
+.booklet-ov-scale .bk-pageshift .bk-slider-reset {
   transform: scale(var(--ov-inv, 1));
   transform-origin: left center;
+}
+/* Every chip added later belongs in this block too, or it renders sub-10px in the
+   overview — precisely the mode built for cross-edition split work. */
+.booklet-ov-scale .bk-splitchip {
+  transform: translate(-50%, -50%) scale(var(--ov-inv, 1));
+}
+.booklet-ov-scale .bk-editmark {
+  transform: scale(var(--ov-inv, 1));
+  transform-origin: right center;
 }
 
 .booklet-page {
@@ -470,7 +480,7 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-gapfill-recto { left: var(--m-bind); }
 .booklet-page:hover > .bk-gapfill,
 .bk-gapfill:focus-within { display: flex; }
-.bk-gapfill input[type='range'] { width: 38mm; accent-color: var(--jade, #3a7d5f); height: 10px; }
+.bk-gapfill input[type='range'] { width: 38mm; accent-color: var(--jade, #3a7d5f); height: 16px; }
 .bk-gapfill span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
                    white-space: nowrap; }
 /* The Tibetan side reads in the darker ink — it is the shared page, set once for all four
@@ -478,6 +488,21 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-gapfill-verso input[type='range'] { accent-color: var(--lapis, #2f6f9f); }
 .bk-gapfill-verso span { color: var(--lapis, #2f6f9f); }
 @media print { .bk-gapfill { display: none !important; } }
+
+/* Reset (↺) on a page slider — shown only when the slider carries a value, so an untouched
+ * page stays clean. A small round button with a padded hit area (≥24px). */
+.bk-slider-reset {
+  flex: 0 0 auto;
+  width: 16px; height: 16px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 600 12px/1 system-ui, sans-serif;
+  color: var(--ink-soft, #77706a); background: #fff;
+  border: 1px solid var(--cline, #ddd); border-radius: 50%; cursor: pointer;
+  position: relative;
+}
+.bk-slider-reset::before { content: ''; position: absolute; inset: -5px; }  /* ≥24px hit area */
+.bk-slider-reset:hover { color: var(--vermilion, #c53030); border-color: var(--vermilion, #c53030); }
+@media print { .bk-slider-reset { display: none !important; } }
 
 /* The page's vertical shift: drag the whole block down or up. Sits in each page's LEFT
  * margin — the verso's outer, the recto's binding. Not the outer margin on both: the recto's
@@ -494,14 +519,18 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   flex-direction: column;
   align-items: center;
   gap: 3px;
+  /* The full-height track must not eat hovers meant for the line gutter beside it — only
+     its own interactive children capture. */
+  pointer-events: none;
 }
+.bk-pageshift input[type='range'], .bk-pageshift .bk-slider-reset { pointer-events: auto; }
 .booklet-page:hover > .bk-pageshift,
 .bk-pageshift:focus-within { display: flex; }
 .bk-pageshift input[type='range'] {
   writing-mode: vertical-lr;    /* NOT -webkit-appearance: slider-vertical (gone in Chrome 135) */
   direction: ltr;
   flex: 1;
-  width: 10px;
+  width: 16px;
   accent-color: var(--jade, #3a7d5f);
 }
 .bk-pageshift span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
@@ -547,26 +576,42 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-shiftmark[data-dir='up'] span { color: var(--vermilion, #c53030); }
 @media print { .bk-shiftmark { display: none !important; } }
 
-/* Gap controls (−/+/× and restore) — revealed on hover of the gap. */
+/* Gap controls (−/+/× and restore) — revealed on hover OR keyboard focus of the gap.
+   Revealed by opacity (not display), so the buttons are tabbable and the reveal matches
+   the break controls' 0.12s fade. Sized for fingers and failing eyesight: ≥18px visual,
+   ≥24px pitch (WCAG 2.5.8) — they are absolutely-positioned overlays, so growing them
+   moves nothing the pagination measures. */
 .bk-gapctl-group {
-  position: absolute; right: -2px; top: -8px; display: none; gap: 1px;
+  position: absolute; right: -2px; top: -11px; display: inline-flex; gap: 5px;
+  opacity: 0; pointer-events: none; transition: opacity 0.12s;
 }
-.bk-gap:hover .bk-gapctl-group { display: inline-flex; }
+.bk-gap:hover .bk-gapctl-group,
+.bk-gap:focus-within .bk-gapctl-group { opacity: 1; pointer-events: auto; }
 .bk-gap-removed:hover .bk-gapctl,
 .bk-gapctl {
-  font: 600 9px/1 system-ui, sans-serif;
-  min-width: 12px; height: 12px; padding: 0 2px;
+  font: 600 11px/1 system-ui, sans-serif;
+  min-width: 19px; height: 19px; padding: 0 3px;
   background: #fff; color: var(--lapis, #2f6f9f);
   border: 1px solid var(--cline, #ddd); border-radius: 3px; cursor: pointer;
 }
-.bk-gap-removed .bk-gapctl { position: absolute; right: -2px; top: -6px; opacity: 0; }
-.bk-gap-removed:hover .bk-gapctl { opacity: 1; }
+.bk-gapctl:hover { background: var(--cream, #f4ead8); }
+/* The removed blank line stays 0-height (the removal must remove — this box is measured),
+   so the restore control gets an OUT-OF-FLOW hover zone instead, and sits faintly visible
+   at rest: a removed line is a decision, and decisions must not be secret. */
+.bk-gap-removed::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -7px; height: 14px;
+}
+.bk-gap-removed .bk-gapctl { position: absolute; right: -2px; top: -9px; opacity: 0.35; }
+.bk-gap-removed:hover .bk-gapctl,
+.bk-gap-removed:focus-within .bk-gapctl { opacity: 1; }
 
 /* Per-line width grip: grab a text block's RIGHT EDGE and slide it out toward the page's
    physical border (the page clips there) or back in to wrap the text. Revealed on hover of
    its own block, so every line is adjustable independently. A design control — never printed. */
 .bk-widthgrip {
-  position: absolute; right: -3px; top: 0; bottom: 0; width: 6px;
+  /* A 14px grab zone whose VISIBLE edge is still the same 2px jade line at the same spot
+     (right:-7px + border-right lands the ink where right:-3px/width:6px used to). */
+  position: absolute; right: -7px; top: 0; bottom: 0; width: 14px;
   cursor: ew-resize; display: none; z-index: 2;
   border-right: 2px solid var(--jade, #3a7d5f);
   border-radius: 2px;
@@ -581,30 +626,40 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 
 @media print { .bk-widthgrip { display: none !important; } }
 
-/* Per-line-boundary break controls (force/lift a plain page break, or a mid-content
- * hairline split). Hidden until the line is hovered so the page reads cleanly. */
-.bk-breakctl-group {
+/* ── The line's gutter rail ──────────────────────────────────────────────────
+ * ONE horizontal rail per line holds every gutter control (break, hairline, veto, edit
+ * mark), so the gutter can never grow TALLER than its own ~13px line and pile onto the
+ * next — the vertical column it replaced was 43px tall (two 19px buttons stacked) and
+ * buried adjacent lines' always-on vermilion marks. `row-reverse` puts the first-in-source
+ * control nearest the text and grows the rail leftward into the margin.
+ *
+ * The z-index LADDER carries on the GUTTER (a positioned element) — a z-index on the
+ * static buttons inside does nothing, and the gutter is a DOM sibling BEFORE the line's
+ * text, so without its own z-index it paints under its own Tibetan. The rungs:
+ *   pageshift/gapfill track   3   (page-level absolute overlays)
+ *   gutter (base)             4   (above its own line's text)
+ *   hovered line's gutter     5   (its whole rail floats above neighbours)
+ *   gutter holding a mark     6   (a vermilion mark is never buried, even by a hovered
+ *                                  neighbour whose 19px rail slightly overlaps this line) */
+.bk-gutter {
   position: absolute;
-  left: -16px;
-  top: -6px;
+  left: -24px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
-  flex-direction: column;
-  gap: 1px;
-  opacity: 0;
-  transition: opacity 0.12s;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 5px;               /* 19 + 5 = 24px pitch (WCAG 2.5.8) */
+  white-space: nowrap;
+  z-index: 4;
 }
-.bk-linewrap:hover > .bk-breakctl-group { opacity: 1; }
-/* A break the USER placed stays visible without hovering: a page that stops early is then
- * legibly their own decision, not the pagination going wrong. Vermilion marks "yours, and
- * a re-flow will keep it"; an automatic page start stays quiet until hovered. */
-.bk-breakctl-group.bk-breakctl-manual { opacity: 1; }
-.bk-breakctl-manual .bk-breakctl {
-  color: var(--vermilion, #c53030);
-  border-color: var(--vermilion, #c53030);
-}
+.bk-linewrap:hover > .bk-gutter,
+.bk-linewrap:focus-within > .bk-gutter { z-index: 5; }
+.bk-gutter:has(.bk-vermilion-mark) { z-index: 6; }
 .bk-breakctl {
-  width: 14px;
-  height: 12px;
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -617,17 +672,106 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-breakctl:hover { background: var(--cream, #f4efe3); }
 .bk-hairctl { color: var(--jade, #3a7d5f); }
 .bk-hairctl-on { background: var(--jade, #3a7d5f); color: #fff; }
+/* Hover-only negotiable controls (auto placements the flow may re-decide). */
+.bk-negotiable {
+  opacity: 0; pointer-events: none; transition: opacity 0.12s;
+}
+.bk-linewrap:hover .bk-negotiable,
+.bk-linewrap:focus-within .bk-negotiable { opacity: 1; pointer-events: auto; }
+/* Vermilion = yours, a re-flow keeps it — visible at rest (the gutter's :has() rung keeps
+ * it on top; the button is static, so z-index would live on the gutter, not here). */
+.bk-vermilion-mark {
+  opacity: 1; pointer-events: auto;
+  color: var(--vermilion, #c53030);
+  border-color: var(--vermilion, #c53030);
+}
+/* The standing VETO (a removed split/break the flow must not re-place) wears a slashed
+ * scissors over the vermilion mark. */
+.bk-vetobtn { position: relative; }
+.bk-vetobtn::after {
+  content: ''; position: absolute; left: 2px; right: 2px; top: 50%;
+  border-top: 1.5px solid var(--vermilion, #c53030);
+  transform: rotate(-45deg);
+}
+@media print { .bk-gutter { display: none !important; } }
 
-/* The mid-content hairline continuation rule (matches the reference booklets). */
+/* "My edits" — a vermilion pencil on every line carrying a hand-tuned balancing change,
+ * opening a popover that lists each change with a per-change revert. A pencil (not scissors)
+ * so it never reads as a break control. */
+.bk-editmark-wrap { position: relative; display: inline-flex; }
+.bk-editmark {
+  width: 19px; height: 19px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font: 600 11px/1 system-ui, sans-serif;
+  color: var(--vermilion, #c53030); background: #fff;
+  border: 1px solid var(--vermilion, #c53030); border-radius: 3px; cursor: pointer;
+}
+.bk-editmark:hover { background: var(--cream, #f4efe3); }
+/* The list opens toward the text (right of the gutter) so the narrow margin never clips it;
+ * the page's overflow:hidden keeps it on the sheet. */
+.bk-editpop {
+  position: absolute; left: 24px; top: -2px; z-index: 30;
+  min-width: 120px; padding: 3px; border-radius: 5px;
+  background: #fff; border: 1px solid var(--vermilion, #c53030);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  font: 500 10px/1.3 system-ui, sans-serif; color: #333; white-space: nowrap;
+}
+.bk-editpop-row { display: flex; align-items: center; gap: 8px; padding: 2px 3px; }
+.bk-editpop-row span { flex: 1; }
+.bk-editpop-row button {
+  flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
+  border: 1px solid var(--cline, #ddd); background: #fff; cursor: pointer;
+  font: 700 11px/1 system-ui, sans-serif; color: var(--vermilion, #c53030);
+}
+.bk-editpop-row button:hover { background: var(--vermilion, #c53030); color: #fff; }
+@media print { .bk-editmark-wrap, .bk-editpop { display: none !important; } }
+
+/* Instruction translations merged onto a line by the (Tibetan-side) continuation rule:
+ * the trail stands as its OWN small block under the line's content — the standalone small
+ * line's look, without a line of its own in the stream. The Style Studio's Small role
+ * addresses this shape too (its selector carries both). */
+.bk-smalltrail {
+  font-family: var(--font-small);
+  font-size: 9pt;
+}
+
+/* The mid-content hairline continuation rule (matches the reference booklets).
+ * `position: relative` anchors the bench's split chip; the rule's INK never changes —
+ * the chip is an overlay, and the printed page draws exactly this same rule. */
 .bk-hairline {
   border-top: 0.4pt solid #888;
   margin: 1.2mm 13mm 1.2mm 8mm;
+  position: relative;
 }
 
-/* Split mode — verso syllables + recto words are clickable to place a mid-line split. */
-.bk-splitmode .bk-syl { cursor: pointer; border-radius: 2px; }
+/* The split's chip, riding ON its continuation rule in split mode: names the split
+ * (vermilion = yours, kept; lapis = the flow's, re-decidable) and carries the ONE control
+ * that removes it. */
+.bk-splitchip {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 4px 1px 7px; border-radius: 9px;
+  background: #fff; border: 1px solid var(--lapis, #2f6f9f);
+  color: var(--lapis, #2f6f9f);
+  font: 600 10px/1.4 system-ui, sans-serif; white-space: nowrap; z-index: 5;
+}
+.bk-splitchip-manual { border-color: var(--vermilion, #c53030); color: var(--vermilion, #c53030); }
+.bk-splitchip-x {
+  min-width: 19px; height: 19px; border-radius: 50%;
+  border: 1px solid currentColor; background: #fff; color: inherit;
+  font: 700 12px/1 system-ui, sans-serif; cursor: pointer;
+}
+.bk-splitchip-x:hover { background: var(--cream, #f4efe3); }
+
+/* Split mode — verso syllables + recto words are clickable to place or move a mid-line
+ * cut. A faint at-rest TINT says the mode is armed (an underline would strike through
+ * Tibetan vowel signs and subjoined letters — never underline Tibetan); the vertical
+ * padding fattens the targets without moving any line box (inline-safe). */
+.bk-splitmode .bk-syl { cursor: pointer; border-radius: 2px; padding: 4px 0;
+                        background: rgba(197, 48, 48, 0.05); }
 .bk-splitmode .bk-syl:hover { background: rgba(197, 48, 48, 0.18); box-shadow: -1px 0 0 var(--vermilion, #c53030); }
-.bk-wordsplit .bk-word { cursor: pointer; border-radius: 2px; }
+.bk-wordsplit .bk-word { cursor: pointer; border-radius: 2px; padding: 4px 0;
+                         background: rgba(197, 48, 48, 0.05); }
 .bk-wordsplit .bk-word:hover { background: rgba(197, 48, 48, 0.18); box-shadow: -1px 0 0 var(--vermilion, #c53030); }
 
 /* ── Style Studio specimen — compact editable blocks ─────────────────────────

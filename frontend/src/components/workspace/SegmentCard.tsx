@@ -412,7 +412,7 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
               ? allNotesFull.find(n => n.passage_id === p.id && n.start_offset <= ro && n.end_offset >= reo)
               : undefined;
             const style: React.CSSProperties = { ...tagBgStyle(anns) };
-            if (anns.some(a => ['small', 'sapche'].includes(a.tag.name.trim().toLowerCase()))) {
+            if (anns.some(a => { const n = a.tag.name.trim().toLowerCase(); return n.startsWith('small') || n === 'sapche'; })) {
               style.fontSize = '0.75em';
             }
             if (note) style.borderBottom = '1.5px dashed #A28348';
@@ -539,7 +539,7 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
       const style: React.CSSProperties = { ...tagBgStyle(anns) };
       // A run tagged "small" or "sapche" (small-letters annotations) renders at 75% size.
       // `em` (not rem) so it composes with the pane-wide taggerFontSize on the container.
-      if (anns.some(a => ['small', 'sapche'].includes(a.tag.name.trim().toLowerCase()))) {
+      if (anns.some(a => { const n = a.tag.name.trim().toLowerCase(); return n.startsWith('small') || n === 'sapche'; })) {
         style.fontSize = '0.75em';
       }
       const classes: string[] = [];

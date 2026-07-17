@@ -31,6 +31,7 @@ ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "translation":   ("Translation", ["Translation Words", "Translation With-Tib"]),
     "mantra":        ("Mantras", ["Mantra", "Mantras Words"]),
     "small":         ("Small Letters", ["Small Words", "Small"]),
+    "intro":         ("Introduction", ["Intro"]),
     # Section titles by outline level (three tiers). Legacy single "Sections"/"Section"
     # imports onto level 1.
     "section_1":     ("Section Title 1", ["Sections", "Section", "Section Title"]),
@@ -56,6 +57,8 @@ _TEMPLATE_DEFAULTS: dict[str, dict] = {
     "translation":   {"font": "Gentium Basic", "size": 11, "indent": 42.5},      # Translation
     "mantra":        {"font": "Gentium Basic", "size": 12, "bold": True, "indent": 28.4},  # Mantras (Words)
     "small":         {"font": "Libertinus Serif Display", "size": 9},            # Small Letters
+    "intro":         {"font": "Gentium Basic", "size": 11},                      # Introduction
+
     "section_1":     {"font": "Libertinus Serif Display", "size": 15},           # Sections L1 (upright)
     "section_2":     {"font": "Libertinus Serif Display", "size": 13.5},         # Sections L2
     "section_3":     {"font": "Libertinus Serif Display", "size": 12},           # Sections L3
