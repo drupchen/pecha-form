@@ -39,7 +39,7 @@ const STATUS_PILL: Record<Phonetic['status'], { label: string; cls: string }> = 
  */
 export const PhoneticsView: React.FC = () => {
   const canEditPhonetics = useCan('phonetics').canModify;
-  const { currentText } = useTextStore();
+  const currentText = useTextStore(s => s.currentText);
   const tokens = useEditorTokenStore(s => s.tokens);
   const fetchTokens = useEditorTokenStore(s => s.fetchTokens);
   const spans = useTagStore(s => s.spans);

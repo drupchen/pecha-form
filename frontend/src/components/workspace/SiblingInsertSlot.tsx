@@ -20,8 +20,8 @@ interface Props {
  * via _shift_siblings).
  */
 export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position }) => {
-  const { currentText } = useTextStore();
-  const { createNode } = useTreeNodeStore();
+  const currentText = useTextStore(s => s.currentText);
+  const createNode = useTreeNodeStore(s => s.createNode);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult') || useContext(TreeConsultContext);

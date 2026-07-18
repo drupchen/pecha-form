@@ -14,11 +14,12 @@ router = APIRouter(prefix="/api", tags=["passages"])
 # work on derived texts whose tokens are parent-links.
 
 
-def _resolve_members(conn, text_id: int, passage_id: int) -> list[dict]:
+def _resolve_members(conn, text_id: int, passage_id: int, cache: dict | None = None) -> list[dict]:
     """Resolve a passage's member runs into ordered syllable link dicts. Each member
     is a contiguous run of existing tokens in the same text (links, by uuid)."""
-    syls = base_tokens(conn, text_id)
+    syls = base_tokens(conn, text_id, cache=cache)
     by_id = {s["id"]: s for s in syls}
+    syl_pos = {s["id"]: i for i, s in enumerate(syls)}
     members = conn.execute(
         "SELECT position, src_start_syl_id, src_end_syl_id FROM passage_members "
         "WHERE passage_id = ? ORDER BY position",
@@ -26,7 +27,7 @@ def _resolve_members(conn, text_id: int, passage_id: int) -> list[dict]:
     ).fetchall()
     out = []
     for m in members:
-        ids = syllable_ids_between(syls, m["src_start_syl_id"], m["src_end_syl_id"])
+        ids = syllable_ids_between(syls, m["src_start_syl_id"], m["src_end_syl_id"], pos=syl_pos)
         out.append({
             "position": m["position"],
             "src_start_syl_id": m["src_start_syl_id"],
@@ -40,7 +41,7 @@ def _resolve_members(conn, text_id: int, passage_id: int) -> list[dict]:
     return out
 
 
-def _passage_out(conn, row, stream_text_id=None, inherited=False) -> dict:
+def _passage_out(conn, row, stream_text_id=None, inherited=False, cache: dict | None = None) -> dict:
     # Members resolve against the STREAM text (the child for an inherited passage),
     # and the returned text_id is the stream's so the frontend attributes it here.
     stream_text_id = stream_text_id if stream_text_id is not None else row["text_id"]
@@ -53,7 +54,7 @@ def _passage_out(conn, row, stream_text_id=None, inherited=False) -> dict:
         d["translations"] = json.loads(d.get("translations") or "{}")
     except (ValueError, TypeError):
         d["translations"] = {}
-    return {**d, "members": _resolve_members(conn, stream_text_id, row["id"])}
+    return {**d, "members": _resolve_members(conn, stream_text_id, row["id"], cache=cache)}
 
 
 def _validate_members(conn, text_id: int, members) -> None:
@@ -91,7 +92,8 @@ def list_passages(text_id: int):
     from ..inherit import source_texts
     conn = get_db()
     try:
-        stream = {t["id"] for t in base_tokens(conn, text_id)}
+        compose_cache: dict = {}
+        stream = {t["id"] for t in base_tokens(conn, text_id, cache=compose_cache)}
         out = []
         emitted = set()  # (anchor, member-ranges) already shown
         for origin in [text_id] + source_texts(conn.cursor(), text_id):
@@ -101,7 +103,7 @@ def list_passages(text_id: int):
             ).fetchall():
                 if r["anchor_syl_id"] is not None and r["anchor_syl_id"] not in stream:
                     continue
-                members = _resolve_members(conn, text_id, r["id"])
+                members = _resolve_members(conn, text_id, r["id"], cache=compose_cache)
                 # Every member must have at least one surviving syllable in the stream.
                 if not members or any(not m["syllables"] for m in members):
                     continue
@@ -113,7 +115,8 @@ def list_passages(text_id: int):
                 if inherited and key in emitted:
                     continue
                 emitted.add(key)
-                d = _passage_out(conn, r, stream_text_id=text_id, inherited=inherited)
+                d = _passage_out(conn, r, stream_text_id=text_id, inherited=inherited,
+                                 cache=compose_cache)
                 d["members"] = members
                 out.append(d)
         return out

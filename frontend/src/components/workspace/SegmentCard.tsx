@@ -56,24 +56,30 @@ const PROVENANCE_TITLE: Record<string, string> = {
  * any number of overlapping inline annotation spans rendered as colored
  * backgrounds inside the body text.
  */
-export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, isFirstSegment }) => {
-  const { currentText } = useTextStore();
+export const SegmentCard = React.memo(function SegmentCard({ segment, nextSegmentAnchorSylId, isFirstSegment }: Props) {
+  const currentText = useTextStore(s => s.currentText);
   const loadText = useTextStore(s => s.loadText);
   const texts = useTextStore(s => s.texts);
   const deleteSuggestion = useSuggestionStore(s => s.deleteSuggestion);
-  const { tags, updateSpan, deleteSpan, deleteTag } = useTagStore();
+  const tags = useTagStore(s => s.tags);
+  const updateSpan = useTagStore(s => s.updateSpan);
+  const deleteSpan = useTagStore(s => s.deleteSpan);
+  const deleteTag = useTagStore(s => s.deleteTag);
   // Full-text data for PASSAGE-run rendering: a passage's source syllables may live in
   // another segment, so per-segment slices don't cover them.
   const allSpansFull = useTagStore(s => s.spans);
   const allNotesFull = useNoteStore(s => s.notes);
   const editorTokensAll = useEditorTokenStore(s => s.tokens);
-  const { nodes, createNode, updateNode } = useTreeNodeStore();
+  const nodes = useTreeNodeStore(s => s.nodes);
+  const createNode = useTreeNodeStore(s => s.createNode);
+  const updateNode = useTreeNodeStore(s => s.updateNode);
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
   const editingAppend = useTreeNodeStore(s => s.editingAppend);
   const setHovered = useLinkStore(s => s.setHovered);
   const setFocused = useLinkStore(s => s.setFocused);
-  const hoveredKey = useLinkStore(s => s.hoveredKey);
+  // Boolean, not the raw key: hovering one card must not re-render every card.
+  const isLinkHovered = useLinkStore(s => s.hoveredKey === segment.start);
   const allPassages = usePassageStore(s => s.passages);
   const editPassage = usePassageStore(s => s.editPassage);
   const splitPassageAt = usePassageStore(s => s.splitPassageAt);
@@ -129,7 +135,6 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
   const linkKey = segment.start;
   const linkedNode = nodes.find(n => n.segment_start === segment.start);
 
-  const isLinkHovered = hoveredKey === linkKey;
   const linkProps: Record<string, any> = {
     'data-link-key': linkKey,
     onMouseEnter: () => setHovered(linkKey),
@@ -391,6 +396,17 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
       : new Set<string>();
     const renderPassage = (p: Passage) => {
       const syls = p.members.flatMap(m => m.syllables);
+      // One pass over the full-text span/note arrays per RUN, not per syllable — the
+      // per-syllable predicates below then scan only the handful that overlap the run.
+      let runMin = Infinity, runMax = -Infinity;
+      for (const s of syls) {
+        const o = srcOffsets.get(s.syl_id);
+        if (o) { if (o[0] < runMin) runMin = o[0]; if (o[1] > runMax) runMax = o[1]; }
+      }
+      const runSpans = runMin <= runMax
+        ? passageSpans.filter(a => a.start_offset <= runMax && a.end_offset >= runMin)
+        : [];
+      const runNotes = allNotesFull.filter(n => n.passage_id === p.id);
       const runSuppress = verseVertical
         ? shortVerseGroupEnders(syls.map(s => ({ id: s.syl_id, text: s.text, nature: s.nature })))
         : new Set<string>();
@@ -400,7 +416,7 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
               const o = srcOffsets.get(s.syl_id);
               return o ? [{ id: s.syl_id, start_offset: o[0], end_offset: o[1] }] : [];
             }),
-            passageSpans as any, tokenSpaceOf, spanSpace as any)
+            runSpans as any, tokenSpaceOf, spanSpace as any)
         : new Set<string>();
       out.push(
         <span
@@ -416,11 +432,11 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
             const reo = off ? off[1] : -1;
             const sSpace = sylSpace.get(s.syl_id) ?? 'host';
             const anns = ro >= 0
-              ? passageSpans.filter(a => a.start_offset <= ro && a.end_offset >= reo
+              ? runSpans.filter(a => a.start_offset <= ro && a.end_offset >= reo
                   && spanSpace(a) === sSpace)
               : [];
             const note = ro >= 0
-              ? allNotesFull.find(n => n.passage_id === p.id && n.start_offset <= ro && n.end_offset >= reo)
+              ? runNotes.find(n => n.start_offset <= ro && n.end_offset >= reo)
               : undefined;
             const style: React.CSSProperties = { ...tagBgStyle(anns) };
             if (anns.some(a => { const n = a.tag.name.trim().toLowerCase(); return n.startsWith('small') || n === 'sapche'; })) {
@@ -1125,4 +1141,4 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
       )}
     </div>
   );
-};
+});

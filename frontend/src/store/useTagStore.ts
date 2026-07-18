@@ -315,9 +315,9 @@ export const useTagStore = create<TagState>((set, get) => ({
 
 // ─── Selectors ───────────────────────────────────────────────────────────────
 
-export const selectRegularTags = (state: TagState) =>
+export const selectRegularTags = (state: Pick<TagState, 'tags'>) =>
   state.tags.filter(t => t.tag_kind === 'regular');
-export const selectSessionTags = (state: TagState) =>
+export const selectSessionTags = (state: Pick<TagState, 'tags'>) =>
   state.tags
     .filter(t => t.tag_kind === 'session')
     // Natural order: A1, A2, …, A9, A10, … then B1, B2, … (not lexicographic).

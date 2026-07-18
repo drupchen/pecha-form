@@ -17,8 +17,8 @@ interface Props {
  *     which only triggers when the title is still in the placeholder set).
  */
 export const AddNodeButton: React.FC<Props> = ({ parentId, label = '+ Add section' }) => {
-  const { currentText } = useTextStore();
-  const { createNode } = useTreeNodeStore();
+  const currentText = useTextStore(s => s.currentText);
+  const createNode = useTreeNodeStore(s => s.createNode);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
 
   if (!currentText) return null;

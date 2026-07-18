@@ -58,18 +58,24 @@ interface Props {
   parentComponent: string | null; // parent's own level identifier (null at root)
 }
 
-export const TreeNodeCard: React.FC<Props> = ({
+export const TreeNodeCard = React.memo(function TreeNodeCard({
   node, parentChildren, parentNode, grandparentNode, depth, parentComponent,
-}) => {
-  const { currentText } = useTextStore();
+}: Props) {
+  const currentText = useTextStore(s => s.currentText);
   const markers = useMarkerStore(s => s.markers);
   const setHovered = useLinkStore(s => s.setHovered);
-  const hoveredKey = useLinkStore(s => s.hoveredKey);
+  // Boolean, not the raw key: hovering one card must not re-render every node.
+  const isLinkHovered = useLinkStore(s =>
+    s.hoveredKey != null
+    && s.hoveredKey === (node.segment_start ?? (node.passage_id != null ? -node.passage_id : null)));
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult') || useContext(TreeConsultContext);
   // An INHERITED section is read-only here — edit the sapche on its owning text.
   const readOnly = sessionMode || consultMode || !!node.inherited;
-  const { updateNode, moveNode, deleteNode, createNode } = useTreeNodeStore();
+  const updateNode = useTreeNodeStore(s => s.updateNode);
+  const moveNode = useTreeNodeStore(s => s.moveNode);
+  const deleteNode = useTreeNodeStore(s => s.deleteNode);
+  const createNode = useTreeNodeStore(s => s.createNode);
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
   const setEditingAppend = useTreeNodeStore(s => s.setEditingAppend);
@@ -230,7 +236,6 @@ export const TreeNodeCard: React.FC<Props> = ({
 
   // Link-overlay wiring: linked nodes participate. The link key is the segment_start
   // offset, or the passage key space (-passage_id) for passage-linked nodes.
-  const isLinkHovered = linkKey != null && hoveredKey === linkKey;
   const isActive = activeNodeId === node.id;
   const lastHoveredTreeNodeId = useUIStore(s => s.lastHoveredTreeNodeId);
   const setLastHoveredTreeNodeId = useUIStore(s => s.setLastHoveredTreeNodeId);
@@ -683,7 +688,7 @@ export const TreeNodeCard: React.FC<Props> = ({
       )}
     </div>
   );
-};
+});
 
 /**
  * Linked-text preview rendered under the tree-node title.

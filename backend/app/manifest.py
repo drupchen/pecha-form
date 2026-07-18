@@ -314,15 +314,20 @@ def syllable_ids_in_range(syllables: list[dict], start: int, end: int) -> list[s
 
 
 def syllable_ids_between(
-    syllables: list[dict], start_syl_id: str, end_syl_id: str
+    syllables: list[dict], start_syl_id: str, end_syl_id: str,
+    pos: dict | None = None,
 ) -> list[str]:
     """uuid ids from ``start_syl_id`` to ``end_syl_id`` inclusive, in reading order.
 
     Phase-3 offset-free analogue of ``syllable_ids_in_range`` for an on-grid range
     whose endpoints are stored syllable-UUID anchors. For an on-grid portion
     (start anchor's start == range start, end anchor's end == range end) the two
-    return the same ids. Returns ``[]`` if either anchor is absent or reversed."""
-    pos = {s["id"]: i for i, s in enumerate(syllables)}
+    return the same ids. Returns ``[]`` if either anchor is absent or reversed.
+
+    ``pos`` (syl_id → index over ``syllables``) lets callers resolving MANY ranges
+    over the same sequence build the index once instead of per call."""
+    if pos is None:
+        pos = {s["id"]: i for i, s in enumerate(syllables)}
     i, j = pos.get(start_syl_id), pos.get(end_syl_id)
     if i is None or j is None or i > j:
         return []

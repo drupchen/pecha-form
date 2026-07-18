@@ -103,10 +103,10 @@ export async function compileTextItem(
   // Sapche outline depth per anchor syllable: a tree node's `segment_start` offset →
   // the syllable starting there → its nesting depth (root = 0). Section headings use
   // this to step their size by outline level.
+  const nodeById = new Map<number, any>(treeNodes.map((x: any) => [x.id, x]));
   const depthOfNode = (n: any): number => {
     let d = 0, cur = n, guard = 0;
-    const byId = new Map<number, any>(treeNodes.map((x: any) => [x.id, x]));
-    while (cur.parent_id != null && guard++ < 64) { cur = byId.get(cur.parent_id); if (!cur) break; d++; }
+    while (cur.parent_id != null && guard++ < 64) { cur = nodeById.get(cur.parent_id); if (!cur) break; d++; }
     return d;
   };
   const sylAtOffset = new Map<number, string>();
@@ -160,9 +160,13 @@ export async function compileTextItem(
   //
   // Anchor-only — matching the end syllable too would make a row spanning several lines
   // render on both its first AND its last (duplication).
+  const phonByStart = new Map<string, typeof phonetics>();
+  for (const p of phonetics) {
+    const rows = phonByStart.get(p.start_syl_id);
+    if (rows) rows.push(p); else phonByStart.set(p.start_syl_id, [p]);
+  }
   const phonFor = (l: { startSylId: string; endSylId: string; sylIds: string[]; tagType: string }): string => {
-    const ids = new Set(l.sylIds);
-    let matched = phonetics.filter((p) => ids.has(p.start_syl_id));
+    let matched = l.sylIds.flatMap((id) => phonByStart.get(id) ?? []);
     const want = kindOf(l.tagType);
     if (want) {
       const preferred = matched.filter((p) => p.kind === want);
@@ -183,15 +187,19 @@ export async function compileTextItem(
     const t = c.translations.find((x) => x.lang === lang);
     if (t) transByRange.set(rk(c.start_syl_id, c.end_syl_id), t.body);
   }
+  const transByStart = new Map<string, typeof translations>();
+  for (const c of translations) {
+    const rows = transByStart.get(c.start_syl_id);
+    if (rows) rows.push(c); else transByStart.set(c.start_syl_id, [c]);
+  }
   const transFor = (ch: { startSylId: string; endSylId: string; sylIds: string[] }): string => {
     const exact = transByRange.get(rk(ch.startSylId, ch.endSylId));
     if (exact != null) return exact;
-    const ids = new Set(ch.sylIds);
     // EVERY translation anchored in this chunk, in stream order — a derived chunk can span
     // several of the origin's, and taking the first threw the others away. Concatenated as
     // HTML, so `splitParagraphs` below sees all of their paragraphs.
-    const hits = translations
-      .filter((c) => ids.has(c.start_syl_id))
+    const hits = ch.sylIds
+      .flatMap((id) => transByStart.get(id) ?? [])
       .sort((a, b) => (posById.get(a.start_syl_id) ?? 0) - (posById.get(b.start_syl_id) ?? 0))
       .map((c) => c.translations.find((x) => x.lang === lang)?.body)
       .filter((b): b is string => !!b);
@@ -426,9 +434,13 @@ export async function compileDocument(items: DocumentItem[], lang: string): Prom
   const lines: DocLine[] = [];
   const titleByItem = new Map<number, DocLine[]>();
   const headingsByItem = new Map<number, OutlineHeading[]>();
-  for (const it of items) {
-    if (it.kind !== 'text' || it.text_id == null) continue;
-    const { lines: compiled, headings } = await compileTextItem(it, lang);
+  const textItems = items.filter((it) => it.kind === 'text' && it.text_id != null);
+  // Compile every text concurrently — serially, a multi-text booklet paid the sum of each
+  // text's network round-trips before first paint. Assembly below keeps document order.
+  const compiledItems = await Promise.all(textItems.map((it) => compileTextItem(it, lang)));
+  for (let k = 0; k < textItems.length; k++) {
+    const it = textItems[k];
+    const { lines: compiled, headings } = compiledItems[k];
     let i = 0;
     const titleLines: DocLine[] = [];
     // Only a Tibetan title (real tokens) heads the title page; a translation-only title layout

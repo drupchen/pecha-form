@@ -45,25 +45,35 @@ def _hosted_syllables(conn, op_id: int, by_id: dict) -> list[dict]:
     return [by_id[r["syl_id"]] for r in rows if r["syl_id"] in by_id]
 
 
-def base_tokens(conn, text_id: int, _visited=None) -> list[dict]:
+def base_tokens(conn, text_id: int, _visited=None, cache: dict | None = None) -> list[dict]:
     """The ordered token sequence a text exposes to composition and anchoring.
 
     A primary exposes its own syllable rows; a secondary exposes its *composed*
     sequence (recursion — its parent may itself be a secondary, any depth). This is
     the single definition of "the text's tokens" that derivation, transclusion, and
     the annotation anchor maps all share, so a correction baked into a root primary
-    ripples through every descendant automatically."""
+    ripples through every descendant automatically.
+
+    ``cache`` (text_id → tokens) memoizes compositions across the many calls a
+    single READ request makes — shared ancestors compose once, not per origin.
+    Callers that mutate syllables/ops must not reuse a cache across the mutation."""
+    if cache is not None and text_id in cache:
+        return cache[text_id]
     row = conn.execute(
         "SELECT text_type, parent_text_id FROM texts WHERE id = ?", (text_id,)
     ).fetchone()
     if row is None:
         return []
     if row["text_type"] == "secondary" and row["parent_text_id"]:
-        return compose_secondary(conn, text_id, _visited)
-    return load_syllables(conn, text_id)
+        toks = compose_secondary(conn, text_id, _visited, cache)
+    else:
+        toks = load_syllables(conn, text_id)
+    if cache is not None:
+        cache[text_id] = toks
+    return toks
 
 
-def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
+def compose_secondary(conn, text_id: int, _visited=None, cache: dict | None = None) -> list[dict]:
     """Compute the derived syllable sequence for a secondary text.
 
     The base is the PARENT'S composed sequence (``base_tokens`` — recursive, so
@@ -85,7 +95,7 @@ def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
     if not parent_id:
         return []
 
-    parent_syls = base_tokens(conn, parent_id, _visited)
+    parent_syls = base_tokens(conn, parent_id, _visited, cache)
     hosted_by_id = {s["id"]: s for s in load_syllables(conn, text_id)}
 
     ops = conn.execute(
@@ -115,7 +125,7 @@ def compose_secondary(conn, text_id: int, _visited=None) -> list[dict]:
         # so transcluding from a secondary works and upstream corrections ripple in.
         # `op_id` disambiguates OCCURRENCES: the same source transcluded twice shows
         # the same syllable uuids twice — only the emitting op tells them apart.
-        src_syls = base_tokens(conn, op["src_text_id"], _visited)
+        src_syls = base_tokens(conn, op["src_text_id"], _visited, cache)
         by = {s["id"]: s for s in src_syls}
         for sid in syllable_ids_between(src_syls, op["src_start_syl_id"], op["src_end_syl_id"]):
             s = by[sid]

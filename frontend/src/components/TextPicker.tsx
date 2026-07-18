@@ -22,10 +22,21 @@ const stripNs = (p: string | null): string | null => {
 const toNs = (displayPath: string) => `${DERIVED_NS}/${displayPath}`;
 
 export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
-  const {
-    texts, groups, fetchTexts, fetchGroups, createGroup, moveGroup, reorderGroup, deleteGroup,
-    uploadNewFile, loadText, removeText, deriveSecondary, cloneWithEdits, updateMeta, loading,
-  } = useTextStore();
+  const texts = useTextStore(s => s.texts);
+  const groups = useTextStore(s => s.groups);
+  const fetchTexts = useTextStore(s => s.fetchTexts);
+  const fetchGroups = useTextStore(s => s.fetchGroups);
+  const createGroup = useTextStore(s => s.createGroup);
+  const moveGroup = useTextStore(s => s.moveGroup);
+  const reorderGroup = useTextStore(s => s.reorderGroup);
+  const deleteGroup = useTextStore(s => s.deleteGroup);
+  const uploadNewFile = useTextStore(s => s.uploadNewFile);
+  const loadText = useTextStore(s => s.loadText);
+  const removeText = useTextStore(s => s.removeText);
+  const deriveSecondary = useTextStore(s => s.deriveSecondary);
+  const cloneWithEdits = useTextStore(s => s.cloneWithEdits);
+  const updateMeta = useTextStore(s => s.updateMeta);
+  const loading = useTextStore(s => s.loading);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { canModify: canEditTexts } = useCan('texts');
 

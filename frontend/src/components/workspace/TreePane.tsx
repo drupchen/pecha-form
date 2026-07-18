@@ -9,8 +9,9 @@ import { AddNodeButton } from './AddNodeButton';
 import { SiblingInsertSlot } from './SiblingInsertSlot';
 
 export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = false }) => {
-  const { currentText } = useTextStore();
-  const { nodes, loading } = useTreeNodeStore();
+  const currentText = useTextStore(s => s.currentText);
+  const nodes = useTreeNodeStore(s => s.nodes);
+  const loading = useTreeNodeStore(s => s.loading);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult') || forceConsult;
   const selectedTreeNodeId = useUIStore(s => s.selectedTreeNodeId);
