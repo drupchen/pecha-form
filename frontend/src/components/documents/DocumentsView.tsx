@@ -13,6 +13,7 @@ import {
   type Language, type DocumentItemKind, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
+import { useCan } from '../../store/usePermissions';
 import { compileDocument } from './compile';
 import { deriveBooklet, TIBETAN_LANG, type NavNode } from './bookletRender';
 
@@ -58,6 +59,9 @@ const NavOutline: React.FC<{ nodes: NavNode[]; depth?: number }> = ({ nodes, dep
  * Pagination and PDF export are the next phases; this is structure only.
  */
 export const DocumentsView: React.FC = () => {
+  // Permission-read on Documents: browse, open, preview and export stay; every
+  // structural edit (create/rename/delete, pages, languages, furniture) hides.
+  const canEditDocs = useCan('documents').canModify;
   const list = useDocumentStore(s => s.list);
   const current = useDocumentStore(s => s.current);
   const error = useDocumentStore(s => s.error);
@@ -247,6 +251,7 @@ export const DocumentsView: React.FC = () => {
              style={{ borderBottom: '1px solid var(--cline)' }}>
           <Library size={18} /> Documents
         </div>
+        {canEditDocs && (
         <div className="px-3 py-2 flex gap-1" style={{ borderBottom: '1px solid var(--cline)' }}>
           <input
             value={newTitle}
@@ -266,6 +271,7 @@ export const DocumentsView: React.FC = () => {
             <Plus size={16} />
           </button>
         </div>
+        )}
         <div className="flex-1 overflow-auto py-1">
           {list.length === 0 && <div className="px-4 py-3 text-xs text-ink-soft">No documents yet.</div>}
           {list.map(d => (
@@ -308,8 +314,9 @@ export const DocumentsView: React.FC = () => {
                 style={{ border: '1px solid var(--cline)' }}
               />
             ) : (
-              <h2 className="font-display text-xl text-lapis truncate max-w-sm cursor-text"
-                  title="Click to rename" onClick={startRename}>
+              <h2 className={`font-display text-xl text-lapis truncate max-w-sm ${canEditDocs ? 'cursor-text' : ''}`}
+                  title={canEditDocs ? 'Click to rename' : undefined}
+                  onClick={canEditDocs ? startRename : undefined}>
                 {current.title}
               </h2>
             )}
@@ -321,7 +328,8 @@ export const DocumentsView: React.FC = () => {
                   <button
                     key={l.code}
                     type="button"
-                    onClick={() => toggleLang(l.code)}
+                    disabled={!canEditDocs}
+                    onClick={() => canEditDocs && toggleLang(l.code)}
                     className={`px-2 py-0.5 rounded-full transition-colors ${
                       on ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}
                     style={{ border: '1px solid var(--cline)' }}
@@ -344,6 +352,7 @@ export const DocumentsView: React.FC = () => {
             </button>
             <div className="flex-1" />
             {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
+            {canEditDocs && (
             <button
               type="button"
               onClick={() => { if (confirm(`Delete "${current.title}"?`)) void remove(current.id); }}
@@ -352,6 +361,7 @@ export const DocumentsView: React.FC = () => {
             >
               <Trash2 size={13} /> delete
             </button>
+            )}
           </div>
 
           {/* Body: items | TOC */}
@@ -376,7 +386,7 @@ export const DocumentsView: React.FC = () => {
                           ? (it.text_title ?? <span className="text-vermilion">missing text</span>)
                           : <span className="text-ink-soft">{KIND_META[it.kind].label}</span>}
                       </span>
-                      {editable && (
+                      {editable && canEditDocs && (
                         <button type="button"
                                 onClick={() => setEditingItem(editingItem === it.id ? null : it.id)}
                                 className={`p-0.5 hover:text-lapis ${editingItem === it.id ? 'text-lapis' : 'text-ink-soft'}`}
@@ -384,6 +394,7 @@ export const DocumentsView: React.FC = () => {
                           <Pencil size={13} />
                         </button>
                       )}
+                      {canEditDocs && (<>
                       <button type="button" onClick={() => void moveItem(it.id, -1)} disabled={i === 0}
                               className="p-0.5 text-ink-soft hover:text-lapis disabled:opacity-30" title="Move up">
                         <ChevronUp size={15} />
@@ -396,8 +407,9 @@ export const DocumentsView: React.FC = () => {
                               className="p-0.5 text-ink-soft hover:text-vermilion" title="Remove page">
                         <Trash2 size={14} />
                       </button>
+                      </>)}
                     </div>
-                    {editable && editingItem === it.id && (
+                    {editable && canEditDocs && editingItem === it.id && (
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
                         {IMAGE_FURNITURE.includes(it.kind) && (
@@ -513,6 +525,7 @@ export const DocumentsView: React.FC = () => {
               </div>
 
               {/* Add-item bar */}
+              {canEditDocs && (
               <div className="mt-4 flex items-center gap-1.5 flex-wrap text-xs">
                 <span className="text-ink-soft mr-1">add</span>
                 <div className="relative" ref={pickRef}>
@@ -557,6 +570,7 @@ export const DocumentsView: React.FC = () => {
                   </button>
                 ))}
               </div>
+              )}
             </div>
 
             {/* Navigation-outline preview — what the PDF's bookmarks will contain. */}

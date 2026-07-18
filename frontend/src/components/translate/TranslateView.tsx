@@ -15,6 +15,7 @@ import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
 import { sanitizeTranslationHtml } from './sanitize';
 import { splitParagraphs } from '../documents/compile';
+import { useCan } from '../../store/usePermissions';
 import type { TranslationChunk } from '../../api/client';
 
 /** Group a chunk's tokens into printed lines (a token whose render carries a
@@ -87,6 +88,9 @@ const LevelStepper: React.FC<{
  */
 export const TranslateView: React.FC = () => {
   const { currentText } = useTextStore();
+  // Permission-read on Translate: chunk boxes stay static (ChunkEditor gates
+  // itself) and the layout/override/title gestures below hide behind this.
+  const canEditTranslate = useCan('translate').canModify;
   const tokens = useEditorTokenStore(s => s.tokens);
   const fetchTokens = useEditorTokenStore(s => s.fetchTokens);
   const spans = useTagStore(s => s.spans);
@@ -611,7 +615,7 @@ export const TranslateView: React.FC = () => {
    *  (the hairline, by contrast, integrates it into a chunk's text). */
   const placeBar = (anchor: string | null, key: string) => (
     <div key={key} className="flex items-center gap-2 -my-1.5 h-4 group">
-      {armedMove ? (
+      {!canEditTranslate ? null : armedMove ? (
         <button
           type="button"
           onClick={() => {
@@ -1182,9 +1186,11 @@ export const TranslateView: React.FC = () => {
                             title="This segment was relocated here for the translation flow (display only — the Tibetan is untouched)"
                           >
                             moved here
+                            {canEditTranslate && (
                             <button type="button" onClick={() => void removeLayout(u.movedLayoutId!)
                               .catch((e: any) => setSaveError(e.message))}
                               className="underline underline-offset-2" title="Undo the move">undo</button>
+                            )}
                           </span>
                         )}
                         {[...new Set(u.tokens.filter(t => t.movedIn != null).map(t => t.movedIn!))]
@@ -1195,9 +1201,11 @@ export const TranslateView: React.FC = () => {
                               title="Text moved here from elsewhere for translation flow (display only — the Tibetan is untouched)"
                             >
                               moved in
+                              {canEditTranslate && (
                               <button type="button" onClick={() => void removeLayout(layoutId)
                                 .catch((e: any) => setSaveError(e.message))}
                                 className="underline underline-offset-2" title="Undo the move">undo</button>
+                              )}
                             </span>
                           ))}
                         {[...new Set(u.tokens.filter(t => t.movedAway != null).map(t => t.movedAway!))]
@@ -1208,12 +1216,14 @@ export const TranslateView: React.FC = () => {
                               title="Part of this segment was picked up and integrated elsewhere for translation"
                             >
                               moved out
+                              {canEditTranslate && (
                               <button type="button" onClick={() => void removeLayout(layoutId)
                                 .catch((e: any) => setSaveError(e.message))}
                                 className="underline underline-offset-2" title="Undo the move">undo</button>
+                              )}
                             </span>
                           ))}
-                        {(u.tagType === 'small' || u.tagType === 'sapche') && !u.movedLayoutId && !armedMove && (
+                        {canEditTranslate && (u.tagType === 'small' || u.tagType === 'sapche') && !u.movedLayoutId && !armedMove && (
                           <button
                             type="button"
                             onClick={() => setArmedMove({
@@ -1276,6 +1286,7 @@ export const TranslateView: React.FC = () => {
                             placeholder={`${targetLang} translation…`}
                             onSave={(html) => commit(html)}
                           />
+                          {canEditTranslate && (
                           <div className="flex items-center gap-2 text-[10px] text-ink-soft flex-wrap">
                             {ov ? (
                               <>
@@ -1339,6 +1350,7 @@ export const TranslateView: React.FC = () => {
                               </button>
                             )}
                           </div>
+                          )}
                           {hasUpdate && existing && match && (
                             <div className="text-[10px] flex items-center gap-2 px-2 py-1 rounded-md bg-lapis/10">
                               <span>The shared translation was updated elsewhere.</span>

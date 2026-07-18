@@ -8,6 +8,7 @@ import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import { useUIStore } from '../../store/useUIStore';
 import { usePhoneticsStore, phonKey } from '../../store/usePhoneticsStore';
 import { deriveLines, type PhoneticLine } from './lines';
+import { useCan } from '../../store/usePermissions';
 import { generateBo, generateSkt, STYLE_LANGS, type BoStyle, type BoLang } from './generate';
 import type { SktLang } from './sanskrit';
 import type { Phonetic } from '../../api/client';
@@ -37,6 +38,7 @@ const STATUS_PILL: Record<Phonetic['status'], { label: string; cls: string }> = 
  * primary/secondary.
  */
 export const PhoneticsView: React.FC = () => {
+  const canEditPhonetics = useCan('phonetics').canModify;
   const { currentText } = useTextStore();
   const tokens = useEditorTokenStore(s => s.tokens);
   const fetchTokens = useEditorTokenStore(s => s.fetchTokens);
@@ -293,6 +295,7 @@ export const PhoneticsView: React.FC = () => {
           </label>
         )}
 
+        {canEditPhonetics && (
         <button
           type="button"
           onClick={handleGenerateAllEmpty}
@@ -302,6 +305,7 @@ export const PhoneticsView: React.FC = () => {
         >
           <Zap size={12} /> generate all empty
         </button>
+        )}
 
         <div className="flex-1" />
         {/* Progress: how many lines on this tab still need phonetics, and chevrons to walk
@@ -365,13 +369,15 @@ export const PhoneticsView: React.FC = () => {
                     </span>
                     <textarea
                       value={body}
-                      onChange={e => setDraft(l.key, e.target.value)}
-                      onBlur={() => handleBlur(l, m)}
+                      readOnly={!canEditPhonetics}
+                      onChange={e => canEditPhonetics && setDraft(l.key, e.target.value)}
+                      onBlur={() => canEditPhonetics && handleBlur(l, m)}
                       rows={1}
                       placeholder={l.kind === 'bo' ? 'phonetics…' : 'romanization…'}
                       className="flex-1 px-2 py-1 rounded-md bg-white text-sm resize-y min-h-[2rem]"
                       style={{ border: '1px solid var(--cline)' }}
                     />
+                    {canEditPhonetics && (
                     <button
                       type="button"
                       onClick={() => handleGenerate(l)}
@@ -383,6 +389,7 @@ export const PhoneticsView: React.FC = () => {
                     >
                       <Zap size={13} />
                     </button>
+                    )}
                   </div>
                   {/* Status + reviewed */}
                   <div className="w-40 shrink-0 flex items-center justify-end gap-2">
@@ -398,7 +405,7 @@ export const PhoneticsView: React.FC = () => {
                       <input
                         type="checkbox"
                         checked={status === 'reviewed'}
-                        disabled={!body.trim()}
+                        disabled={!body.trim() || !canEditPhonetics}
                         onChange={e => toggleReviewed(l, m, e.target.checked)}
                       />
                       <Check size={12} /> ok

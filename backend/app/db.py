@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import os
 import re
@@ -34,6 +35,9 @@ LAYOUT_KINDS = (
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS texts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- The owning organization. Everything hanging off a text (annotations,
+    -- translations, phonetics, …) is org-scoped TRANSITIVELY through this column.
+    org_id        INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id),
     filename      TEXT NOT NULL,
     title         TEXT NOT NULL,
     -- Optional user-assigned collection label for organizing the texts list.
@@ -58,10 +62,12 @@ CREATE TABLE IF NOT EXISTS texts (
 -- texts-list "+" buttons) persists even with no text in it. Rows are normalized
 -- "/"-paths; the texts tree is built from the union of these and texts.text_group.
 CREATE TABLE IF NOT EXISTS text_groups (
-    path TEXT PRIMARY KEY,
+    org_id INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id),
+    path TEXT NOT NULL,
     -- Part 13: manual per-parent sibling order. NULL == unordered (sorts after
     -- positioned siblings, alphabetically); assigned lazily on the first reorder.
-    position INTEGER
+    position INTEGER,
+    PRIMARY KEY (org_id, path)
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -70,6 +76,9 @@ CREATE TABLE IF NOT EXISTS tags (
     -- text's palette. A non-NULL text_id means it is *private* to that text.
     -- Deleting a text CASCADE-drops its private tags; shared (NULL) tags survive.
     -- Only regular tags are ever shared (session tags carry per-text anchors).
+    -- Multi-org: "shared" means shared WITHIN org_id — every palette query on
+    -- text_id IS NULL must also filter on org_id or palettes bleed across orgs.
+    org_id      INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id),
     text_id     INTEGER REFERENCES texts(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
     color           TEXT NOT NULL DEFAULT '#6366f1',
@@ -528,6 +537,7 @@ CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id);
 -- rather than guessing that everything changed.
 CREATE TABLE IF NOT EXISTS documents (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id         INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id),
     title          TEXT NOT NULL,
     pagination_sig TEXT,
     pagination_fp  TEXT,
@@ -681,6 +691,87 @@ CREATE TABLE IF NOT EXISTS style_samples (
     org_id  INTEGER PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
     content TEXT NOT NULL DEFAULT ''
 );
+
+-- ─── Accounts & access (multi-org platform) ────────────────────────────────────
+-- Users are PLATFORM-level; access to data is granted per organization through a
+-- membership carrying one or more roles. A role is an org-editable bundle of
+-- section permissions ({"texts"|"workspace"|"translate"|"phonetics"|"documents"
+-- → "none"|"read"|"modify"}); the effective level per section is the MAX across
+-- the membership's roles. `can_manage_org` is the org-admin capability (manage
+-- members/roles/invites) — the seeded 'admin' role ships with it.
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name  TEXT NOT NULL DEFAULT '',
+    password_hash TEXT,            -- argon2id; NULL = Google-only account
+    google_sub    TEXT UNIQUE,     -- Google's stable `sub` claim; NULL = password-only
+    is_superuser  INTEGER NOT NULL DEFAULT 0,   -- platform admin (all orgs, all powers)
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Server-side sessions: the cookie carries the RAW token, the row stores its
+-- sha256 — a leaked DB does not leak live sessions. Sliding 30-day expiry.
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash   TEXT PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at   TIMESTAMP NOT NULL,
+    last_used_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS roles (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id         INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL,
+    perms          TEXT NOT NULL DEFAULT '{}',  -- JSON {section: none|read|modify}
+    can_manage_org INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(org_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS org_memberships (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(org_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_user ON org_memberships(user_id);
+
+CREATE TABLE IF NOT EXISTS membership_roles (
+    membership_id INTEGER NOT NULL REFERENCES org_memberships(id) ON DELETE CASCADE,
+    role_id       INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (membership_id, role_id)
+);
+
+-- Where each user last was, per org: the open text and the section tab. Restored
+-- on login so work resumes across devices (the position INSIDE a text is separate:
+-- reading_positions). Last write wins.
+CREATE TABLE IF NOT EXISTS user_org_state (
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    org_id       INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    last_text_id INTEGER REFERENCES texts(id) ON DELETE SET NULL,
+    last_route   TEXT,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, org_id)
+);
+
+-- Invite-only onboarding: an org admin mints a link (raw token in the URL, sha256
+-- here); accepting creates the user (password path) or links Google, then grants
+-- the membership with `role_ids`. No SMTP — the URL is copied from the admin UI.
+CREATE TABLE IF NOT EXISTS invites (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    email       TEXT NOT NULL COLLATE NOCASE,
+    token_hash  TEXT NOT NULL UNIQUE,
+    role_ids    TEXT NOT NULL DEFAULT '[]',     -- JSON list, granted on accept
+    invited_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at  TIMESTAMP NOT NULL,
+    accepted_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
 """.replace("__LAYOUT_KINDS__", ",".join(f"'{k}'" for k in LAYOUT_KINDS))
 
 
@@ -693,6 +784,9 @@ _COLUMN_MIGRATIONS = {
         ("height_mm", "REAL"),
     ],
     "texts": [
+        # Multi-org: owning organization. Plain INTEGER (ALTER ADD can't add an FK);
+        # DEFAULT 1 doubles as the backfill — every pre-platform row lands in org 1.
+        ("org_id", "INTEGER NOT NULL DEFAULT 1"),
         ("instance_id", "TEXT"),
         ("teaching_id", "TEXT"),
         ("title_bo", "TEXT"),
@@ -714,6 +808,9 @@ _COLUMN_MIGRATIONS = {
         ("audio_dir", "TEXT"),
     ],
     "tags": [
+        # Multi-org: scopes SHARED (text_id IS NULL) palettes; private tags follow
+        # their text but carry it too so tag→org resolution never needs the join.
+        ("org_id", "INTEGER NOT NULL DEFAULT 1"),
         ("audio_original_url", "TEXT"),
         ("audio_restored_url", "TEXT"),
         ("srt_filename", "TEXT"),
@@ -782,7 +879,8 @@ _COLUMN_MIGRATIONS = {
     # D2: page geometry + type sizes for the booklet layout (JSON; NULL = defaults).
     # `pagination_sig`/`pagination_fp`: what the stored breaks were flowed against, so the
     # bench can measure how stale they are (see the documents CREATE).
-    "documents": [("layout_config", "TEXT"), ("pagination_sig", "TEXT"),
+    "documents": [("org_id", "INTEGER NOT NULL DEFAULT 1"),
+                  ("layout_config", "TEXT"), ("pagination_sig", "TEXT"),
                   ("pagination_fp", "TEXT")],
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
@@ -887,6 +985,56 @@ def _rebuild_phonetics_lang(conn) -> None:
     conn.execute("DROP TABLE phonetics")
     conn.execute("ALTER TABLE phonetics_new RENAME TO phonetics")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id)")
+
+
+def _rebuild_text_groups_org(conn) -> None:
+    """Add the org dimension to a pre-existing `text_groups` table. The PK grows
+    from `path` to `(org_id, path)` — SQLite can't alter a PK in place, so rebuild.
+    All pre-platform rows belong to org 1. No-op once `org_id` exists (incl. fresh
+    DBs created from SCHEMA)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(text_groups)")}
+    if not cols or "org_id" in cols:
+        return
+    conn.execute("""
+        CREATE TABLE text_groups_new (
+            org_id INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id),
+            path TEXT NOT NULL,
+            position INTEGER,
+            PRIMARY KEY (org_id, path)
+        )""")
+    conn.execute(
+        "INSERT INTO text_groups_new (org_id, path, position) "
+        "SELECT 1, path, position FROM text_groups")
+    conn.execute("DROP TABLE text_groups")
+    conn.execute("ALTER TABLE text_groups_new RENAME TO text_groups")
+
+
+# The roles every organization starts with. Ordinary editable rows — org admins can
+# reshape or delete them after seeding; the seed only fills in MISSING names, so it
+# is idempotent and never overwrites an org's edits. Kept here (not in a router) so
+# both init_db and org creation seed from the same list.
+STANDARD_ROLES: list[tuple[str, dict, int]] = [
+    ("tibetan editor", {"texts": "modify", "workspace": "modify", "translate": "read",
+                        "phonetics": "read", "documents": "read"}, 0),
+    ("translator", {"texts": "read", "workspace": "read", "translate": "modify",
+                    "phonetics": "read", "documents": "read"}, 0),
+    ("phonetics editor", {"texts": "read", "workspace": "read", "translate": "read",
+                          "phonetics": "modify", "documents": "read"}, 0),
+    ("pagination editor", {"texts": "read", "workspace": "read", "translate": "read",
+                           "phonetics": "read", "documents": "modify"}, 0),
+    ("admin", {"texts": "modify", "workspace": "modify", "translate": "modify",
+               "phonetics": "modify", "documents": "modify"}, 1),
+]
+
+
+def seed_org_roles(conn, org_id: int) -> None:
+    """Give an org any of the 5 standard roles it doesn't have yet (by name)."""
+    for name, perms, can_manage in STANDARD_ROLES:
+        conn.execute(
+            "INSERT OR IGNORE INTO roles (org_id, name, perms, can_manage_org) "
+            "VALUES (?, ?, ?, ?)",
+            (org_id, name, json.dumps(perms), can_manage),
+        )
 
 
 # Suggestions are auto-applied on creation — there is no accept/reject lifecycle, so the
@@ -1313,11 +1461,17 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Multi-user hygiene: don't fail instantly when another request holds the
+    # write lock (journal_mode=WAL is set once, in init_db — it persists).
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
 def init_db():
     conn = get_db()
+    # WAL survives in the DB file; set once so concurrent multi-user reads never
+    # block behind a writer.
+    conn.execute("PRAGMA journal_mode = WAL")
     with conn:
         _rename_documents_to_texts(conn)
         _drop_status_columns(conn)
@@ -1325,13 +1479,18 @@ def init_db():
         _add_missing_columns(conn)
         _rebuild_document_layout_kinds(conn)
         _rebuild_phonetics_lang(conn)
+        _rebuild_text_groups_org(conn)
         # Seed the four working languages (idempotent; more are added via the API).
         conn.executemany(
             "INSERT OR IGNORE INTO languages (code, name) VALUES (?, ?)",
             [("en", "English"), ("fr", "Français"), ("de", "Deutsch"), ("pt", "Português")],
         )
-        # Seed the single default organization (org/user management is not built yet).
+        # Seed the default organization (all pre-platform data belongs to it) and
+        # make sure every org has the 5 standard roles (new orgs seed on creation;
+        # this also retrofits org 1 the first time the platform schema lands).
         conn.execute("INSERT OR IGNORE INTO organizations (id, name) VALUES (1, 'Default organization')")
+        for org in conn.execute("SELECT id FROM organizations").fetchall():
+            seed_org_roles(conn, org["id"])
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)

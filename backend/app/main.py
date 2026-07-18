@@ -1,34 +1,55 @@
 import logging
+import os
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .auth import guard
 from .db import init_db
 from .routers import (
     texts, tags, spans, markers, tree_nodes, suggestions, notes, passages,
     derivation, text_groups, reading_positions, display_breaks, translations,
-    phonetics, documents, styles,
+    phonetics, documents, styles, auth as auth_router, orgs,
 )
 
 app = FastAPI(title="Sapche Backend API")
 
-app.include_router(texts.router)
-app.include_router(text_groups.router)
-app.include_router(tags.router)
-app.include_router(spans.router)
-app.include_router(markers.router)
-app.include_router(tree_nodes.router)
-app.include_router(suggestions.router)
-app.include_router(notes.router)
-app.include_router(passages.router)
-app.include_router(derivation.router)
-app.include_router(reading_positions.router)
-app.include_router(display_breaks.router)
-app.include_router(translations.router)
-app.include_router(phonetics.router)
-app.include_router(documents.router)
-app.include_router(styles.router)
+
+def _guarded(router, section, resolvers=None, write_level="modify"):
+    """Attach the auth/org/permission guard at include time (see auth.guard) —
+    routing-level enforcement, zero churn inside the router files."""
+    app.include_router(
+        router, dependencies=[Depends(guard(section, resolvers, write_level))]
+    )
+
+
+# Section mapping: "texts" = managing the texts themselves; "workspace" = the
+# annotation surface over them; the rest map 1:1. reading_positions only ever
+# writes the caller's OWN bookmark, so read access suffices for its PUT.
+_guarded(texts.router, "texts", {"id": "text"})
+_guarded(text_groups.router, "texts")
+_guarded(tags.router, "workspace", {"text_id": "text", "tag_id": "tag"})
+_guarded(spans.router, "workspace", {"text_id": "text", "span_id": "span"})
+_guarded(markers.router, "workspace", {"text_id": "text", "marker_id": "marker"})
+_guarded(tree_nodes.router, "workspace", {"text_id": "text", "node_id": "node"})
+_guarded(suggestions.router, "workspace",
+         {"text_id": "text", "suggestion_id": "suggestion"})
+_guarded(notes.router, "workspace",
+         {"text_id": "text", "note_id": "note", "category_id": "note_category"})
+_guarded(passages.router, "workspace", {"text_id": "text", "passage_id": "passage"})
+_guarded(derivation.router, "workspace", {"text_id": "text", "op_id": "op"})
+_guarded(display_breaks.router, "workspace", {"text_id": "text"})
+_guarded(reading_positions.router, "texts", {"text_id": "text"}, write_level="read")
+_guarded(translations.router, "translate",
+         {"text_id": "text", "chunk_id": "chunk", "sug_id": "tr_suggestion",
+          "layout_id": "chunk_layout"})
+_guarded(phonetics.router, "phonetics", {"text_id": "text"})
+_guarded(documents.router, "documents",
+         {"document_id": "document", "item_id": "doc_item"})
+_guarded(styles.router, "documents", {"document_id": "document", "font_id": "font"})
+app.include_router(auth_router.router)   # public: login/invites do their own checks
+app.include_router(orgs.router)          # per-endpoint superuser/can_manage_org checks
 
 
 # Turn any unhandled exception into a JSON 500 *before* it escapes past the CORS
@@ -47,9 +68,14 @@ async def json_500_with_cors(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
+# Exact-origin allowlist (credentials mode forbids "*"). Extra origins — a
+# production domain, an alternate dev port — come from the env, comma-separated.
+_extra_origins = [
+    o.strip() for o in os.environ.get("SAPCHE_CORS_ORIGINS", "").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", *_extra_origins],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

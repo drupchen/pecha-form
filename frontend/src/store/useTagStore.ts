@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 import { useUndoStore } from './useUndoStore';
 
 export interface Tag {
@@ -72,7 +73,7 @@ export const useTagStore = create<TagState>((set, get) => ({
   fetchTags: async (textId) => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/tags`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/tags`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       set({ tags: data, loading: false });
@@ -84,7 +85,7 @@ export const useTagStore = create<TagState>((set, get) => ({
   fetchSpans: async (textId) => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/spans`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/spans`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       set({ spans: data, loading: false });
@@ -97,7 +98,7 @@ export const useTagStore = create<TagState>((set, get) => ({
     try {
       const body: Record<string, unknown> = { name, color, tag_kind: kind };
       if (openPosition !== undefined) body.open_position = openPosition;
-      const res = await fetch(`${API_BASE}/texts/${textId}/tags`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -119,7 +120,7 @@ export const useTagStore = create<TagState>((set, get) => ({
   updateTag: async (tagId, params) => {
     const before = get().tags.find(t => t.id === tagId);
     try {
-      const res = await fetch(`${API_BASE}/tags/${tagId}`, {
+      const res = await apiFetch(`${API_BASE}/tags/${tagId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -154,7 +155,7 @@ export const useTagStore = create<TagState>((set, get) => ({
     const before = get().tags.find(t => t.id === tagId);
     try {
       // shared → global (text_id null); private → owned by the currently-open text.
-      const res = await fetch(`${API_BASE}/tags/${tagId}`, {
+      const res = await apiFetch(`${API_BASE}/tags/${tagId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_shared: shared, text_id: shared ? null : currentTextId }),
@@ -186,7 +187,7 @@ export const useTagStore = create<TagState>((set, get) => ({
     const before = get().tags.find(t => t.id === tagId);
     const beforeSpans = get().spans.filter(s => s.tag_id === tagId);
     try {
-      const res = await fetch(`${API_BASE}/tags/${tagId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/tags/${tagId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       set(state => ({
         tags: state.tags.filter(t => t.id !== tagId),
@@ -232,7 +233,7 @@ export const useTagStore = create<TagState>((set, get) => ({
       const body = sylIds?.startSylId
         ? { tag_id: tagId, start_syl_id: sylIds.startSylId, end_syl_id: sylIds.endSylId }
         : { tag_id: tagId, start_offset: start, end_offset: end };
-      const res = await fetch(`${API_BASE}/texts/${textId}/spans`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/spans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -260,7 +261,7 @@ export const useTagStore = create<TagState>((set, get) => ({
   deleteSpan: async (spanId) => {
     const before = get().spans.find(s => s.id === spanId);
     try {
-      const res = await fetch(`${API_BASE}/spans/${spanId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/spans/${spanId}`, { method: 'DELETE' });
       if (!res.ok) {
         throw new Error(await res.text());
       }
@@ -284,7 +285,7 @@ export const useTagStore = create<TagState>((set, get) => ({
   updateSpan: async (spanId, tagId) => {
     const before = get().spans.find(s => s.id === spanId);
     try {
-      const res = await fetch(`${API_BASE}/spans/${spanId}`, {
+      const res = await apiFetch(`${API_BASE}/spans/${spanId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tag_id: tagId }),

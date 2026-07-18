@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
+from ..auth import active_org_id, mint_print_token
 from ..db import get_db
 import json
 import os
@@ -111,7 +112,9 @@ def _touch(conn, document_id: int):
 def list_documents():
     conn = get_db()
     try:
-        rows = conn.execute("SELECT * FROM documents ORDER BY updated_at DESC, id").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE org_id = ? ORDER BY updated_at DESC, id",
+            (active_org_id(),)).fetchall()
         return [_doc_out(conn, r) for r in rows]
     finally:
         conn.close()
@@ -124,7 +127,8 @@ def create_document(payload: DocumentCreate):
         raise HTTPException(400, "Title required")
     conn = get_db()
     try:
-        cur = conn.execute("INSERT INTO documents (title) VALUES (?)", (title,))
+        cur = conn.execute("INSERT INTO documents (org_id, title) VALUES (?, ?)",
+                           (active_org_id(), title))
         conn.commit()
         return _doc_out(conn, _require_doc(conn, cur.lastrowid))
     finally:
@@ -544,6 +548,7 @@ def export_pdf(document_id: int, lang: str = "en"):
     try:
         doc = _require_doc(conn, document_id)
         title = doc["title"]
+        org_id = doc["org_id"]
     finally:
         conn.close()
 
@@ -553,7 +558,11 @@ def export_pdf(document_id: int, lang: str = "en"):
 
     fd, out_path = tempfile.mkstemp(suffix=".pdf", prefix="booklet_")
     os.close(fd)
-    url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}"
+    # The headless Chrome has no session cookie — the print page authenticates every
+    # API call with this short-lived signed token instead (read-only, bound to the
+    # document's org). It only ever transits the local process argv.
+    token = mint_print_token(document_id, org_id)
+    url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}&print_token={token}"
     cmd = [
         chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
         "--no-pdf-header-footer", "--virtual-time-budget=25000",

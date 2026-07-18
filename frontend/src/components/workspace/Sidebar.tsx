@@ -10,6 +10,7 @@ import { useTextStore } from '../../store/useTextStore';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
 import { ChevronRight, ChevronLeft, ChevronUp, ChevronDown, Tag as TagIcon, Layers, Plus, X, Pencil, Mic, StickyNote, Check, MessageSquare, Trash2, Globe, Lock, Link2, CornerUpLeft, Scissors } from 'lucide-react';
 import { usePassageStore } from '../../store/usePassageStore';
+import { useCan } from '../../store/usePermissions';
 import { scrollTaggerToOffset, scrollTaggerToSyllable } from './scrollTaggerToOffset';
 
 const REGULAR_COLORS = [
@@ -241,6 +242,8 @@ interface SuggestionRowProps {
 const SuggestionRow: React.FC<SuggestionRowProps> = ({ s, rawText, onDelete }) => {
   const texts = useTextStore(st => st.texts);
   const loadText = useTextStore(st => st.loadText);
+  // Permission-read: consult keeps suggestion CRUD live, but 'read' must not.
+  const hardReadOnly = !useCan('workspace').canModify;
   const original = rawText.substring(s.start_offset, s.end_offset);
   const isInsertion = s.start_offset === s.end_offset;
   const isExtraction = s.extracted_text_id != null;
@@ -282,11 +285,13 @@ const SuggestionRow: React.FC<SuggestionRowProps> = ({ s, rawText, onDelete }) =
           )}
         </p>
       </button>
-      <div className="flex gap-0.5 px-1.5 pb-1 justify-end opacity-0 group-hover:opacity-100">
-        <button onClick={onDelete} title="Delete correction" className="text-bronze hover:text-vermilion-deep p-0.5 rounded">
-          <Trash2 size={12} />
-        </button>
-      </div>
+      {!hardReadOnly && (
+        <div className="flex gap-0.5 px-1.5 pb-1 justify-end opacity-0 group-hover:opacity-100">
+          <button onClick={onDelete} title="Delete correction" className="text-bronze hover:text-vermilion-deep p-0.5 rounded">
+            <Trash2 size={12} />
+          </button>
+        </div>
+      )}
     </li>
   );
 };
@@ -298,6 +303,7 @@ interface NoteRowProps {
 const NoteRow: React.FC<NoteRowProps> = ({ note, snippet }) => {
   const { updateNote, deleteNote, categories } = useNoteStore();
   const tagStore = useTagStore();
+  const hardReadOnly = !useCan('workspace').canModify;
   const [isEditing, setIsEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(note.body);
   const [draftCategoryId, setDraftCategoryId] = useState<number | null>(note.category_id);
@@ -391,7 +397,7 @@ const NoteRow: React.FC<NoteRowProps> = ({ note, snippet }) => {
             </div>
           )}
         </button>
-        {!isEditing && (
+        {!isEditing && !hardReadOnly && (
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 shrink-0">
             <button
               onClick={() => setIsEditing(true)}
@@ -522,6 +528,9 @@ export const Sidebar: React.FC = () => {
   const sessionMode = useUIStore(s => s.sessionMode);
   const setSessionMode = useUIStore(s => s.setSessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
+  // Permission-read on the workspace: even the affordances consult leaves live
+  // (suggestion/note CRUD) must go.
+  const hardReadOnly = !useCan('workspace').canModify;
 
   const [creatingRegular, setCreatingRegular] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -667,6 +676,7 @@ export const Sidebar: React.FC = () => {
                   )}
                 </p>
               </button>
+              {!hardReadOnly && (
               <div className="flex gap-1 px-1.5 pb-1 justify-end items-center">
                 <button
                   onClick={() => handleAcceptIncoming(s.id, 'stage')}
@@ -694,6 +704,7 @@ export const Sidebar: React.FC = () => {
                   ✗ Reject
                 </button>
               </div>
+              )}
             </li>
           );
         })}
@@ -1193,7 +1204,7 @@ export const Sidebar: React.FC = () => {
             >
               <StickyNote size={12} /> Notes ({notes.length})
             </button>
-            {activeSection === 'notes' && (
+            {activeSection === 'notes' && !hardReadOnly && (
               <button
                 onClick={() => setCreatingNoteCategory(v => !v)}
                 className="px-2 text-bronze hover:text-jade bg-jade/15"
@@ -1256,17 +1267,19 @@ export const Sidebar: React.FC = () => {
                     {noteCategories.map(c => (
                       <li key={c.id} className="group flex items-center gap-0.5 text-[11px] bg-cream rounded px-1.5 py-0.5">
                         <span className="text-ink">{c.name}</span>
-                        <button
-                          onClick={() => {
-                            if (confirm(`Delete category "${c.name}"? Notes using it will become uncategorized.`)) {
-                              deleteNoteCategory(c.id);
-                            }
-                          }}
-                          className="text-bronze hover:text-vermilion-deep opacity-0 group-hover:opacity-100"
-                          title="Delete category"
-                        >
-                          <X size={10} />
-                        </button>
+                        {!hardReadOnly && (
+                          <button
+                            onClick={() => {
+                              if (confirm(`Delete category "${c.name}"? Notes using it will become uncategorized.`)) {
+                                deleteNoteCategory(c.id);
+                              }
+                            }}
+                            className="text-bronze hover:text-vermilion-deep opacity-0 group-hover:opacity-100"
+                            title="Delete category"
+                          >
+                            <X size={10} />
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>

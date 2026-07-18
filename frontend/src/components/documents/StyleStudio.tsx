@@ -354,7 +354,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       <div className="specimen-seal">
         {seal?.has_image ? (
           <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
-               src={`${orgSealUrl()}&v=${sealBust}`} alt=""
+               src={`${orgSealUrl()}?v=${sealBust}`} alt=""
                style={{ width: seal.width_mm ? `${seal.width_mm}mm` : undefined,
                         height: seal.height_mm ? `${seal.height_mm}mm` : undefined }} />
         ) : (

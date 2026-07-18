@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 import { useUndoStore } from './useUndoStore';
 
 export interface TreeNode {
@@ -94,7 +95,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
   fetchNodes: async (textId) => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/tree-nodes`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/tree-nodes`);
       if (!res.ok) throw new Error(await res.text());
       const data: TreeNode[] = await res.json();
       // Every write path (create/move/reorder/delete) refetches, so bumping here covers
@@ -107,7 +108,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   createNode: async (textId, params) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/tree-nodes`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/tree-nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -140,7 +141,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
     if (before?.inherited) return undefined;  // read-only; edit on the owning text
     set({ saveStatus: 'saving' });
     try {
-      const res = await fetch(`${API_BASE}/tree-nodes/${nodeId}`, {
+      const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -178,7 +179,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
     const oldPosition = before?.position ?? 0;
     set({ saveStatus: 'saving' });
     try {
-      const res = await fetch(`${API_BASE}/tree-nodes/${nodeId}/move`, {
+      const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}/move`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ new_parent_id, new_position }),
@@ -202,7 +203,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
   reorderSiblings: async (textId, parent_id, ordered_ids) => {
     set({ saveStatus: 'saving' });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/tree-nodes/reorder`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/tree-nodes/reorder`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ parent_id, ordered_ids }),
@@ -226,7 +227,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
       .filter(n => n.parent_id === nodeId)
       .map(n => ({ id: n.id, position: n.position }));
     try {
-      const res = await fetch(`${API_BASE}/tree-nodes/${nodeId}?on_children=${onChildren}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}?on_children=${onChildren}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       if (before) await get().fetchNodes(before.text_id);
       if (before) {

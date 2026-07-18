@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 import { useUndoStore } from './useUndoStore';
 
 export interface NoteCategory {
@@ -63,7 +64,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
   fetchNotes: async (textId) => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/notes`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/notes`);
       if (!res.ok) throw new Error(await res.text());
       const data: Note[] = await res.json();
       set({ notes: data, loading: false });
@@ -74,7 +75,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   fetchCategories: async (textId) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/note-categories`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/note-categories`);
       if (!res.ok) throw new Error(await res.text());
       const data: NoteCategory[] = await res.json();
       set({ categories: data });
@@ -85,7 +86,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   createCategory: async (textId, name) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/note-categories`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/note-categories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
@@ -102,7 +103,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   deleteCategory: async (categoryId) => {
     try {
-      const res = await fetch(`${API_BASE}/note-categories/${categoryId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/note-categories/${categoryId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       set(state => ({
         categories: state.categories.filter(c => c.id !== categoryId),
@@ -119,7 +120,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
 
   createNote: async (textId, categoryId, start_offset, end_offset, body, sessionTagIds = [], passageId = null) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/notes`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -149,7 +150,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     const before = get().notes.find(n => n.id === noteId);
     if (before?.inherited) return;  // inherited notes are read-only; edit on the owner
     try {
-      const res = await fetch(`${API_BASE}/notes/${noteId}`, {
+      const res = await apiFetch(`${API_BASE}/notes/${noteId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -179,7 +180,7 @@ export const useNoteStore = create<NoteState>((set, get) => ({
     const before = get().notes.find(n => n.id === noteId);
     if (before?.inherited) return;  // inherited notes are read-only; edit on the owner
     try {
-      const res = await fetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       set(state => ({ notes: state.notes.filter(n => n.id !== noteId) }));
       if (before) {

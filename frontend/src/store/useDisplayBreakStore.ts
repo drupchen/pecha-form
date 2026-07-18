@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 
 /**
  * Display-only line-break overrides (the ¶ mode), current text only. Keyed by
@@ -21,7 +22,7 @@ export const useDisplayBreakStore = create<DisplayBreakState>((set, get) => ({
 
   fetchBreaks: async (textId) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/display-breaks`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/display-breaks`);
       if (!res.ok) throw new Error(await res.text());
       const data: { syl_id: string; count: number }[] = await res.json();
       set({ breaks: new Map(data.map(b => [b.syl_id, b.count])) });
@@ -36,7 +37,7 @@ export const useDisplayBreakStore = create<DisplayBreakState>((set, get) => ({
     next.set(sylId, count);
     set({ breaks: next });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/display-breaks/${sylId}`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/display-breaks/${sylId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ count }),
@@ -54,7 +55,7 @@ export const useDisplayBreakStore = create<DisplayBreakState>((set, get) => ({
     next.delete(sylId);
     set({ breaks: next });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/display-breaks/${sylId}`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/display-breaks/${sylId}`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(await res.text());

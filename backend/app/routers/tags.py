@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 import sqlite3
 
+from ..auth import active_org_id
 from ..db import get_db
 from ..schemas import TagOut, TagCreate, TagUpdate
 from ..syllable_anchors import anchor_for_point, anchor_for_close, _syl_offset_maps
@@ -25,8 +26,10 @@ def list_tags(text_id: int):
     conn = get_db()
     cursor = conn.cursor()
     # Part 8: a text's palette = its own private tags + every shared (NULL owner) tag.
+    # Shared means shared within the ORG — never across organizations.
     cursor.execute(
-        "SELECT * FROM tags WHERE text_id = ? OR text_id IS NULL", (text_id,)
+        "SELECT * FROM tags WHERE text_id = ? OR (text_id IS NULL AND org_id = ?)",
+        (text_id, active_org_id())
     )
     rows = [dict(r) for r in cursor.fetchall()]
     id2start, id2end = _syl_offset_maps(conn, text_id)
@@ -42,8 +45,9 @@ def create_tag(text_id: int, tag: TagCreate):
     # Unique name within this text's visible palette — its own private tags plus every
     # shared (NULL owner) tag (Part 8), so a new private tag can't collide with a shared one.
     cursor.execute(
-        "SELECT id FROM tags WHERE (text_id = ? OR text_id IS NULL) AND name = ?",
-        (text_id, tag.name),
+        "SELECT id FROM tags WHERE (text_id = ? OR (text_id IS NULL AND org_id = ?)) "
+        "AND name = ?",
+        (text_id, active_org_id(), tag.name),
     )
     if cursor.fetchone():
         conn.close()
@@ -88,9 +92,9 @@ def create_tag(text_id: int, tag: TagCreate):
         raise HTTPException(400, "open_position must be less than close_position")
     try:
         cursor.execute(
-            "INSERT INTO tags (text_id, name, color, tag_kind, open_syl_id, close_syl_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (text_id, tag.name, tag.color, tag.tag_kind, open_syl, close_syl),
+            "INSERT INTO tags (org_id, text_id, name, color, tag_kind, open_syl_id, close_syl_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (active_org_id(), text_id, tag.name, tag.color, tag.tag_kind, open_syl, close_syl),
         )
         tag_id = cursor.lastrowid
         conn.commit()
@@ -174,16 +178,17 @@ def update_tag(tag_id: int, tag: TagUpdate):
     # (its own private tags + every shared tag).
     if new_name != existing["name"] or new_text_id != existing["text_id"]:
         if new_text_id is None:
-            # A shared tag shows in every palette, so its name must be globally unique
-            # across all tags (private ones anywhere included).
+            # A shared tag shows in every palette OF ITS ORG, so its name must be
+            # unique across all of the org's tags (private ones included).
             cursor.execute(
-                "SELECT id FROM tags WHERE name = ? AND id != ?",
-                (new_name, tag_id),
+                "SELECT id FROM tags WHERE org_id = ? AND name = ? AND id != ?",
+                (existing["org_id"], new_name, tag_id),
             )
         else:
             cursor.execute(
-                "SELECT id FROM tags WHERE (text_id = ? OR text_id IS NULL) AND name = ? AND id != ?",
-                (new_text_id, new_name, tag_id),
+                "SELECT id FROM tags WHERE (text_id = ? OR (text_id IS NULL AND org_id = ?)) "
+                "AND name = ? AND id != ?",
+                (new_text_id, existing["org_id"], new_name, tag_id),
             )
         if cursor.fetchone():
             conn.close()
