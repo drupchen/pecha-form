@@ -431,6 +431,15 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-section-l1 { font-size: 15pt; }
 .bk-section-l2 { font-size: 13.5pt; }
 .bk-section-l3 { font-size: 12pt; }
+/* A translation-only title not yet translated in this edition: a muted, italic placeholder so
+ * the missing heading is visible on the page (and reads as provisional, not final content).
+ * Three classes so it outranks the org-injected `.booklet-root .bk-section-lN` rules (0,2,0,
+ * later in the cascade), which otherwise reset the slant/colour back to a normal heading. */
+.booklet-root .bk-section.bk-section-missing {
+  font-style: italic;
+  color: var(--vermilion, #c53030);
+  opacity: 0.6;
+}
 
 /* The page's content, offset bodily by `--page-shift` (signed: + down, − up). The move of
  * last resort, once opening the empty lines has reached the limit of decent spacing. It may
@@ -513,7 +522,12 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   left: 2mm;
   top: var(--m-top);
   height: calc(var(--page-h) - var(--m-top) - var(--m-bottom));
-  z-index: 3;
+  /* The slider owns the far-left "Lane A" of the margin (its 16px input + reset live in
+     page-x ~[7.5, 23.5]). It sits ABOVE the gutter ladder (4/5/6) so any sub-pixel /
+     overview-scale residue in that lane still resolves to the slider — safe because the
+     container is pointer-events:none, so only the input+reset (both inside Lane A, which the
+     gutter is clamped out of below) ever capture; the gutter's hovers are never eaten. */
+  z-index: 7;
   /* Always shown, like the gap fill. */
   display: flex;
   flex-direction: column;
@@ -529,6 +543,11 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   direction: ltr;
   flex: 1;
   width: 16px;
+  /* Pin the 16px input to the LEFT of its column so its horizontal span is deterministic
+     (page-x ~[7.5, 23.5], `left:2mm` + 16px) regardless of the value-label's width — the
+     centred default let a long label ("↓12.4mm") push the input past the gutter's reserved
+     lane. This is the capturing element; the label/reset (non-capturing) stay centred. */
+  align-self: flex-start;
   accent-color: var(--jade, #3a7d5f);
 }
 .bk-pageshift span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
@@ -633,11 +652,13 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  * The z-index LADDER carries on the GUTTER (a positioned element) — a z-index on the
  * static buttons inside does nothing, and the gutter is a DOM sibling BEFORE the line's
  * text, so without its own z-index it paints under its own Tibetan. The rungs:
- *   pageshift/gapfill track   3   (page-level absolute overlays)
+ *   gapfill track             3   (page-level absolute overlay)
  *   gutter (base)             4   (above its own line's text)
  *   hovered line's gutter     5   (its whole rail floats above neighbours)
  *   gutter holding a mark     6   (a vermilion mark is never buried, even by a hovered
- *                                  neighbour whose 19px rail slightly overlaps this line) */
+ *                                  neighbour whose 19px rail slightly overlaps this line)
+ *   page-shift slider         7   (owns the far-left lane; the gutter is clamped out of it,
+ *                                  so this only breaks sub-pixel/overview ties) */
 .bk-gutter {
   position: absolute;
   left: -24px;
@@ -650,6 +671,15 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   white-space: nowrap;
   z-index: 4;
 }
+/* Keep the gutter out of the slider's far-left "Lane A": its left edge never crosses page-x
+   26px (just past the 23.5px slider input). `--m-bind`/`--m-outer` is the page's left padding
+   (binding on a recto, outer on a verso) = where the text block — and so the linewrap-relative
+   `left:-24px` — starts. On today's wide margins `-24px` wins (byte-for-byte unchanged); the
+   clamp only engages once the margin drops below ~13.2mm — the narrow-binding regime where the
+   rail otherwise reaches the slider — and then it shifts the rail RIGHT toward the (non-
+   interactive, white-backed) text instead of onto the slider. Print-hidden either way. */
+.booklet-page.recto .bk-gutter { left: max(-24px, calc(26px - var(--m-bind))); }
+.booklet-page.verso .bk-gutter { left: max(-24px, calc(26px - var(--m-outer))); }
 .bk-linewrap:hover > .bk-gutter,
 .bk-linewrap:focus-within > .bk-gutter { z-index: 5; }
 .bk-gutter:has(.bk-vermilion-mark) { z-index: 6; }

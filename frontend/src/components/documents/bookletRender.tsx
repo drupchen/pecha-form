@@ -377,12 +377,20 @@ export const Recto: React.FC<{
   return (
     <div className={lineCls}>
       {isSection ? (
-        l.translation != null && (
+        l.translation != null ? (
           <WidthLine className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
                      {...widthProps(adj, 'section', false)}>
             <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(l.translation) }} />
           </WidthLine>
-        )
+        ) : l.missingTitle ? (
+          // A translation-only title not yet translated in this edition: a muted placeholder
+          // marks the slot so the missing heading is visible on the page (never another
+          // language's text). It clears itself the moment the title is translated.
+          <WidthLine className={`bk-section bk-section-missing bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
+                     {...widthProps(adj, 'section', false)}>
+            <span>[ untranslated title ]</span>
+          </WidthLine>
+        ) : null
       ) : (
         <>
           {l.phonetics && (

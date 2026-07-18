@@ -7,7 +7,10 @@ import { useEditorTokenStore } from '../../store/useEditorTokenStore';
 import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import { useUIStore } from '../../store/useUIStore';
 import { usePhoneticsStore, phonKey } from '../../store/usePhoneticsStore';
-import { deriveLines, type PhoneticLine } from './lines';
+import { useTranslationStore } from '../../store/useTranslationStore';
+import { useTreeNodeStore } from '../../store/useTreeNodeStore';
+import { deriveChunks } from '../translate/chunks';
+import { deriveLines, kindOf, type PhoneticLine } from './lines';
 import { useCan } from '../../store/usePermissions';
 import { generateBo, generateSkt, STYLE_LANGS, type BoStyle, type BoLang } from './generate';
 import type { SktLang } from './sanskrit';
@@ -53,6 +56,13 @@ export const PhoneticsView: React.FC = () => {
   const fetchPhonetics = usePhoneticsStore(s => s.fetchPhonetics);
   const save = usePhoneticsStore(s => s.save);
   const refreshNonce = useUIStore(s => s.refreshNonce);
+  // The sapche headings shown inline for orientation come from the SAME sources the booklet's
+  // navigation outline uses: the translation chunks (their per-language label) and the sapche
+  // tree (nesting depth).
+  const trChunks = useTranslationStore(s => s.chunks);
+  const fetchChunks = useTranslationStore(s => s.fetchChunks);
+  const treeNodes = useTreeNodeStore(s => s.nodes);
+  const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
 
   const [tab, setTab] = useState<'bo' | 'skt'>('bo');
   const [docLang, setDocLang] = useState<DocLang>('en');
@@ -61,7 +71,8 @@ export const PhoneticsView: React.FC = () => {
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
-  // Structural data (language-independent).
+  // Structural data (language-independent) + the sapche tree and translation chunks that label
+  // and nest the inline headings.
   useEffect(() => {
     if (!currentText) return;
     const id = currentText.id;
@@ -69,7 +80,9 @@ export const PhoneticsView: React.FC = () => {
     fetchSpans(id);
     fetchMarkers(id);
     fetchBreaks(id);
-  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks]);
+    fetchNodes(id);
+    fetchChunks(id);
+  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchChunks]);
 
   // Phonetics are per-language: refetch and drop drafts on a document or language change.
   useEffect(() => {
@@ -107,7 +120,81 @@ export const PhoneticsView: React.FC = () => {
     return { byRange, pos, intervals };
   }, [rows, tokens]);
 
-  const shown = useMemo(() => lines.filter(l => l.kind === tab), [lines, tab]);
+  // ── Inline sapche headings (orientation) ──
+  // A heading's label in the current edit language, matched by syllable range (like the booklet
+  // nav outline). HTML body → plain text for a compact heading.
+  const stripHtml = (html: string) =>
+    (new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '').trim();
+  const transByRange = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of trChunks) {
+      const t = c.translations.find(x => x.lang === docLang);
+      if (t?.body) m.set(`${c.start_syl_id}-${c.end_syl_id}`, t.body);
+    }
+    return m;
+  }, [trChunks, docLang]);
+  // Sapche outline depth per anchor syllable (mirrors compile.ts): a tree node's segment_start
+  // offset → the syllable there → its ancestor count.
+  const depthBySyl = useMemo(() => {
+    const byId = new Map(treeNodes.map(n => [n.id, n]));
+    const depthOf = (n: typeof treeNodes[number]): number => {
+      let d = 0, cur: typeof n | undefined = n, guard = 0;
+      while (cur && cur.parent_id != null && guard++ < 64) { cur = byId.get(cur.parent_id); if (cur) d++; }
+      return d;
+    };
+    const sylAtOffset = new Map<number, string>();
+    for (const t of tokens) if (t.text.trim() !== '') sylAtOffset.set(t.start_offset, t.id);
+    const m = new Map<string, number>();
+    for (const n of treeNodes) {
+      if (n.segment_start == null) continue;
+      const syl = sylAtOffset.get(n.segment_start);
+      if (!syl) continue;
+      const d = depthOf(n);
+      const prev = m.get(syl);
+      if (prev == null || d < prev) m.set(syl, d);
+    }
+    return m;
+  }, [treeNodes, tokens]);
+  // A manually-set heading level (H1-based) where the tree supplies no depth.
+  const levelBySyl = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of trChunks) if (c.level != null) m.set(c.start_syl_id, c.level);
+    return m;
+  }, [trChunks]);
+
+  // The tab's rows, with the sapche/title headings folded IN at their stream positions: the
+  // same full unit stream `deriveLines` walks, but keeping the heading units (not just the
+  // recited lines) so an editor can see where they are. Headings are read-only landmarks; each
+  // recited line keeps a 1-based number of its own (`n`).
+  type Row =
+    | { kind: 'heading'; key: string; label: string; depth: number }
+    | { kind: 'line'; line: PhoneticLine; n: number };
+  const rendered = useMemo<Row[]>(() => {
+    if (!tokens.length) return [];
+    const markerOffsets = new Set(markers.map(m => m.position));
+    const units = deriveChunks(tokens, markerOffsets, spans, breakOverrides,
+      { verse: true, sapche: true, mantra: true }, undefined, /* lineLevel */ true);
+    const out: Row[] = [];
+    let n = 0;
+    for (const u of units) {
+      if (u.tagType === 'sapche' || u.tagType === 'title') {
+        const raw = transByRange.get(`${u.startSylId}-${u.endSylId}`);
+        const label = (raw ? stripHtml(raw) : '') || u.text.trim();
+        const depth = depthBySyl.get(u.startSylId)
+          ?? (levelBySyl.has(u.startSylId) ? levelBySyl.get(u.startSylId)! - 1 : 0);
+        out.push({ kind: 'heading', key: u.key, label, depth: Math.max(0, depth) });
+      } else {
+        const k = kindOf(u.tagType);
+        if (k === tab && u.startSylId) out.push({ kind: 'line', line: { ...u, kind: k }, n: ++n });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokens, markers, spans, breakOverrides, tab, transByRange, depthBySyl, levelBySyl]);
+
+  const shown = useMemo(
+    () => rendered.filter((r): r is Extract<Row, { kind: 'line' }> => r.kind === 'line').map(r => r.line),
+    [rendered]);
 
   // Progress nav: walk the lines still needing phonetics on this tab (they carry `data-empty`).
   // Same interaction as the translate bench's "N to trim" pill: down = first below the
@@ -343,7 +430,22 @@ export const PhoneticsView: React.FC = () => {
           </div>
         ) : (
           <div className="flex flex-col divide-y" style={{ borderColor: 'var(--cline)' }}>
-            {shown.map((l, i) => {
+            {rendered.map((item) => {
+              // A sapche section heading, folded in for orientation: read-only, in the current
+              // edit language (Tibetan where untranslated), indented by its outline depth. Titles
+              // are edited in the Translate bench, not here.
+              if (item.kind === 'heading') {
+                return (
+                  <div key={item.key} className="py-1.5 select-none"
+                       style={{ paddingLeft: `${item.depth * 1.5}rem` }}>
+                    <div className="text-sm font-semibold text-lapis/80 tracking-wide"
+                         title="Sapche section (edit the title in the Translate bench)">
+                      {item.label || '—'}
+                    </div>
+                  </div>
+                );
+              }
+              const l = item.line;
               const m = matchFor(l);
               const body = bodyOf(l, m);
               const status = m?.status ?? 'auto';
@@ -365,7 +467,7 @@ export const PhoneticsView: React.FC = () => {
                   <div className="flex-1 flex items-start gap-2">
                     <span className="shrink-0 pt-1.5 text-right tabular-nums select-none"
                           style={{ width: '1.6em', color: '#A28348', opacity: 0.5, fontSize: '0.7rem' }}>
-                      {i + 1}
+                      {item.n}
                     </span>
                     <textarea
                       value={body}

@@ -68,6 +68,10 @@ export interface DocLine {
    *  the cover / internal title page can show the first as the main title and the rest
    *  as the subtitle. Set on every title line (they share their chunk's paragraphs). */
   paragraphs?: string[];
+  /** A translation-only title with NO translation in this edition: the heading slot renders a
+   *  muted placeholder (not blank, not another language's text) so the missing title is visible
+   *  on the page. */
+  missingTitle?: boolean;
 }
 
 /** A fresh identity per EVALUATION of this module. In dev, a hot update replaces the
@@ -236,13 +240,15 @@ export async function compileTextItem(
   const out: DocLine[] = [];
   lines.forEach((l, i) => {
     // A translation-only title (scramble-layer layout): it has no syllables, so its heading
-    // text comes from the layout's per-language `titles`, not the syllable-keyed lookups. Emit
-    // it UNCONDITIONALLY — a title present in some editions but not others must still occupy a
-    // line in every edition, or the shared line streams fall out of alignment. `startSylId` is
-    // '' — the discriminator the navigation loop uses to avoid double-listing it.
+    // text comes from the layout's `titles` FOR THIS EDITION only — never another language's, so
+    // a title translated in one edition shows blank in the others and its missing content is
+    // visible. Emit it UNCONDITIONALLY all the same — a title present in some editions but not
+    // others must still occupy a line in every edition, or the shared line streams fall out of
+    // alignment. `startSylId` is '' — the discriminator the navigation loop uses to avoid
+    // double-listing it.
     if (l.titleLayout) {
       const ly = l.titleLayout;
-      const body = (ly.titles[lang] ?? Object.values(ly.titles)[0] ?? '').trim();
+      const body = (ly.titles[lang] ?? '').trim();
       const paras = splitParagraphs(body);
       out.push({
         itemId: item.id, textId, key: `${item.id}:${l.key}`, role: 'title',
@@ -250,6 +256,7 @@ export async function compileTextItem(
         phonetics: '', translation: body || null, emptyAfter: false,
         level: Math.max(0, (ly.level ?? 1) - 1),
         ...(paras.length ? { paragraphs: paras } : {}),
+        ...(body ? {} : { missingTitle: true }),
       });
       return;
     }
@@ -365,7 +372,8 @@ export async function compileTextItem(
   });
   for (const ly of layouts) {
     if (ly.kind !== 'title' || ly.disabled) continue;
-    const body = (ly.titles[lang] ?? Object.values(ly.titles)[0] ?? '').trim();
+    // This edition's title text only — a title untranslated here has no bookmark here either.
+    const body = (ly.titles[lang] ?? '').trim();
     if (!body) continue;
     // A title chunk sits BEFORE the chunk starting at its anchor; the `-0.5` orders it
     // ahead of a heading line sharing that syllable. A null anchor rides at the end.
