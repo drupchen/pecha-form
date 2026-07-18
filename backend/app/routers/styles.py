@@ -1,21 +1,22 @@
 """Style designer (Phase 4). Booklet typography is data-driven: ORGANIZATION-wide role
 templates + per-DOCUMENT overrides, resolved default ← org ← document by the frontend at
 render time (the built-in defaults live in the frontend so bench + print stay identical).
-Organizations/users are not built yet — everything is org 1 for now.
+The org is the request's ACTIVE org (X-Org-Id header via the auth guard) — no
+org_id parameter on the wire.
 """
 import io
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from ..auth import active_org_id
 from ..db import get_db
 
 router = APIRouter(prefix="/api", tags=["styles"])
 
-DEFAULT_ORG = 1
 
 # The documented style-name CONVENTION — role → (canonical docx paragraph-style name,
 # accepted aliases incl. the reference booklet's names). Used by both the template
@@ -111,7 +112,7 @@ def _rows_to_map(rows) -> dict:
 # ── Organization-wide role styles ────────────────────────────────────────────
 
 @router.get("/styles")
-def get_org_styles(org_id: int = DEFAULT_ORG):
+def get_org_styles(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         rows = conn.execute(
@@ -122,7 +123,7 @@ def get_org_styles(org_id: int = DEFAULT_ORG):
 
 
 @router.put("/styles/{role}")
-def put_org_style(role: str, payload: StyleProps, org_id: int = DEFAULT_ORG):
+def put_org_style(role: str, payload: StyleProps, org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         conn.execute(
@@ -136,7 +137,7 @@ def put_org_style(role: str, payload: StyleProps, org_id: int = DEFAULT_ORG):
 
 
 @router.delete("/styles/{role}")
-def delete_org_style(role: str, org_id: int = DEFAULT_ORG):
+def delete_org_style(role: str, org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         conn.execute("DELETE FROM style_roles WHERE org_id = ? AND role = ?", (org_id, role))
@@ -152,7 +153,7 @@ def delete_org_style(role: str, org_id: int = DEFAULT_ORG):
 # says nothing about its geometry follows the house and one that does keeps its own.
 
 @router.get("/org-layout")
-def get_org_layout(org_id: int = DEFAULT_ORG):
+def get_org_layout(org_id: int = Depends(active_org_id)):
     """The org's page format. Always complete: the built-in geometry, then whatever the org
     has said, so the caller never has to render the word "inherit"."""
     from .documents import DEFAULT_LAYOUT_CONFIG, ORG_LAYOUT_KEYS
@@ -173,7 +174,7 @@ def get_org_layout(org_id: int = DEFAULT_ORG):
 
 
 @router.put("/org-layout")
-def put_org_layout(payload: OrgLayoutIn, org_id: int = DEFAULT_ORG):
+def put_org_layout(payload: OrgLayoutIn, org_id: int = Depends(active_org_id)):
     """Merge geometry onto the org template. Unknown keys are dropped rather than stored: the
     template speaks for the page format and the guides, not for type sizes (the roles own
     those) or for the bench's reflow delay."""
@@ -254,7 +255,7 @@ def delete_doc_style(document_id: int, role: str):
 # ── Organization fonts (@font-face) ──────────────────────────────────────────
 
 @router.get("/org-fonts")
-def list_org_fonts(org_id: int = DEFAULT_ORG):
+def list_org_fonts(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         rows = conn.execute(
@@ -272,7 +273,7 @@ async def upload_org_font(
     family: str = Form(...),
     weight: int = Form(400),
     italic: bool = Form(False),
-    org_id: int = Form(DEFAULT_ORG),
+    org_id: int = Depends(active_org_id),
 ):
     data = await file.read()
     mime = file.content_type or "application/octet-stream"
@@ -341,7 +342,7 @@ class SealSizeIn(BaseModel):
 
 
 @router.get("/org-seal", response_model=SealOut)
-def get_org_seal(org_id: int = DEFAULT_ORG):
+def get_org_seal(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         row = conn.execute(
@@ -354,7 +355,7 @@ def get_org_seal(org_id: int = DEFAULT_ORG):
 
 
 @router.get("/org-seal/file")
-def get_org_seal_file(org_id: int = DEFAULT_ORG):
+def get_org_seal_file(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         row = conn.execute(
@@ -368,7 +369,7 @@ def get_org_seal_file(org_id: int = DEFAULT_ORG):
 
 
 @router.put("/org-seal", response_model=SealOut)
-async def upload_org_seal(file: UploadFile = File(...), org_id: int = Form(DEFAULT_ORG)):
+async def upload_org_seal(file: UploadFile = File(...), org_id: int = Depends(active_org_id)):
     data = await file.read()
     mime = file.content_type or ""
     if mime not in ALLOWED_IMAGE_MIME:
@@ -394,7 +395,7 @@ async def upload_org_seal(file: UploadFile = File(...), org_id: int = Form(DEFAU
 
 
 @router.patch("/org-seal", response_model=SealOut)
-def set_org_seal_size(payload: SealSizeIn, org_id: int = DEFAULT_ORG):
+def set_org_seal_size(payload: SealSizeIn, org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         row = conn.execute("SELECT 1 FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
@@ -410,7 +411,7 @@ def set_org_seal_size(payload: SealSizeIn, org_id: int = DEFAULT_ORG):
 
 
 @router.delete("/org-seal")
-def delete_org_seal(org_id: int = DEFAULT_ORG):
+def delete_org_seal(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         conn.execute("DELETE FROM org_seal WHERE org_id = ?", (org_id,))
@@ -427,7 +428,7 @@ class SampleIn(BaseModel):
 
 
 @router.get("/style-sample")
-def get_style_sample(org_id: int = DEFAULT_ORG):
+def get_style_sample(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         row = conn.execute(
@@ -438,7 +439,7 @@ def get_style_sample(org_id: int = DEFAULT_ORG):
 
 
 @router.put("/style-sample")
-def put_style_sample(payload: SampleIn, org_id: int = DEFAULT_ORG):
+def put_style_sample(payload: SampleIn, org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         conn.execute(
@@ -487,7 +488,7 @@ def _props_from_docx_style(style) -> dict:
 
 
 @router.get("/style-template.docx")
-def export_style_template(target: str = "document", org_id: int = DEFAULT_ORG,
+def export_style_template(target: str = "document", org_id: int = Depends(active_org_id),
                           document_id: int | None = None):
     """Generate a starter .docx with one named paragraph style per role, valued from the
     resolved current styles (defaults ← org ← [document])."""
@@ -546,7 +547,7 @@ def export_style_template(target: str = "document", org_id: int = DEFAULT_ORG,
 async def import_style_template(
     file: UploadFile = File(...),
     target: str = Form("document"),
-    org_id: int = Form(DEFAULT_ORG),
+    org_id: int = Depends(active_org_id),
     document_id: int | None = Form(None),
 ):
     """Parse an uploaded docx's named styles → role StyleProps → write to org or document."""

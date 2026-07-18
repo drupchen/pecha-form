@@ -4,6 +4,7 @@ import os
 import sqlite3
 from typing import Optional
 
+from ..auth import active_org_id
 from ..db import get_db
 from ..schemas import TextOut, TextDetailOut, ExtractIn, CloneIn, TextMetaUpdate
 from .text_groups import normalize_group_path
@@ -64,15 +65,18 @@ def _apply_instance_metadata(
 
 
 def _create_primary_text(conn, filename: str, title: str, source_text: str,
-                         cloned_from_text_id: Optional[int] = None) -> int:
+                         cloned_from_text_id: Optional[int] = None,
+                         org_id: Optional[int] = None) -> int:
     """Create a fresh, independent primary text from a raw string, building its own
     syllable layer (fresh instance_id + uuids). Shared by /extract and /clone. Mirrors
-    the tokenize→insert→persist_syllables path of upload_text."""
+    the tokenize→insert→persist_syllables path of upload_text. `org_id` is the SOURCE
+    text's org — derivatives stay in their source's org, never the column default."""
     raw_text, _units = prepare_and_tokenize(source_text)
     cur = conn.execute(
-        "INSERT INTO texts (filename, title, source_text, raw_text, cloned_from_text_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (filename, title, source_text, raw_text, cloned_from_text_id),
+        "INSERT INTO texts (org_id, filename, title, source_text, raw_text, cloned_from_text_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (org_id if org_id is not None else active_org_id(),
+         filename, title, source_text, raw_text, cloned_from_text_id),
     )
     new_id = cur.lastrowid
     _apply_instance_metadata(conn, new_id, raw_text, None, fallback_title=title)
@@ -374,10 +378,10 @@ async def upload_text(
     cursor = conn.cursor()
     cursor.execute(
         """
-        INSERT INTO texts (filename, title, source_text, raw_text)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO texts (org_id, filename, title, source_text, raw_text)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (file.filename, doc_title, source_text, raw_text)
+        (active_org_id(), file.filename, doc_title, source_text, raw_text)
     )
     doc_id = cursor.lastrowid
     _apply_instance_metadata(
@@ -459,8 +463,9 @@ def list_texts():
                (SELECT COUNT(*) FROM tags WHERE text_id = d.id) as tag_count,
                EXISTS(SELECT 1 FROM texts c WHERE c.cloned_from_text_id = d.id) as has_clone
         FROM texts d
+        WHERE d.org_id = ?
         ORDER BY d.updated_at DESC
-    """)
+    """, (active_org_id(),))
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
@@ -566,11 +571,11 @@ def derive_secondary_text(id: int, payload: Dict[str, Any] = Body(default={})):
     title = (payload or {}).get("title") or f"{parent['title']} (secondary)"
     cursor.execute(
         """
-        INSERT INTO texts (filename, title, source_text, raw_text,
+        INSERT INTO texts (org_id, filename, title, source_text, raw_text,
                            text_type, parent_text_id)
-        VALUES (?, ?, '', '', 'secondary', ?)
+        VALUES (?, ?, ?, '', '', 'secondary', ?)
         """,
-        (parent["filename"], title, id),
+        (parent["org_id"], parent["filename"], title, id),
     )
     new_id = cursor.lastrowid
 
@@ -841,7 +846,8 @@ def extract_text(id: int, payload: ExtractIn):
     end_off = by_id[ids[-1]]["end_offset"]
 
     title = (payload.title or "").strip() or _extract_title(extracted)
-    new_id = _create_primary_text(conn, src["filename"], title, extracted)
+    new_id = _create_primary_text(conn, src["filename"], title, extracted,
+                                  org_id=src["org_id"])
     # Carry the section's tags/markers/notes/passages into the new text (remapped to
     # its fresh syllable ids) so extraction preserves the annotations, not just the text.
     _copy_range_annotations(conn, id, new_id, ids, start_off, end_off, by_id)
@@ -880,7 +886,7 @@ def clone_text(id: int, payload: CloneIn = Body(default=CloneIn())):
     title = (payload.title or "").strip() if payload else ""
     title = title or src["title"]
     new_id = _create_primary_text(conn, src["filename"], title, corrected_text,
-                                  cloned_from_text_id=id)
+                                  cloned_from_text_id=id, org_id=src["org_id"])
 
     # Carry the source's annotations + TOC into the flattened duplicate, re-anchored through
     # the bake: map each *kept* source syllable to the clone syllable at the same offset in
