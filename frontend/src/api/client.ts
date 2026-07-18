@@ -157,6 +157,9 @@ export interface ChunkLayout {
   move_mode: 'inline' | 'segment';
   anchor_after: boolean;
   level: number | null;
+  /** Move only: null = shared across all editions (the inherited default); a language code =
+   *  that edition only, overriding the shared move on the same source range for that language. */
+  lang: string | null;
   disabled: boolean;
   position: number;
   titles: Record<string, string>;
@@ -203,7 +206,7 @@ export const createLayout = (body: {
   text_id?: number | null; kind: 'move' | 'title';
   src_start_syl_id?: string | null; src_end_syl_id?: string | null;
   anchor_syl_id?: string | null; move_mode?: 'inline' | 'segment';
-  anchor_after?: boolean; level?: number | null;
+  anchor_after?: boolean; level?: number | null; lang?: string | null;
 }) =>
   jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts`,
     { method: 'POST', headers: J, body: JSON.stringify(body) });

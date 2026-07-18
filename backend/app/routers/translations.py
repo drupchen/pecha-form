@@ -584,6 +584,7 @@ class LayoutIn(BaseModel):
     move_mode: str = "inline"       # 'inline' (hairline) | 'segment' (bar between chunks)
     anchor_after: bool = False      # 'inline' only: place after the anchor syllable
     level: Optional[int] = None
+    lang: Optional[str] = None      # move only: NULL = shared across editions; else that edition
 
 class LayoutOut(BaseModel):
     id: int
@@ -595,6 +596,7 @@ class LayoutOut(BaseModel):
     move_mode: str = "inline"
     anchor_after: bool = False
     level: Optional[int] = None
+    lang: Optional[str] = None      # NULL = shared across editions; else that edition only
     disabled: bool = False
     position: int = 0
     titles: dict = {}               # lang -> body (title rows)
@@ -610,6 +612,7 @@ def _layout_out(conn, r) -> LayoutOut:
                      # "before the chunk starting here", which is what 'segment' means.
                      move_mode=r["move_mode"] or "segment",
                      anchor_after=bool(r["anchor_after"]), level=r["level"],
+                     lang=r["lang"],
                      disabled=bool(r["disabled"]), position=r["position"], titles=titles)
 
 
@@ -624,13 +627,19 @@ def list_layouts(text_id: int):
         rows = conn.execute(
             "SELECT * FROM chunk_layouts WHERE text_id = ? OR text_id IS NULL "
             "ORDER BY position, id", (text_id,)).fetchall()
-        own_move_keys = {(r["src_start_syl_id"], r["src_end_syl_id"])
+        # The booklet-override shadow is keyed WITHIN a language bucket: a booklet's own move
+        # shadows the global move on the same source range AND the same `lang` scope, so a
+        # booklet-shared row shadows a global-shared row and a booklet-`fr` row shadows a
+        # global-`fr` row — the two dimensions stay orthogonal. The per-language pick (a
+        # language-specific row overriding a shared one) is done on the frontend, which knows
+        # the current edition; here we return every applicable row with its `lang`.
+        own_move_keys = {(r["src_start_syl_id"], r["src_end_syl_id"], r["lang"])
                          for r in rows if r["text_id"] == text_id and r["kind"] == "move"}
         out = []
         for r in rows:
             if r["text_id"] is None and r["kind"] == "move" \
-                    and (r["src_start_syl_id"], r["src_end_syl_id"]) in own_move_keys:
-                continue  # shadowed by this booklet's own row
+                    and (r["src_start_syl_id"], r["src_end_syl_id"], r["lang"]) in own_move_keys:
+                continue  # shadowed by this booklet's own row (same source range + lang scope)
             # Applicability: every referenced syllable must be in the stream.
             refs = [r["src_start_syl_id"], r["src_end_syl_id"], r["anchor_syl_id"]]
             if any(x is not None and x not in stream_ids for x in refs):
@@ -655,11 +664,11 @@ def create_layout(payload: LayoutIn):
                            ).fetchone()["p"]
         cur = conn.execute(
             "INSERT INTO chunk_layouts (text_id, kind, src_start_syl_id, src_end_syl_id, "
-            "anchor_syl_id, move_mode, anchor_after, level, position) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "anchor_syl_id, move_mode, anchor_after, level, lang, position) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (payload.text_id, payload.kind, payload.src_start_syl_id, payload.src_end_syl_id,
              payload.anchor_syl_id, payload.move_mode, int(payload.anchor_after),
-             payload.level, pos))
+             payload.level, payload.lang, pos))
         conn.commit()
         r = conn.execute("SELECT * FROM chunk_layouts WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _layout_out(conn, r)

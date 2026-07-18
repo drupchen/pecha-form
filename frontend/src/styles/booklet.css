@@ -472,14 +472,13 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   position: absolute;
   bottom: 1mm;
   z-index: 3;
-  display: none;
+  /* Always shown — the bench IS the PDF editor, so every page handle stays live. */
+  display: flex;
   align-items: center;
   gap: 4px;
 }
 .bk-gapfill-verso { left: var(--m-outer); }
 .bk-gapfill-recto { left: var(--m-bind); }
-.booklet-page:hover > .bk-gapfill,
-.bk-gapfill:focus-within { display: flex; }
 .bk-gapfill input[type='range'] { width: 38mm; accent-color: var(--jade, #3a7d5f); height: 16px; }
 .bk-gapfill span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
                    white-space: nowrap; }
@@ -515,7 +514,8 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   top: var(--m-top);
   height: calc(var(--page-h) - var(--m-top) - var(--m-bottom));
   z-index: 3;
-  display: none;
+  /* Always shown, like the gap fill. */
+  display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
@@ -524,8 +524,6 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   pointer-events: none;
 }
 .bk-pageshift input[type='range'], .bk-pageshift .bk-slider-reset { pointer-events: auto; }
-.booklet-page:hover > .bk-pageshift,
-.bk-pageshift:focus-within { display: flex; }
 .bk-pageshift input[type='range'] {
   writing-mode: vertical-lr;    /* NOT -webkit-appearance: slider-vertical (gone in Chrome 135) */
   direction: ltr;
@@ -583,10 +581,9 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
    moves nothing the pagination measures. */
 .bk-gapctl-group {
   position: absolute; right: -2px; top: -11px; display: inline-flex; gap: 5px;
-  opacity: 0; pointer-events: none; transition: opacity 0.12s;
+  /* Always shown — every gap handle stays live in the always-editing bench. */
+  opacity: 1; pointer-events: auto; transition: opacity 0.12s;
 }
-.bk-gap:hover .bk-gapctl-group,
-.bk-gap:focus-within .bk-gapctl-group { opacity: 1; pointer-events: auto; }
 .bk-gap-removed:hover .bk-gapctl,
 .bk-gapctl {
   font: 600 11px/1 system-ui, sans-serif;
@@ -692,6 +689,25 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   content: ''; position: absolute; left: 2px; right: 2px; top: 50%;
   border-top: 1.5px solid var(--vermilion, #c53030);
   transform: rotate(-45deg);
+}
+
+/* ── Page-start provenance markers ───────────────────────────────────────────
+ * Every page start carries an always-visible marker naming WHY the page breaks here. A
+ * `.bk-startmark` is just a `.bk-breakctl` with no `.bk-negotiable`, so it never hides — the
+ * whole point is that the reason a page ends where it does is always legible. Colour carries
+ * the provenance, on the same key as everywhere else in the bench:
+ *   manual break  →  `.bk-vermilion-mark`  (vermilion — yours, a re-flow keeps it)
+ *   auto break    →  `.bk-startmark-auto`  (quiet lapis, dashed — the flow's, negotiable)
+ *   split tail    →  `.bk-startmark-split` (jade — the split family, like the hairline)
+ *   new text      →  `.bk-startmark-text`  (neutral — structural, not removable) */
+.bk-startmark { opacity: 1; pointer-events: auto; }
+.bk-startmark-auto { border-style: dashed; }
+.bk-startmark-split { color: var(--jade, #3a7d5f); }
+.bk-startmark-split:hover { background: var(--cream, #f4efe3); }
+.bk-startmark-text {
+  color: var(--ink-soft, #77706a);
+  cursor: default;
+  background: var(--cream-hi, #faf5ea);
 }
 @media print { .bk-gutter { display: none !important; } }
 

@@ -787,8 +787,12 @@ _COLUMN_MIGRATIONS = {
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
     # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.
+    # `lang`: a move's language scope — NULL = shared across all editions (the default,
+    # inherited); a language code = that edition only (overrides the shared move on the same
+    # source range for that language, leaving the other languages untouched).
     "chunk_layouts": [("move_mode", "TEXT"),
-                      ("anchor_after", "INTEGER NOT NULL DEFAULT 0")],
+                      ("anchor_after", "INTEGER NOT NULL DEFAULT 0"),
+                      ("lang", "TEXT")],
 }
 
 

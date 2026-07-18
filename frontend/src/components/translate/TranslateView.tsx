@@ -134,7 +134,7 @@ export const TranslateView: React.FC = () => {
   const [saveError, setSaveError] = useState<string | null>(null);
   /** Armed scramble move: the fragment being placed + scope. */
   const [armedMove, setArmedMove] = useState<{
-    srcStart: string; srcEnd: string; bookletOnly: boolean; label: string;
+    srcStart: string; srcEnd: string; bookletOnly: boolean; langOnly: boolean; label: string;
   } | null>(null);
   /** Insertion caret while placing INSIDE a chunk (hairline mechanism). */
   const [hairline, setHairline] = useState<{
@@ -210,22 +210,33 @@ export const TranslateView: React.FC = () => {
     });
   };
 
-  /** Walk the rows wearing the "copy — trim to fit" badge (they carry `data-copy`), relative
-   *  to whatever is on screen now: down = the first one below the viewport's midline, up = the
-   *  last one above it, wrapping at the ends. Midline, not top edge, because the jump centres
-   *  its target — a top-edge comparison would find the row it just centred and stick there.
+  /** Walk the rows matching `selector` (a progress badge — `data-copy`, `data-untranslated`),
+   *  relative to whatever is on screen now: down = the first one below the viewport's midline,
+   *  up = the last one above it, wrapping at the ends. Midline, not top edge, because the jump
+   *  centres its target — a top-edge comparison would find the row it just centred and stick.
    *
    *  A click during the previous jump's smooth scroll would measure MID-FLIGHT geometry and
    *  re-find the very row already being scrolled to — rapid clicking would feel stuck. So for
    *  a moment after a jump the walk advances from the remembered target instead; after that,
-   *  geometry (which by then means the settled viewport) takes over again. */
-  const trimNav = useRef<{ el: HTMLElement | null; at: number; pulse: number }>({ el: null, at: 0, pulse: 0 });
-  const gotoCopy = (dir: 1 | -1) => {
+   *  geometry (which by then means the settled viewport) takes over again. Each walk keeps its
+   *  own `nav` cursor so the two pills do not fight over one remembered target. */
+  type WalkNav = { el: HTMLElement | null; at: number; pulse: number };
+  const trimNav = useRef<WalkNav>({ el: null, at: 0, pulse: 0 });
+  const untransNav = useRef<WalkNav>({ el: null, at: 0, pulse: 0 });
+  // Where in the run the walk currently sits (1-based), so the pill can read "12/55" — the
+  // user asked to see where they are. 0 = not walking; it resets to 0 whenever the underlying
+  // count changes (an edit shifts every index, so the old position is meaningless).
+  const [trimPos, setTrimPos] = useState(0);
+  const [untransPos, setUntransPos] = useState(0);
+  const walkRows = (
+    selector: string, navRef: React.MutableRefObject<WalkNav>, dir: 1 | -1,
+    setPos: (n: number) => void,
+  ) => {
     const list = listRef.current;
     if (!list) return;
-    const els = [...list.querySelectorAll<HTMLElement>('[data-copy]')];
-    if (!els.length) return;
-    const nav = trimNav.current;
+    const els = [...list.querySelectorAll<HTMLElement>(selector)];
+    if (!els.length) { setPos(0); return; }
+    const nav = navRef.current;
     const prevIdx = nav.el ? els.indexOf(nav.el) : -1;
     let target: HTMLElement;
     if (prevIdx >= 0 && performance.now() - nav.at < 1600) {
@@ -238,6 +249,7 @@ export const TranslateView: React.FC = () => {
     }
     nav.el = target;
     nav.at = performance.now();
+    setPos(els.indexOf(target) + 1);
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
     // One pulse at a time: a stale timer from the previous jump must not cut this one short.
     window.clearTimeout(nav.pulse);
@@ -245,6 +257,8 @@ export const TranslateView: React.FC = () => {
     target.classList.add('link-pulse');
     nav.pulse = window.setTimeout(() => target.classList.remove('link-pulse'), 1300);
   };
+  const gotoCopy = (dir: 1 | -1) => walkRows('[data-copy]', trimNav, dir, setTrimPos);
+  const gotoUntranslated = (dir: 1 | -1) => walkRows('[data-untranslated]', untransNav, dir, setUntransPos);
 
   // Esc cancels an armed placement or a pending selection button.
   useEffect(() => {
@@ -280,7 +294,9 @@ export const TranslateView: React.FC = () => {
     if (!tokens.length) return { chunks: [], streamIds: [] as string[] };
     const markerOffsets = new Set(markers.map(m => m.position));
     const derived = deriveChunks(tokens, markerOffsets, spans, breakOverrides, lineBreakGroups);
-    const { movedAway, placements } = moveDisplays(tokens, layouts);
+    // Moves resolve PER EDITION: a language-specific relocation overrides the shared one for
+    // this `targetLang` only (see `moveDisplays`), so switching the edition re-arranges.
+    const { movedAway, placements } = moveDisplays(tokens, layouts, targetLang);
     const moved = applyMoveDisplays(derived, movedAway, placements);
     return {
       chunks: insertPassageChunks(
@@ -288,7 +304,7 @@ export const TranslateView: React.FC = () => {
         tokens, markerOffsets, spans, breakOverrides, lineBreakGroups),
       streamIds: tokens.map(t => t.id),
     };
-  }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts, passages]);
+  }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts, passages, targetLang]);
 
   /** Per-unit matching. THE TIBETAN IS THE HARD REFERENCE: one row per derived
    *  unit, always showing its own Tibetan. A unit-exact canonical chunk attaches
@@ -391,19 +407,44 @@ export const TranslateView: React.FC = () => {
     const ov = overrideFor(match?.id, lang);
     return !!(tr && ov && ov.base_updated_at && tr.updated_at > ov.base_updated_at);
   };
+  // The translation text a row would SHOW — mirrors the render's `effectiveBody` (override,
+  // then the unit's own, then a copy from a wider unit). A copy is a non-empty body, so it is
+  // NOT counted as untranslated: those pre-fills wear the separate "to trim" nav.
+  const rowBody = (row: DisplayRow): string => {
+    const existing = translationOf(row.match, targetLang)?.body;
+    const ov = overrideFor(row.match?.id, targetLang)?.body;
+    const copied = !existing && !ov ? translationOf(row.cover, targetLang)?.body : undefined;
+    return ov ?? existing ?? copied ?? '';
+  };
+  // A body line still needing translation: a real content unit whose translation input is
+  // empty for the target language. Excludes the rows that render in their own (non-regular)
+  // branches and carry no translation input — synthetic titles (own field), passages (text
+  // retrieved from their source line, itself counted), a move-emptied origin (its content was
+  // relocated), and MANTRA runs (Sanskrit kept as-is — its recitation is done in the phonetics
+  // bench, not translated here).
+  const needsTranslation = (row: DisplayRow): boolean =>
+    !!row.u.startSylId && !row.u.titleLayout && !row.u.passage && row.u.movedOutAll == null
+    && row.u.tagType !== 'mantra' && !rowBody(row).trim();
 
   // Notification counts for the strip.
   const counts = useMemo(() => {
-    let updates = 0, stale = 0, copies = 0;
+    let updates = 0, stale = 0, copies = 0, untranslated = 0;
     for (const row of displayRows) {
       const unitBody = translationOf(row.match, targetLang)?.body;
       if (!unitBody && translationOf(row.cover, targetLang)?.body && row.u.tagType !== 'mantra') copies++;
       if (updateAvailable(row.match, targetLang)) updates++;
       if (staleOverride(row.match, targetLang)) stale++;
+      if (needsTranslation(row)) untranslated++;
     }
-    return { updates, stale, copies, pending: suggestions.length };
+    return { updates, stale, copies, untranslated, pending: suggestions.length };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [displayRows, overrides, seen, suggestions, targetLang]);
+
+  // A walk position only means something against the run it was taken in — an edit (or a
+  // language switch) that changes the count shifts every index, so drop the "12/55" readout
+  // back to the bare total until the next chevron.
+  useEffect(() => { setUntransPos(0); }, [counts.untranslated]);
+  useEffect(() => { setTrimPos(0); }, [counts.copies]);
 
   if (!currentText) {
     return (
@@ -431,10 +472,19 @@ export const TranslateView: React.FC = () => {
     const text = window.getSelection()?.toString() ?? '';
     setArmedMove({
       srcStart: sel.startSylId, srcEnd: sel.endSylId,
-      bookletOnly: false,
+      bookletOnly: false, langOnly: false,
       label: text.slice(0, 24) + (text.length > 24 ? '…' : ''),
     });
     window.getSelection()?.removeAllRanges();
+  };
+
+  /** A destination that falls INSIDE the run being moved would copy the run into itself — a
+   *  degenerate move with no visible destination and (origin == target) no removal badge. It
+   *  is rejected at every placement touch-point. */
+  const anchorInSource = (anchorId: string | null) => {
+    if (!armedMove || anchorId == null) return false;
+    const a = posById.get(anchorId), s = posById.get(armedMove.srcStart), e = posById.get(armedMove.srcEnd);
+    return a != null && s != null && e != null && a >= s && a <= e;
   };
 
   /** Hairline caret while a move is armed: snaps before/after the hovered syllable
@@ -444,6 +494,8 @@ export const TranslateView: React.FC = () => {
     const el = (e.target as HTMLElement).closest('[data-syl-id]') as HTMLElement | null;
     const list = listRef.current;
     if (!el || !el.dataset.sylId || !list) { setHairline(null); return; }
+    // No caret inside the run being moved — you can't drop a run into itself.
+    if (anchorInSource(el.dataset.sylId)) { setHairline(null); return; }
     const r = el.getBoundingClientRect();
     const cr = list.getBoundingClientRect();
     const side: 'before' | 'after' = e.clientX < r.left + r.width / 2 ? 'before' : 'after';
@@ -462,16 +514,27 @@ export const TranslateView: React.FC = () => {
    *  is what the bar between chunks means. */
   const handlePlacementClick = () => {
     if (!armedMove || !hairline) return;
+    if (anchorInSource(hairline.sylId)) {
+      setSaveError("A run can't be moved into itself.");
+      return;
+    }
     const m = armedMove;
     setArmedMove(null);
     setHairline(null);
     void addMove({
       textId: m.bookletOnly ? currentText!.id : null,
+      lang: m.langOnly ? targetLang : null,
       srcStart: m.srcStart, srcEnd: m.srcEnd,
       anchor: hairline.sylId, mode: 'inline', anchorAfter: hairline.side === 'after',
     }).catch((e: any) => setSaveError(e.message || 'Move failed'));
   };
 
+  // A relocation scoped to one edition wears a note, so a move that behaves differently per
+  // language is legible on hover (the layout id rides each moved token as `movedIn`/`movedAway`).
+  const moveLangHint = (layoutId?: number) => {
+    const ly = layoutId != null ? layouts.find(x => x.id === layoutId) : undefined;
+    return ly?.lang ? ` (${ly.lang.toUpperCase()} only)` : '';
+  };
   const tibetanTokens = (u: DerivedChunk, interactive = true) => {
     const lines = tibetanLines(u.tokens);
     let ti = -1; // running token index across lines, preserved for move selection
@@ -496,7 +559,7 @@ export const TranslateView: React.FC = () => {
                 if (t.movedIn != null) {
                   return (
                     <span key={keyBase} className="moved-in-syl"
-                          title="Moved here from elsewhere for translation">
+                          title={`Moved here from elsewhere for translation${moveLangHint(t.movedIn)}`}>
                       {t.render.replace(/\n/g, '')}
                     </span>
                   );
@@ -512,7 +575,7 @@ export const TranslateView: React.FC = () => {
                     className={[away ? 'moved-away-syl' : '',
                                 t.small ? (u.tagType === 'mantra' ? 'tib-small implicit-mantra' : 'tib-small') : '']
                                 .filter(Boolean).join(' ') || undefined}
-                    title={away ? 'Picked up — its translation is integrated at its new place'
+                    title={away ? `Picked up — its translation is integrated at its new place${moveLangHint(t.movedAway)}`
                       : t.small && u.tagType === 'mantra' ? 'Small connector between mantras — implicit mantras to fill in' : undefined}
                   >
                     {/* Break is structural now (line div), so drop the render's trailing newline. */}
@@ -552,11 +615,16 @@ export const TranslateView: React.FC = () => {
         <button
           type="button"
           onClick={() => {
+            if (anchorInSource(anchor)) {
+              setSaveError("A run can't be moved into itself.");
+              return;
+            }
             const m = armedMove;
             setArmedMove(null);
             setHairline(null);
             void addMove({
               textId: m.bookletOnly ? currentText.id : null,
+              lang: m.langOnly ? targetLang : null,
               srcStart: m.srcStart, srcEnd: m.srcEnd, anchor, mode: 'segment',
             }).catch((e: any) => setSaveError(e.message || 'Move failed'));
           }}
@@ -654,8 +722,30 @@ export const TranslateView: React.FC = () => {
         ))}
         <div className="flex-1" />
         {/* Notification strip: what needs the owner's attention in this booklet. */}
-        {(counts.updates > 0 || counts.stale > 0 || counts.pending > 0 || counts.copies > 0) && (
+        {(counts.updates > 0 || counts.stale > 0 || counts.pending > 0 || counts.copies > 0
+          || counts.untranslated > 0) && (
           <span className="flex items-center gap-2">
+            {counts.untranslated > 0 && (
+              <span className="flex items-center gap-0.5">
+                <span className="px-1.5 rounded-full bg-vermilion/10 text-vermilion"
+                      title={`${counts.untranslated} line${counts.untranslated === 1 ? '' : 's'} still have no ${targetLang} translation`
+                        + (untransPos ? ` — you are on ${untransPos} of ${counts.untranslated}` : '')}>
+                  {untransPos ? `${untransPos}/${counts.untranslated}` : counts.untranslated} to translate
+                </span>
+                <button type="button" onClick={() => gotoUntranslated(-1)}
+                        className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                        style={{ border: '1px solid var(--cline)' }}
+                        title="Previous untranslated line">
+                  <ChevronUp size={11} />
+                </button>
+                <button type="button" onClick={() => gotoUntranslated(1)}
+                        className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                        style={{ border: '1px solid var(--cline)' }}
+                        title="Next untranslated line">
+                  <ChevronDown size={11} />
+                </button>
+              </span>
+            )}
             {counts.updates > 0 && (
               <span className="px-1.5 rounded-full bg-lapis/15 text-lapis" title="Shared translations updated elsewhere since you last saw them">
                 {counts.updates} updated
@@ -673,8 +763,10 @@ export const TranslateView: React.FC = () => {
             )}
             {counts.copies > 0 && (
               <span className="flex items-center gap-0.5">
-                <span className="px-1.5 rounded-full bg-cream text-ink-soft" title="Units pre-filled with a copy of a wider unit's translation — trim each to fit">
-                  {counts.copies} to trim
+                <span className="px-1.5 rounded-full bg-cream text-ink-soft"
+                      title={'Units pre-filled with a copy of a wider unit’s translation — trim each to fit'
+                        + (trimPos ? ` — you are on ${trimPos} of ${counts.copies}` : '')}>
+                  {trimPos ? `${trimPos}/${counts.copies}` : counts.copies} to trim
                 </span>
                 <button type="button" onClick={() => gotoCopy(-1)}
                         className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
@@ -711,6 +803,15 @@ export const TranslateView: React.FC = () => {
               onChange={e => setArmedMove({ ...armedMove, bookletOnly: e.target.checked })}
             />
             this booklet only
+          </label>
+          <label className="flex items-center gap-1 cursor-pointer"
+                 title={`Relocate this run in ${targetLang.toUpperCase()} only — the other editions keep the shared arrangement.`}>
+            <input
+              type="checkbox"
+              checked={armedMove.langOnly}
+              onChange={e => setArmedMove({ ...armedMove, langOnly: e.target.checked })}
+            />
+            {targetLang} only
           </label>
           <button
             type="button"
@@ -977,6 +1078,39 @@ export const TranslateView: React.FC = () => {
               const barAnchor = u.movedLayoutId != null
                 ? u.movedAnchorId ?? null
                 : u.sylIds[0] ?? null;
+              // Commit the translation body to THIS unit. `force` saves even when the text is
+              // unchanged — that is what "validate this copy as-is" needs: a copy that needs no
+              // trimming would otherwise never get saved (the editor skips a no-op blur), and so
+              // would stay flagged "to trim" forever.
+              const commit = (html: string, force = false) => {
+                if (!force && html === effectiveBody) return;
+                setSaveError(null);
+                void (async () => {
+                  try {
+                    if (ov && match) {
+                      // Booklet-local: edits stay on the override.
+                      await saveOverride(currentText.id, match.id, targetLang, html);
+                    } else {
+                      await save({
+                        contextTextId: currentText.id,
+                        startSylId: canonSyl.start,
+                        endSylId: canonSyl.end,
+                        lang: targetLang, body: html,
+                        status: existing?.status ?? 'draft',
+                        translatedFrom: sourceLang === 'bo' ? null : sourceLang,
+                      });
+                      // Own saves acknowledge themselves: badges then fire only for changes
+                      // made ELSEWHERE.
+                      const fresh = useTranslationStore.getState().chunks
+                        .find(c => c.start_syl_id === canonSyl.start && c.end_syl_id === canonSyl.end);
+                      const tr = fresh?.translations.find(t => t.lang === targetLang);
+                      if (fresh && tr) await doMarkSeen(currentText.id, fresh.id, targetLang, tr.updated_at);
+                    }
+                  } catch (e: any) {
+                    setSaveError(e.message || 'Save failed');
+                  }
+                })();
+              };
               return (
                 <React.Fragment key={u.key}>
                   {placeBar(barAnchor, `bar-${u.key}`)}
@@ -984,6 +1118,11 @@ export const TranslateView: React.FC = () => {
                     data-link-key={u.startOffset}
                     // The "N to trim" chevrons walk exactly the rows wearing the badge below.
                     data-copy={isCopy && u.tagType !== 'mantra' ? '' : undefined}
+                    // The "N to translate" chevrons walk the rows with an empty translation
+                    // (a copy fills the body, so those stay under "to trim" instead). Uses the
+                    // SAME `needsTranslation` predicate as the count, so the pill number and the
+                    // walkable rows can never drift apart.
+                    data-untranslated={needsTranslation(row) ? '' : undefined}
                     className="grid grid-cols-2 gap-4 rounded-xl bg-white p-4"
                     style={{ border: `2px solid ${u.tagType === 'mantra' ? 'var(--cline)' : (u.tagColor ?? 'var(--cline)')}` }}
                   >
@@ -1079,7 +1218,8 @@ export const TranslateView: React.FC = () => {
                             type="button"
                             onClick={() => setArmedMove({
                               srcStart: u.sylIds[0], srcEnd: u.sylIds[u.sylIds.length - 1],
-                              bookletOnly: false, label: u.text.slice(0, 24) + (u.text.length > 24 ? '…' : ''),
+                              bookletOnly: false, langOnly: false,
+                              label: u.text.slice(0, 24) + (u.text.length > 24 ? '…' : ''),
                             })}
                             className={`${miniBtn} text-ink-soft`}
                             style={miniStyle}
@@ -1089,12 +1229,20 @@ export const TranslateView: React.FC = () => {
                           </button>
                         )}
                         {isCopy && u.tagType !== 'mantra' && (
-                          <span
-                            className="px-1.5 rounded-full bg-gold/20 text-amber-robe"
-                            title="Pre-filled with a COPY of a wider unit's translation — remove what doesn't correspond to this passage; saving creates this unit's own translation"
+                          // The pre-filled copy badge doubles as its own dismissal: hover to
+                          // see "validate", click to accept the copy AS-IS as this unit's own
+                          // translation (a force-save, since an untouched copy is unchanged
+                          // text the editor would otherwise never commit). Trimming first, then
+                          // blurring, saves the trimmed text the same way and clears it too.
+                          <button
+                            type="button"
+                            onClick={() => commit(effectiveBody, true)}
+                            className="group px-1.5 rounded-full bg-gold/20 text-amber-robe hover:bg-jade/20 hover:text-jade transition-colors"
+                            title="Pre-filled with a COPY of a wider unit's translation. Trim what doesn't correspond to this passage — or, if it needs no change, click to validate it as this unit's own translation."
                           >
-                            copy — trim to fit
-                          </span>
+                            <span className="group-hover:hidden">copy — trim to fit</span>
+                            <span className="hidden group-hover:inline">validate as-is ✓</span>
+                          </button>
                         )}
                       </div>
                       {sourceContent(u, match ?? row.cover)}
@@ -1126,35 +1274,7 @@ export const TranslateView: React.FC = () => {
                           <ChunkEditor
                             value={effectiveBody}
                             placeholder={`${targetLang} translation…`}
-                            onSave={(html) => {
-                              if (html === effectiveBody) return;
-                              setSaveError(null);
-                              void (async () => {
-                                try {
-                                  if (ov && match) {
-                                    // Booklet-local: edits stay on the override.
-                                    await saveOverride(currentText.id, match.id, targetLang, html);
-                                  } else {
-                                    await save({
-                                      contextTextId: currentText.id,
-                                      startSylId: canonSyl.start,
-                                      endSylId: canonSyl.end,
-                                      lang: targetLang, body: html,
-                                      status: existing?.status ?? 'draft',
-                                      translatedFrom: sourceLang === 'bo' ? null : sourceLang,
-                                    });
-                                    // Own saves acknowledge themselves: badges then fire
-                                    // only for changes made ELSEWHERE.
-                                    const fresh = useTranslationStore.getState().chunks
-                                      .find(c => c.start_syl_id === canonSyl.start && c.end_syl_id === canonSyl.end);
-                                    const tr = fresh?.translations.find(t => t.lang === targetLang);
-                                    if (fresh && tr) await doMarkSeen(currentText.id, fresh.id, targetLang, tr.updated_at);
-                                  }
-                                } catch (e: any) {
-                                  setSaveError(e.message || 'Save failed');
-                                }
-                              })();
-                            }}
+                            onSave={(html) => commit(html)}
                           />
                           <div className="flex items-center gap-2 text-[10px] text-ink-soft flex-wrap">
                             {ov ? (

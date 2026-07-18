@@ -1,8 +1,8 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus, FileDown, Type, Frame, Columns3, Pencil } from 'lucide-react';
+import { X, RefreshCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getOrgSeal, putPaginationStamp, putLayoutConfig,
+  getOrgSeal, putPaginationStamp,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
@@ -45,11 +45,6 @@ interface CompiledEdition {
  *  that failed to compile or fell out of step is a LABELLED placeholder column, never a
  *  silent omission. `lines: null` with neither flag set = still compiling. */
 interface OverviewEdition { lang: string; lines: DocLine[] | null; outOfStep: boolean; error: boolean }
-
-/** Seconds of quiet before the pagination re-flows itself. The clock RESTARTS on every
- *  upstream change, so the pages never move while you are still working — they settle once
- *  you stop. Per document, in `layout_config`. */
-const DEFAULT_REFLOW_DELAY_S = 20;
 
 /**
  * Bump when a RENDERER change moves line geometry without moving `styleCss` or
@@ -289,14 +284,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Every edition's compile, for the overview columns; null until the overview first asks.
   const [allCompiles, setAllCompiles] =
     useState<Map<string, CompiledEdition | 'error'> | null>(null);
-  // Geometry guides (text block, spine side, folio zone) — a design aid; never exported.
-  const [guides, setGuides] = useState(true);
-  // "My edits" overlay: surface a vermilion mark on every line/page carrying a manual
-  // balancing edit (spacing, blank line, width, fill, shift) — the ones a re-flow will
-  // NEVER overwrite (unlike the auto placements it re-decides). Default off; a toggle so a
-  // heavily tuned booklet is not permanently marked up. The popover a mark opens is keyed
-  // by line+column so only one is open at a time.
-  const [showEdits, setShowEdits] = useState(false);
+  // The geometry guides (text block, spine side, folio zone) and the "my edits" marks are
+  // ALWAYS on: the bench IS the PDF editor, so every handle stays live. The one popover a
+  // "my edits" mark opens is keyed by line+column so only one is open at a time.
   const [editPop, setEditPop] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [seeding, setSeeding] = useState(false);
@@ -313,14 +303,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // style/geometry fingerprint. Both empty until a flow records them.
   const [stamp, setStamp] = useState<{ sig: Record<string, string> | null; fp: string | null }>(
     { sig: null, fp: null });
-  // Seconds of quiet before the pagination re-flows itself. The user's dial: short settles
-  // sooner, long leaves more room to keep working.
-  const [delayS, setDelayS] = useState(DEFAULT_REFLOW_DELAY_S);
-  // Seconds left in the current quiet period; null = nothing has drifted, nothing pending.
-  const [countdown, setCountdown] = useState<number | null>(null);
-  // What the last re-flow did ("re-flowed · 3 break changes") — shown while settled,
-  // cleared when the next quiet period starts.
-  const [flowNote, setFlowNote] = useState<string | null>(null);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -379,10 +361,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
-      // The delay rides in layout_config — it is per-document user config, which is exactly
-      // what that JSON already is, so it needs no column of its own.
-      setDelayS(lay.config.reflow_delay_s > 0
-        ? Math.round(lay.config.reflow_delay_s) : DEFAULT_REFLOW_DELAY_S);
       setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
@@ -478,10 +456,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // flowed against. Editing a translation moves a few lines; changing a font moves all of
   // them. Those are different questions, so they are asked separately.
   const sigLines: SigLine[] = useMemo(() => toSigLines(renderLines), [renderLines]);
-  // Only what actually LAYS THE PAGE OUT belongs in the fingerprint. `layout_config` is also
-  // where per-document preferences live, and `reflow_delay_s` is one of them — leaving it in
-  // meant that nudging the re-flow delay counted as a change to the booklet and started the
-  // very re-flow you were trying to postpone.
+  // Only what actually LAYS THE PAGE OUT belongs in the fingerprint. `reflow_delay_s` is a
+  // retired preference that may still linger in an old document's `layout_config`; it never
+  // laid out a page, so it stays excluded — its presence must not read as drift.
   const styleFp = useMemo(() => {
     const c = (config ?? {}) as unknown as Record<string, unknown>;
     const layout = Object.keys(c).filter((k) => k !== 'reflow_delay_s').sort()
@@ -537,7 +514,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     if (!lines.length || seeding || !doc) return;
     pendingReplace.current = replace;
     // The USER's re-flow click is one undoable action (rows + stamp together); the
-    // AUTOMATIC one is not — undoing it would only buy delayS seconds before it re-fires,
+    // AUTOMATIC one is not — undoing it would only buy a moment before it re-fires,
     // and the durable protections are the vetoes and the promote-on-restore rule.
     seedUndoRef.current = source === 'user'
       ? { rows, sig: stamp.sig, fp: stamp.fp } : null;
@@ -770,18 +747,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         if (!alive) return;
         setStamp({ sig, fp: styleFp });
         setRows(lay.rows);
-        // Say what happened: the flow acts on its own schedule, and a system that
-        // rearranges pages without announcing it reads as haunted.
-        {
-          const bk = (r: DocumentLayoutRow) =>
-            `${r.item_id}:${r.anchor_syl_id}:${r.char_offset ?? 0}`;
-          const beforeB = new Set(rows.filter((r) => r.kind === 'page_break').map(bk));
-          const afterB = new Set(lay.rows.filter((r) => r.kind === 'page_break').map(bk));
-          let changed = 0;
-          for (const k of afterB) if (!beforeB.has(k)) changed++;
-          for (const k of beforeB) if (!afterB.has(k)) changed++;
-          setFlowNote(`re-flowed · ${changed} break change${changed === 1 ? '' : 's'}`);
-        }
         // The user's own re-flow click: one undoable entry, pagination + stamp together.
         const snap = seedUndoRef.current;
         seedUndoRef.current = null;
@@ -817,50 +782,31 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   }, [measure]);
 
   /**
-   * Keep the automatic breaks where they belong, without making a nuisance of it.
+   * Keep the automatic breaks where they belong — live, because the bench IS the PDF editor.
    *
-   * A document with no breaks at all seeds immediately — there is nothing to disturb. After
-   * that, drift starts a QUIET PERIOD rather than an immediate re-flow, and the clock
-   * restarts on every further change: the pages therefore never move while you are still
-   * working, only once you have stopped. That is the whole point of measuring the delay in
-   * seconds and not in edits — an edit budget spends itself mid-sentence, under the cursor.
+   * A document with no breaks at all seeds immediately; there is nothing to disturb. After
+   * that, drift re-flows the pages on a short debounce — long enough to batch a burst of
+   * edits into one pass, not a quiet period the user has to wait out. The pages moving behind
+   * the cursor is wanted: the user tunes a booklet from a point downwards, so closing a gap
+   * IS a request for the flow to pull the following lines back up.
    *
-   * The drift itself is still measured by the detectors — the stream signature, the style
-   * fingerprint, and the balancing fingerprint — that is what NOTICES a change, and what
-   * stops the timer running on a booklet nothing has happened to. It just does not decide
-   * when.
-   *
-   * The balancing that changes MEASURED heights (gaps, widths, recto cuts) counts as drift
-   * too: the user tunes a booklet from a point downwards, so closing a gap is a request for
-   * the flow to pull the following lines back up — and the restarting clock is what keeps
-   * that from happening mid-gesture. The gap FILL and the page SHIFT stay out: the
-   * measurement never sees them, so a re-flow after one would recompute the same breaks.
+   * The drift itself is measured by the three detectors — the stream signature, the style
+   * fingerprint, and the balancing fingerprint (gaps, widths, recto cuts change measured
+   * heights; the gap FILL and page SHIFT stay out, being page-local ink the flow never sees).
+   * Those NOTICE a change; the debounce just decides when to act on it. The `seeding` guard
+   * keeps two re-flows from overlapping, and when one finishes the rows/stamp update re-runs
+   * this effect, so anything that drifted mid-flight re-arms at once.
    */
   useEffect(() => {
-    // Every path that is NOT counting has to say so. Bailing out silently leaves whatever
-    // number was last painted frozen on the chip — which reads as a clock that has stopped,
-    // and is exactly as untrustworthy as no clock at all.
-    if (!config || !lines.length || seeding || !streamReady) { setCountdown(null); return; }
-    if (!hasStoredBreaks) { setCountdown(null); void requestSeed(false); return; }
-    if (!stamp.sig) { setCountdown(null); return; }   // never stamped: nothing to compare to
-    if (!drifted) { setCountdown(null); return; }
-    // This effect re-runs whenever the drift changes — i.e. on every upstream edit — and its
-    // cleanup drops the pending clock. So each change restarts the quiet period; idling lets
-    // it run down, because an unchanged `dirty` leaves the deps alone.
-    setFlowNote(null);
-    setCountdown(delayS);
-    const started = performance.now();
-    const tick = window.setInterval(() => {
-      const left = Math.ceil(delayS - (performance.now() - started) / 1000);
-      if (left > 0) { setCountdown(left); return; }
-      window.clearInterval(tick);
-      setCountdown(null);
-      void requestSeed(true);
-    }, 250);
-    return () => window.clearInterval(tick);
+    if (!config || !lines.length || seeding || !streamReady) return;
+    if (!hasStoredBreaks) { void requestSeed(false); return; }
+    if (!stamp.sig) return;    // never stamped: nothing to compare to
+    if (!drifted) return;
+    const t = window.setTimeout(() => { void requestSeed(true); }, 600);
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config, lines, streamReady, hasStoredBreaks, drifted, styleStale, balanceStale,
-      balanceFp, dirty, delayS, stamp.sig]);
+  }, [config, lines, seeding, streamReady, hasStoredBreaks, drifted, styleStale, balanceStale,
+      balanceFp, dirty, stamp.sig]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
@@ -1339,10 +1285,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       } else if (r.kind === 'line_nospace' && rl === gapLang) {
         seen.add(dedupe);
         out.push({ label: 'blank line removed', revert: () => void delRow(l, 'line_nospace', gapLang) });
-      } else if (r.kind === 'width_tibetan' && rl === '') {
+      } else if (r.kind === 'width_tibetan' && rl === '' && side === 'verso') {
+        // The Tibetan block lives on the verso only — its mark must never surface on the
+        // recto (translation) page, even though the recto line shares this anchor.
         seen.add(dedupe);
         out.push({ label: `Tibetan width ${v > 0 ? '+' : ''}${v}mm`, revert: () => void setWidth(l, 'tibetan', null, colLang) });
-      } else if ((r.kind === 'width_phonetics' || r.kind === 'width_translation' || r.kind === 'width_section') && rl === colLang) {
+      } else if ((r.kind === 'width_phonetics' || r.kind === 'width_translation' || r.kind === 'width_section')
+                 && rl === colLang && side === 'recto') {
+        // Recto-side widths. The `side` gate matters because the verso column's `colLang`
+        // resolves to the selected edition (`col.colLang || lang`), so `rl === colLang` alone
+        // would leak these onto the Tibetan page — the mirror of the width_tibetan leak.
         seen.add(dedupe);
         const t = r.kind.slice('width_'.length) as WidthTarget;
         const name = t === 'phonetics' ? 'phonetics' : t === 'translation' ? 'translation' : 'heading';
@@ -1629,9 +1581,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const els = streamLines.slice(s.start, s.end).map((l, k) => {
       const globalIdx = s.start + k;
       // The hand-tuned balancing edits touching this line in THIS column (spacing, widths;
-      // and, on the page's first line, the page fill/shift). Only computed when the overlay
-      // is on.
-      const edits = showEdits ? lineManualRows(l, colLang, side, k === 0 ? s.start : -1) : [];
+      // and, on the page's first line, the page fill/shift). Always computed — the "my edits"
+      // marks are a permanent part of the always-editing surface.
+      const edits = lineManualRows(l, colLang, side, k === 0 ? s.start : -1);
       const popKey = `${l.key}:${side}`;
       return (
         <div key={l.key} className="bk-linewrap" style={{ position: 'relative' }}>
@@ -1664,23 +1616,54 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 )}
               </span>
             )}
-            {/* The boundary this page OPENS on. A break always is a page start; a break you
-                placed is marked permanently (vermilion, always on), an automatic one stays
-                quiet until the line is hovered. Forced starts (a new text, a split tail)
-                are structural and carry no control. */}
-            {k === 0 && globalIdx > 0 && !forcedStarts.has(globalIdx) && breakSet.has(globalIdx) && (
-              <button
-                type="button"
-                onClick={() => void toggleBreak(globalIdx)}
-                className={`bk-breakctl${manualBreaks.has(globalIdx)
-                  ? ' bk-vermilion-mark bk-breakctl-manual' : ' bk-negotiable'}`}
-                title={manualBreaks.has(globalIdx)
-                  ? 'You broke the page here. A re-flow keeps it and flows around it. Click to lift it.'
-                  : 'Broken here automatically — a re-flow may move it. Click to lift it.'}
-              >
-                <Scissors size={9} />
-              </button>
-            )}
+            {/* The boundary this page OPENS on, and WHY — an always-visible marker naming its
+                provenance, so the reason a page breaks where it does is never a mystery:
+                  · a break YOU placed        — vermilion scissors; click to lift.
+                  · a break the FLOW placed   — quiet scissors; click to lift (this page then
+                                                fills and the flow won't put it back).
+                  · a NEW TEXT                — a document icon; structural, not removable.
+                  · a SPLIT continuing here   — a wrap arrow; click to rejoin the line.
+                A split tail is also in `breakSet`, so it is tested FIRST. */}
+            {k === 0 && globalIdx > 0 && (() => {
+              const isSplitTail = l.splitAnchor != null && anchorOf(l) !== l.splitAnchor;
+              const isTextStart = !isSplitTail && forcedStarts.has(globalIdx)
+                && streamLines[globalIdx - 1]?.itemId !== l.itemId;
+              if (isSplitTail) {
+                const manual = vetoInfo.manualSplit.get(`${l.itemId}:${splitAnchorOf(l)}`) ?? true;
+                return (
+                  <button type="button" className="bk-breakctl bk-startmark bk-startmark-split"
+                          title={`A line is split across this page break${manual ? '' : ' by the automatic flow'}. `
+                            + `Click to ${manual ? 'rejoin the line — the flow may split here again on a re-flow'
+                                                 : 'rejoin the line; the flow will then not re-split it'}.`}
+                          onClick={() => void (manual ? clearSplit(l) : setSplit(l, -1))}>
+                    <CornerDownRight size={9} />
+                  </button>
+                );
+              }
+              if (isTextStart) {
+                return (
+                  <span className="bk-breakctl bk-startmark bk-startmark-text"
+                        title="A new text starts here — each text always begins on a fresh page. This break is structural and cannot be lifted.">
+                    <FileText size={9} />
+                  </span>
+                );
+              }
+              if (breakSet.has(globalIdx)) {
+                const manual = manualBreaks.has(globalIdx);
+                return (
+                  <button type="button"
+                          onClick={() => void toggleBreak(globalIdx)}
+                          className={`bk-breakctl bk-startmark${manual
+                            ? ' bk-vermilion-mark bk-breakctl-manual' : ' bk-startmark-auto'}`}
+                          title={manual
+                            ? 'You placed this page break. A re-flow keeps it and flows around it. Click to lift it.'
+                            : 'The automatic flow placed this break — to fit the pages, or to keep a section heading off the foot of the page. Click to lift it: this page then fills, and the flow will not put it back.'}>
+                    <Scissors size={9} />
+                  </button>
+                );
+              }
+              return null;
+            })()}
             {/* Standing vetoes, visible AT REST in every mode — the flow may not re-place a
                 removed split/break here, and a decision the system honors silently must be
                 visible. Vermilion; the click lifts the veto. */}
@@ -1786,7 +1769,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
        { side: 'recto' as PageSide, colLang: lang, lines: renderLines }];
 
   return (
-    <div className={`flex-1 flex flex-col overflow-hidden booklet-root${guides ? ' bk-guides' : ''}`}
+    <div className="flex-1 flex flex-col overflow-hidden booklet-root bk-guides"
          style={vars}>
       {/* Data-driven typography (org styles ← per-doc overrides); default = booklet.css. */}
       {styleCss && <style dangerouslySetInnerHTML={{ __html: styleCss }} />}
@@ -1816,34 +1799,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
-        {/* The quiet period before the automatic breaks re-flow themselves. Counted in
-            SECONDS and restarted by every upstream change, so the pages hold still while you
-            work and settle once you stop. Only shown once there is a stamp to measure drift
-            against. */}
-        {stamp.sig && !seeding && (
-          <span className={`px-2 py-1 rounded-md flex items-center gap-1 ${
-                  countdown != null ? 'text-lapis' : 'text-ink-soft'}`}
-                style={{ border: '1px solid var(--cline)' }}
-                title={'After an upstream change, the automatic breaks re-flow once this many '
-                     + 'seconds have passed with nothing else changing — the clock restarts on '
-                     + 'every edit, so nothing moves while you are still working. Your own '
-                     + 'breaks and splits are kept. Balancing a page never starts it.'}>
-            re-flow after
-            <input
-              type="number" min={1} step={5} value={delayS}
-              onChange={(e) => setDelayS(Math.max(1, Number(e.target.value) || 1))}
-              onBlur={(e) => void putLayoutConfig(documentId,
-                { reflow_delay_s: Math.max(1, Number(e.target.value) || 1) } as Partial<LayoutConfig>)}
-              className="w-11 px-1 py-0 rounded bg-white text-xs text-center"
-              style={{ border: '1px solid var(--cline)' }} />
-            <span>
-              {countdown != null
-                ? `s quiet · ${countdown}s${dirty ? ` (${dirty} syllables changed)`
-                                          : balanceStale ? ' (balancing changed)' : ''}`
-                : `s quiet · settled${flowNote ? ` · ${flowNote}` : ''}`}
-            </span>
-          </span>
-        )}
         {msg && (
           <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
         )}
@@ -1859,23 +1814,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Edit booklet typography (org styles / per-document overrides)">
           <Type size={12} /> styles
         </button>
-        <button type="button" onClick={() => setGuides(v => !v)}
-                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${guides ? 'text-lapis' : 'text-ink-soft'}`}
-                style={{ border: '1px solid var(--cline)' }}
-                title="Show the page geometry — text block, binding side, folio zone (a design aid; the PDF never carries it)">
-          <Frame size={12} /> guides
-        </button>
         <button type="button" onClick={() => setSplitMode(v => !v)}
                 className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${splitMode ? 'text-vermilion' : 'text-ink-soft'}`}
                 style={{ border: '1px solid var(--cline)' }}
                 title="Mid-line split: click a Tibetan syllable to split a line across a page (a thin rule marks the continuation). Clicking a syllable of an existing split MOVES it there; the × on the split's rule removes it — and the flow won't re-split that line.">
           <Scissors size={12} /> split
-        </button>
-        <button type="button" onClick={() => { setShowEdits(v => !v); setEditPop(null); }}
-                className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${showEdits ? 'text-vermilion' : 'text-ink-soft'}`}
-                style={{ border: '1px solid var(--cline)' }}
-                title="Show my edits: a vermilion mark on every line and page you tuned by hand (spacing, blank lines, widths, fills, shifts). These survive a re-flow; the system's automatic placements do not. Click a mark to see and revert each change.">
-          <Pencil size={12} /> my edits
         </button>
         {doc.languages.length > 1 && (
           <button type="button" onClick={() => setOverview(v => !v)}

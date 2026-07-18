@@ -2,7 +2,8 @@ import {
   API_BASE, getEditorTokens, getTextTranslations, getPhonetics, getLayouts,
   type DocumentItem,
 } from '../../api/client';
-import { deriveChunks } from '../translate/chunks';
+import { deriveChunks, insertTitleChunks } from '../translate/chunks';
+import { kindOf } from '../phonetics/lines';
 
 /**
  * Document content assembly (Phase D2). For each text page, reuse the translate
@@ -128,7 +129,12 @@ export async function compileTextItem(
   const markerOffsets = new Set<number>(markers.map((m: any) => m.position));
   const groups = { verse: true, sapche: true, mantra: true };
 
-  const lines = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true);
+  // The body line stream, WITH the translation-only title layouts (the scramble layer) spliced
+  // in — the same insert the translate bench does. Without it the titles reached the navigation
+  // outline (below) but never the printed pages. `layouts` is shared across editions, so every
+  // edition gets the same entries at the same indices and the shared pagination stays aligned.
+  const lines = insertTitleChunks(
+    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true), layouts);
   const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups);
 
   // Where each syllable sits in the stream — so rows matched to a line come back in the
@@ -144,12 +150,24 @@ export async function compileTextItem(
   // mantra's phrases, most obviously — and returning the first silently dropped the rest, so
   // the PDF printed the opening of a mantra and threw the body of it away.
   //
+  // But only the line's OWN recitation kind: a mantra recites its Sanskrit (`skt`), a
+  // verse/prose its Tibetan phonetics (`bo`). When both a `skt` and a `bo` row are anchored
+  // on the same mantra syllables (some editions carry a stale `bo` reading the others don't),
+  // taking all of them printed the mantra TWICE — once romanised, once in Tibetan phonetics.
+  // Prefer the kind the line's role calls for; fall back to whatever exists so a line whose
+  // only rows are the other kind still shows.
+  //
   // Anchor-only — matching the end syllable too would make a row spanning several lines
   // render on both its first AND its last (duplication).
-  const phonFor = (l: { startSylId: string; endSylId: string; sylIds: string[] }): string => {
+  const phonFor = (l: { startSylId: string; endSylId: string; sylIds: string[]; tagType: string }): string => {
     const ids = new Set(l.sylIds);
-    return phonetics
-      .filter((p) => ids.has(p.start_syl_id))
+    let matched = phonetics.filter((p) => ids.has(p.start_syl_id));
+    const want = kindOf(l.tagType);
+    if (want) {
+      const preferred = matched.filter((p) => p.kind === want);
+      if (preferred.length) matched = preferred;
+    }
+    return matched
       .sort((a, b) => (posById.get(a.start_syl_id) ?? 0) - (posById.get(b.start_syl_id) ?? 0))
       .map((p) => p.body)
       .join('\n');
@@ -216,6 +234,24 @@ export async function compileTextItem(
 
   const out: DocLine[] = [];
   lines.forEach((l, i) => {
+    // A translation-only title (scramble-layer layout): it has no syllables, so its heading
+    // text comes from the layout's per-language `titles`, not the syllable-keyed lookups. Emit
+    // it UNCONDITIONALLY — a title present in some editions but not others must still occupy a
+    // line in every edition, or the shared line streams fall out of alignment. `startSylId` is
+    // '' — the discriminator the navigation loop uses to avoid double-listing it.
+    if (l.titleLayout) {
+      const ly = l.titleLayout;
+      const body = (ly.titles[lang] ?? Object.values(ly.titles)[0] ?? '').trim();
+      const paras = splitParagraphs(body);
+      out.push({
+        itemId: item.id, textId, key: `${item.id}:${l.key}`, role: 'title',
+        startSylId: '', endSylId: '', opId: null, tokens: [],
+        phonetics: '', translation: body || null, emptyAfter: false,
+        level: Math.max(0, (ly.level ?? 1) - 1),
+        ...(paras.length ? { paragraphs: paras } : {}),
+      });
+      return;
+    }
     const ck = lineChunkKeys[i];
     const lastOfChunk = ck != null && ck !== (lineChunkKeys[i + 1] ?? null);
     // For a title line, preserve the whole title chunk's `<p>` structure (main title
@@ -314,6 +350,10 @@ export async function compileTextItem(
   out.forEach((l, li) => {
     if (li < lead) return;
     if (l.role !== 'sapche' && l.role !== 'title') return;
+    // Translation-only title lines (empty `startSylId`) are the scramble-layer titles now
+    // rendered in the body — the `layouts` loop below already lists them in the outline with
+    // their real anchor/level/order, so skip them here to avoid a duplicate bookmark.
+    if (l.role === 'title' && !l.startSylId) return;
     const label = (l.translation ?? '').trim();
     if (!label) return;
     const depth = depthBySyl.get(l.startSylId);
@@ -390,7 +430,11 @@ export async function compileDocument(items: DocumentItem[], lang: string): Prom
     const { lines: compiled, headings } = await compileTextItem(it, lang);
     let i = 0;
     const titleLines: DocLine[] = [];
-    while (i < compiled.length && compiled[i].role === 'title') { titleLines.push(compiled[i]); i++; }
+    // Only a Tibetan title (real tokens) heads the title page; a translation-only title layout
+    // (no tokens) stays in the body so it prints as a section heading on the pages.
+    while (i < compiled.length && compiled[i].role === 'title' && compiled[i].tokens.length > 0) {
+      titleLines.push(compiled[i]); i++;
+    }
     titleByItem.set(it.id, titleLines);
     headingsByItem.set(it.id, headings);
     lines.push(...compiled.slice(i));

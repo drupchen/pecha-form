@@ -127,12 +127,29 @@ export interface MovePlacement {
 export function moveDisplays(
   tokens: EditorToken[],
   layouts: ChunkLayout[],
+  lang: string,
 ): { movedAway: Map<string, number>; placements: MovePlacement[] } {
   const movedAway = new Map<string, number>();
   const placements: MovePlacement[] = [];
   const idx = new Map(tokens.map((t, i) => [t.id, i] as const));
+  // Per-language resolution: a move is SHARED (lang null, all editions) unless a
+  // language-specific row (lang === this edition) exists on the same source range, which then
+  // wins for this edition only. Group move rows by source range and keep, per range, the
+  // language-specific row when present, else the shared one — so a language override replaces
+  // the shared move here without disturbing the other editions. A kept row that is `disabled`
+  // (a language row placed to CANCEL the shared move for this edition) simply contributes no
+  // placement, which the loop below already handles.
+  const byRange = new Map<string, ChunkLayout>();
   for (const l of layouts) {
-    if (l.kind !== 'move' || l.disabled || !l.src_start_syl_id || !l.src_end_syl_id) continue;
+    if (l.kind !== 'move' || !l.src_start_syl_id || !l.src_end_syl_id) continue;
+    if (l.lang != null && l.lang !== lang) continue;   // another edition's override — ignore here
+    const key = `${l.src_start_syl_id} ${l.src_end_syl_id}`;
+    const cur = byRange.get(key);
+    // Language-specific beats shared; otherwise first-wins (backend already booklet-shadowed).
+    if (!cur || (l.lang === lang && cur.lang == null)) byRange.set(key, l);
+  }
+  for (const l of byRange.values()) {
+    if (l.disabled || !l.src_start_syl_id || !l.src_end_syl_id) continue;
     const si = idx.get(l.src_start_syl_id), ei = idx.get(l.src_end_syl_id);
     if (si == null || ei == null || ei < si) continue;
     const fragIds: string[] = [];

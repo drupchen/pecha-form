@@ -1,6 +1,6 @@
-import React, { useContext, useRef, useState, useMemo } from 'react';
+import React, { useContext, useRef, useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, Link2, GitBranchPlus, Trash2, X } from 'lucide-react';
+import { Link, Link2, GitBranchPlus, Trash2, X, Lock } from 'lucide-react';
 import type { Segment } from './segments';
 import { readTokenSelection, tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from './segments';
 import { BreakPopover, type BreakTarget } from './BreakPopover';
@@ -110,6 +110,17 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
   const [editError, setEditError] = useState<string | null>(null);
   const [annPicker, setAnnPicker] = useState<{ anns: Span[]; anchor: DOMRect } | null>(null);
   const [hoverPopover, setHoverPopover] = useState<{ tags: Tag[]; anchorRect: DOMRect } | null>(null);
+  // Read-only feedback popover: clicking a tag that can't be edited here (inherited from a
+  // source text, or consult mode) opens this so the click is never a silent no-op — it says
+  // WHY the tag can't be changed here and where it lives.
+  const [roInfo, setRoInfo] = useState<{ spans: Span[]; anchor: DOMRect } | null>(null);
+  // Dismiss the read-only popover on Escape (outside-click is handled by a backdrop below).
+  useEffect(() => {
+    if (!roInfo) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setRoInfo(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [roInfo]);
 
   if (!currentText) return null;
 
@@ -567,10 +578,11 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
               ? `${PROVENANCE_TITLE[prov]} (was: "${t.original.replace(/\n/g, ' ')}")`
               : PROVENANCE_TITLE[prov])
           : undefined;
-      // Inherited spans (a transclusion source's tags) are read-only here: hover shows
-      // them, but the edit popover only offers the host's own spans.
+      // Inherited spans (a transclusion/derivation source's tags) are read-only here: hover
+      // shows them, but the edit popover only offers the host's own spans.
       const editableAnns = anns.filter(a => !a.inherited);
-      const onAnnClick = editableAnns.length > 0 && !consultMode
+      const canEditAnns = editableAnns.length > 0 && !consultMode;
+      const onAnnClick = anns.length > 0
         ? (e: React.MouseEvent<HTMLSpanElement>) => {
             // While "place a passage" is armed, the click's job is PLACEMENT: let it
             // bubble to the pane's delegated hairline handler instead of opening the
@@ -579,13 +591,21 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
             if (pendingPassageSource) return;
             e.stopPropagation();
             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-            setEditError(null);
-            if (editableAnns.length === 1) {
-              setAnnPicker(null);
-              setEditTarget({ span: editableAnns[0], anchor: rect });
+            setRoInfo(null);
+            if (canEditAnns) {
+              setEditError(null);
+              if (editableAnns.length === 1) {
+                setAnnPicker(null);
+                setEditTarget({ span: editableAnns[0], anchor: rect });
+              } else {
+                setEditTarget(null);
+                setAnnPicker({ anns: editableAnns, anchor: rect });
+              }
             } else {
-              setEditTarget(null);
-              setAnnPicker({ anns: editableAnns, anchor: rect });
+              // Nothing editable here (all inherited, or consult mode): don't stay silent —
+              // say the tag is read-only and where it lives.
+              setHoverPopover(null);
+              setRoInfo({ spans: anns, anchor: rect });
             }
           }
         : undefined;
@@ -598,7 +618,8 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
       const onAnnMouseLeave = anns.length > 0
         ? () => setHoverPopover(null)
         : undefined;
-      if (editableAnns.length > 0 && !consultMode) classes.push('cursor-pointer');
+      if (canEditAnns) classes.push('cursor-pointer');
+      else if (anns.length > 0) classes.push('cursor-help');   // read-only, but clickable for feedback
       // Display-only line breaks (¶ mode): the break point renders as a clickable ↵
       // element carrying the actual newlines; a real '\n' token moves its newline
       // into that element so it becomes suppressible/doublable like the others.
@@ -877,6 +898,51 @@ export const SegmentCard: React.FC<Props> = ({ segment, nextSegmentAnchorSylId, 
 
       {hoverPopover && (
         <HoverTagPopover tags={hoverPopover.tags} anchorRect={hoverPopover.anchorRect} />
+      )}
+
+      {/* Read-only feedback: the click on a non-editable tag lands here instead of nowhere. */}
+      {roInfo && createPortal(
+        (() => {
+          const PW = 250;
+          const left = Math.max(8, Math.min(window.innerWidth - PW - 8, roInfo.anchor.left));
+          const top = roInfo.anchor.bottom + 6;
+          const inheritedSources = [...new Set(
+            roInfo.spans.filter(sp => sp.inherited)
+              .map(sp => texts.find(t => t.id === sp.text_id)?.title || 'its source text'))];
+          const note = inheritedSources.length
+            ? `Inherited from ${inheritedSources.join(', ')} — read-only here. To change or remove it, edit it in that text.`
+            : 'Read-only in consult mode — switch to edit mode to change or remove it.';
+          return (
+            <>
+              {/* Backdrop: any outside click dismisses (Esc is handled separately). */}
+              <div className="fixed inset-0 z-40" onClick={() => setRoInfo(null)} />
+              <div
+                className="fixed z-50 shadow-lg rounded-md p-2 text-mist-100"
+                style={{
+                  top, left, width: PW,
+                  background: 'linear-gradient(180deg, var(--sky-deep), var(--sky-night))',
+                  border: '1px solid var(--gline-soft)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ul className="flex flex-col gap-0.5 mb-1.5">
+                  {[...new Map(roInfo.spans.map(sp => [sp.tag.id, sp.tag])).values()].map(tg => (
+                    <li key={tg.id} className="flex items-center gap-1.5 text-xs px-1 py-0.5">
+                      <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: tg.color, boxShadow: '0 0 0 1px var(--gline-soft)' }} />
+                      <span className="truncate">{tg.name}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-start gap-1.5 text-[11px] leading-snug px-1 text-mist-100/80">
+                  <Lock size={11} className="mt-0.5 shrink-0 text-gold-soft" />
+                  <span>{note}</span>
+                </div>
+              </div>
+            </>
+          );
+        })(),
+        document.body,
       )}
 
       {selection && (

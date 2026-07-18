@@ -15,8 +15,11 @@ export interface PhoneticLine extends DerivedChunk {
   kind: 'bo' | 'skt';
 }
 
-/** tagType → phonetics kind, or null for lines that are not recited. */
-function kindOf(tagType: string): 'bo' | 'skt' | null {
+/** tagType → phonetics kind, or null for lines that are not recited. The booklet compile
+ *  (`phonFor`) reuses this so a line shows only its OWN recitation kind — a mantra its
+ *  Sanskrit (`skt`), a verse/prose its Tibetan phonetics (`bo`) — even when a stray row of
+ *  the other kind is anchored on the same syllables. */
+export function kindOf(tagType: string): 'bo' | 'skt' | null {
   if (tagType === 'mantra') return 'skt';
   if (tagType === 'verse' || tagType === 'prose') return 'bo';
   return null;  // small / sapche / title / plain — not recited

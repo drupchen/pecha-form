@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Volume2, Zap, Check } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Volume2, Zap, Check, ChevronUp, ChevronDown } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -107,6 +107,41 @@ export const PhoneticsView: React.FC = () => {
 
   const shown = useMemo(() => lines.filter(l => l.kind === tab), [lines, tab]);
 
+  // Progress nav: walk the lines still needing phonetics on this tab (they carry `data-empty`).
+  // Same interaction as the translate bench's "N to trim" pill: down = first below the
+  // viewport midline, up = last above it, wrapping; a short memory after a jump so rapid
+  // clicks advance instead of re-finding the row mid-scroll.
+  const listRef = useRef<HTMLDivElement>(null);
+  const emptyNav = useRef<{ el: HTMLElement | null; at: number; pulse: number }>({ el: null, at: 0, pulse: 0 });
+  // 1-based position within the run so the pill can read "3/12" — where you are. 0 = not
+  // walking; reset when the set changes (see the effect below).
+  const [emptyPos, setEmptyPos] = useState(0);
+  const gotoEmpty = (dir: 1 | -1) => {
+    const list = listRef.current;
+    if (!list) return;
+    const els = [...list.querySelectorAll<HTMLElement>('[data-empty]')];
+    if (!els.length) { setEmptyPos(0); return; }
+    const nav = emptyNav.current;
+    const prevIdx = nav.el ? els.indexOf(nav.el) : -1;
+    let target: HTMLElement;
+    if (prevIdx >= 0 && performance.now() - nav.at < 1600) {
+      target = els[(prevIdx + dir + els.length) % els.length];
+    } else {
+      const mid = list.getBoundingClientRect().top + list.clientHeight / 2;
+      target = dir === 1
+        ? els.find(el => el.getBoundingClientRect().top > mid + 1) ?? els[0]
+        : [...els].reverse().find(el => el.getBoundingClientRect().bottom < mid - 1) ?? els[els.length - 1];
+    }
+    nav.el = target;
+    nav.at = performance.now();
+    setEmptyPos(els.indexOf(target) + 1);
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.clearTimeout(nav.pulse);
+    els.forEach(el => el.classList.remove('link-pulse'));
+    target.classList.add('link-pulse');
+    nav.pulse = window.setTimeout(() => target.classList.remove('link-pulse'), 1300);
+  };
+
   // Effective generation dialects: bo style may not cover docLang (Padmakara has no
   // de/fr) → fall back to the style's first language; skt uses IAST or the doc language.
   const boLang: BoLang = STYLE_LANGS[style].includes(docLang) ? docLang : STYLE_LANGS[style][0];
@@ -186,6 +221,13 @@ export const PhoneticsView: React.FC = () => {
 
   const counts = { bo: lines.filter(l => l.kind === 'bo').length,
                    skt: lines.filter(l => l.kind === 'skt').length };
+  // Lines on THIS tab still needing phonetics for the selected document language — same
+  // empty-body test `handleGenerateAllEmpty` uses (drafts count, so a line being typed is
+  // already off the list). Feeds the "N to do" pill and its walk.
+  const todo = shown.filter(l => !bodyOf(l, matchFor(l)).trim()).length;
+  // A walk position only means something against the run it was taken in — switching tab or
+  // language, or filling a line, changes the set, so drop back to the bare total.
+  useEffect(() => { setEmptyPos(0); }, [todo, tab, docLang]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -262,12 +304,35 @@ export const PhoneticsView: React.FC = () => {
         </button>
 
         <div className="flex-1" />
+        {/* Progress: how many lines on this tab still need phonetics, and chevrons to walk
+            from one to the next. */}
+        {todo > 0 && (
+          <span className="flex items-center gap-0.5">
+            <span className="px-1.5 rounded-full bg-vermilion/10 text-vermilion"
+                  title={`${todo} ${tab === 'bo' ? 'Tibetan' : 'Sanskrit'} line${todo === 1 ? '' : 's'} on this tab still need phonetics`
+                    + (emptyPos ? ` — you are on ${emptyPos} of ${todo}` : '')}>
+              {emptyPos ? `${emptyPos}/${todo}` : todo} to do
+            </span>
+            <button type="button" onClick={() => gotoEmpty(-1)}
+                    className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                    style={{ border: '1px solid var(--cline)' }}
+                    title="Previous line still to do">
+              <ChevronUp size={11} />
+            </button>
+            <button type="button" onClick={() => gotoEmpty(1)}
+                    className="px-1 py-0.5 rounded-md hover:bg-cream leading-none"
+                    style={{ border: '1px solid var(--cline)' }}
+                    title="Next line still to do">
+              <ChevronDown size={11} />
+            </button>
+          </span>
+        )}
         {error && <span className="text-vermilion truncate max-w-md" title={error}>{error}</span>}
         <span className="text-ink-soft">{shown.length} lines · {docLang}</span>
       </div>
 
       {/* Rows */}
-      <div className="flex-1 overflow-auto px-5 py-3">
+      <div ref={listRef} className="flex-1 overflow-auto px-5 py-3">
         {shown.length === 0 ? (
           <div className="text-ink-soft text-sm py-8 text-center">
             No {tab === 'bo' ? 'Tibetan verse/prose' : 'Sanskrit mantra'} lines in this document.
@@ -280,7 +345,8 @@ export const PhoneticsView: React.FC = () => {
               const status = m?.status ?? 'auto';
               const dirty = drafts.has(l.key);
               return (
-                <div key={l.key} className="py-2.5 flex items-start gap-4">
+                <div key={l.key} className="py-2.5 flex items-start gap-4"
+                     data-empty={!body.trim() ? '' : undefined}>
                   {/* Tibetan line */}
                   <div className="w-2/5 shrink-0 tibetan-text whitespace-pre-wrap leading-relaxed">
                     {l.tokens.map((t, ti) => (

@@ -8,6 +8,7 @@ import {
   type Language, type TranslationChunk, type TranslationOverride,
   type TranslationSuggestion, type ChunkLayout,
 } from '../api/client';
+import { useUndoStore } from './useUndoStore';
 
 /**
  * Canonical translations for the current text (Phase T1) plus the Phase T2
@@ -51,7 +52,7 @@ interface TranslationState {
   // T2 — scramble layouts
   addMove: (args: {
     textId: number | null; srcStart: string; srcEnd: string; anchor: string | null;
-    mode: 'inline' | 'segment'; anchorAfter?: boolean;
+    mode: 'inline' | 'segment'; anchorAfter?: boolean; lang?: string | null;
   }) => Promise<void>;
   addTitle: (args: { textId: number | null; anchor: string | null; level: number }) => Promise<void>;
   setTitleBody: (layoutId: number, lang: string, body: string) => Promise<void>;
@@ -175,13 +176,19 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     if (accept) { await get().fetchChunks(textId); set(st => ({ version: st.version + 1 })); }
   },
 
-  addMove: async ({ textId, srcStart, srcEnd, anchor, mode, anchorAfter }) => {
+  addMove: async ({ textId, srcStart, srcEnd, anchor, mode, anchorAfter, lang }) => {
     const row = await createLayout({
       text_id: textId, kind: 'move',
       src_start_syl_id: srcStart, src_end_syl_id: srcEnd, anchor_syl_id: anchor,
-      move_mode: mode, anchor_after: !!anchorAfter,
+      move_mode: mode, anchor_after: !!anchorAfter, lang: lang ?? null,
     });
     set(s => ({ layouts: [...s.layouts, row] }));
+    // A move (a run or a syllable range relocated) is undoable from the navbar Undo button:
+    // undo simply removes the layout row, and the bench re-derives without it.
+    useUndoStore.getState().push({
+      description: 'Relocate run',
+      undo: async () => { await get().removeLayout(row.id); },
+    });
   },
 
   addTitle: async ({ textId, anchor, level }) => {
