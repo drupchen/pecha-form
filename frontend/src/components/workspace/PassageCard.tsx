@@ -31,15 +31,17 @@ const LINK_COLOR = '#A28348';
  */
 export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   const starter = group[0];
-  const { currentText } = useTextStore();
+  const currentText = useTextStore(s => s.currentText);
   const allSpans = useTagStore(s => s.spans);
   const allNotes = useNoteStore(s => s.notes);
   const editorTokens = useEditorTokenStore(s => s.tokens);
-  const { nodes, updateNode } = useTreeNodeStore();
+  const nodes = useTreeNodeStore(s => s.nodes);
+  const updateNode = useTreeNodeStore(s => s.updateNode);
   const editPassage = usePassageStore(s => s.editPassage);
   const splitPassageAt = usePassageStore(s => s.splitPassageAt);
   const setHovered = useLinkStore(s => s.setHovered);
-  const hoveredKey = useLinkStore(s => s.hoveredKey);
+  // Boolean, not the raw key: hovering one card must not re-render every card.
+  const isLinkHovered = useLinkStore(s => s.hoveredKey === -group[0].id);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
   const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
@@ -60,7 +62,6 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
 
   const linkKey = -starter.id;  // passage key space (negative), disjoint from segment offsets
   const linkedNode = nodes.find(n => n.passage_id === starter.id);
-  const isLinkHovered = hoveredKey === linkKey;
 
   const groupSyls = useMemo(
     () => group.flatMap(p => p.members.flatMap(m => m.syllables)),

@@ -44,11 +44,17 @@ interface Props {
 type Mode = 'tag' | 'suggest' | 'note' | 'insert-text';
 
 export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailingPassages = [], passageSplit, onClose }) => {
-  const { currentText, extractSelection, loadText, texts } = useTextStore();
-  const tagStore = useTagStore();
-  const { createTag, createSpan } = tagStore;
-  const { createSuggestion } = useSuggestionStore();
-  const { categories: noteCategories, createCategory, createNote } = useNoteStore();
+  const currentText = useTextStore(s => s.currentText);
+  const extractSelection = useTextStore(s => s.extractSelection);
+  const loadText = useTextStore(s => s.loadText);
+  const texts = useTextStore(s => s.texts);
+  const allTags = useTagStore(s => s.tags);
+  const createTag = useTagStore(s => s.createTag);
+  const createSpan = useTagStore(s => s.createSpan);
+  const createSuggestion = useSuggestionStore(s => s.createSuggestion);
+  const noteCategories = useNoteStore(s => s.categories);
+  const createCategory = useNoteStore(s => s.createCategory);
+  const createNote = useNoteStore(s => s.createNote);
   const createMarker = useMarkerStore(s => s.createMarker);
   const editPassage = usePassageStore(s => s.editPassage);
   const sessionMode = useUIStore(s => s.sessionMode);
@@ -83,7 +89,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
 
   // In session mode the popover offers only session tags (and only Tag mode);
   // in regular mode only regular tags.
-  const availableTags = sessionMode ? selectSessionTags(tagStore) : selectRegularTags(tagStore);
+  const availableTags = sessionMode ? selectSessionTags({ tags: allTags }) : selectRegularTags({ tags: allTags });
 
   // In consult mode the Tag tab is gone, so default to Suggest edit.
   const [mode, setMode] = useState<Mode>(consultMode ? 'suggest' : 'tag');
@@ -105,7 +111,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   // Session tags whose open/close range encloses the current selection.
   // A still-open session (close_position null) is included if the selection
   // starts after its open position — it conceptually extends to "now".
-  const sessionsForSelection = selectSessionTags(tagStore).filter(t =>
+  const sessionsForSelection = selectSessionTags({ tags: allTags }).filter(t =>
     t.open_position != null
     && t.open_position <= selection.start
     && (t.close_position == null || t.close_position >= selection.end),
@@ -144,7 +150,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
     try {
       const color = sessionMode
         ? colorForSessionTag(trimmed)
-        : COLORS[tagStore.tags.length % COLORS.length];
+        : COLORS[allTags.length % COLORS.length];
       const kind = sessionMode ? 'session' : 'regular';
       const newTag = await createTag(currentText.id, trimmed, color, kind);
       setSelectedTagId(newTag.id);

@@ -87,7 +87,7 @@ const LevelStepper: React.FC<{
  * synthetic title chunks (global default or booklet-only).
  */
 export const TranslateView: React.FC = () => {
-  const { currentText } = useTextStore();
+  const currentText = useTextStore(s => s.currentText);
   // Permission-read on Translate: chunk boxes stay static (ChunkEditor gates
   // itself) and the layout/override/title gestures below hide behind this.
   const canEditTranslate = useCan('translate').canModify;
@@ -189,20 +189,23 @@ export const TranslateView: React.FC = () => {
   }, [treeNodes, tokens]);
   const spyNodeId = useRef<number | null>(null);
   const spyRaf = useRef<number | null>(null);
+  // Which rows currently intersect the list, maintained by an IntersectionObserver
+  // (registered below, after displayRows) so the spy never reads geometry on scroll —
+  // the old walk forced a reflow per row from the top of the list on every frame.
+  const rowEls = useRef<HTMLElement[]>([]);
+  const rowVisible = useRef<Set<Element>>(new Set());
   const onListScroll = () => {
     if (spyRaf.current != null) return;
     spyRaf.current = requestAnimationFrame(() => {
       spyRaf.current = null;
-      const list = listRef.current;
-      if (!list || linkedNodes.length === 0) return;
-      const top = list.getBoundingClientRect().top;
-      const rows = list.querySelectorAll<HTMLElement>('[data-link-key]');
+      if (linkedNodes.length === 0) return;
+      // The top-most row still intersecting the viewport is the row the old
+      // geometry walk resolved to (a row straddling the top edge still intersects).
       let curOffset: number | null = null;
-      for (const r of rows) {
-        if (r.getBoundingClientRect().top - top <= 8) curOffset = Number(r.dataset.linkKey);
-        else break;
+      for (const el of rowEls.current) {
+        if (rowVisible.current.has(el)) { curOffset = Number(el.dataset.linkKey); break; }
       }
-      if (curOffset == null && rows.length) curOffset = Number(rows[0].dataset.linkKey);
+      if (curOffset == null && rowEls.current.length) curOffset = Number(rowEls.current[0].dataset.linkKey);
       if (curOffset == null) return;
       let node = null as (typeof linkedNodes)[number] | null;
       for (const n of linkedNodes) { if (n.segment_start! <= curOffset) node = n; else break; }
@@ -349,6 +352,23 @@ export const TranslateView: React.FC = () => {
       return { key: u.key, u, match: exact, cover };
     });
   }, [chunks, serverChunks, streamIds]);
+
+  // Register the scroll-spy's IntersectionObserver over the rendered rows. Re-runs
+  // when the row list changes so freshly mounted rows are observed.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (e.isIntersecting) rowVisible.current.add(e.target);
+        else rowVisible.current.delete(e.target);
+      }
+    }, { root: list });
+    const els = Array.from(list.querySelectorAll<HTMLElement>('[data-link-key]'));
+    rowEls.current = els;
+    els.forEach(el => io.observe(el));
+    return () => { io.disconnect(); rowVisible.current.clear(); rowEls.current = []; };
+  }, [displayRows]);
 
   // A passage block can emit several rows (one per same-type unit-group), all sharing the
   // group's STARTER (`u.passage`). The "link to TOC node" affordance belongs on the first

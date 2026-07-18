@@ -20,7 +20,10 @@ const REGULAR_COLORS = [
 ];
 
 const TagRow: React.FC<{ tag: Tag; dimmed?: boolean }> = ({ tag, dimmed }) => {
-  const { updateTag, deleteTag, setTagShared, spans } = useTagStore();
+  const updateTag = useTagStore(s => s.updateTag);
+  const deleteTag = useTagStore(s => s.deleteTag);
+  const setTagShared = useTagStore(s => s.setTagShared);
+  const spans = useTagStore(s => s.spans);
   const currentText = useTextStore(s => s.currentText);
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const [isEditing, setIsEditing] = useState(false);
@@ -153,7 +156,7 @@ interface CreateRegularFormProps {
   onClose: () => void;
 }
 const CreateRegularForm: React.FC<CreateRegularFormProps> = ({ textId, takenColors, onClose }) => {
-  const { createTag } = useTagStore();
+  const createTag = useTagStore(s => s.createTag);
   const [name, setName] = useState('');
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,7 +195,7 @@ interface CreateSessionFormProps {
   onClose: () => void;
 }
 const CreateSessionForm: React.FC<CreateSessionFormProps> = ({ textId, onClose }) => {
-  const { createTag } = useTagStore();
+  const createTag = useTagStore(s => s.createTag);
   const [name, setName] = useState('');
   const valid = SESSION_TAG_NAME_RE.test(name.trim());
   const previewColor = valid ? colorForSessionTag(name.trim()) : '#94a3b8';
@@ -301,8 +304,10 @@ interface NoteRowProps {
   snippet: string;
 }
 const NoteRow: React.FC<NoteRowProps> = ({ note, snippet }) => {
-  const { updateNote, deleteNote, categories } = useNoteStore();
-  const tagStore = useTagStore();
+  const updateNote = useNoteStore(s => s.updateNote);
+  const deleteNote = useNoteStore(s => s.deleteNote);
+  const categories = useNoteStore(s => s.categories);
+  const allTags = useTagStore(s => s.tags);
   const hardReadOnly = !useCan('workspace').canModify;
   const [isEditing, setIsEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(note.body);
@@ -313,17 +318,17 @@ const NoteRow: React.FC<NoteRowProps> = ({ note, snippet }) => {
   // already-linked sessions even if no longer covering (so the user can
   // unlink them). Deduped by id.
   const candidateSessions = useMemo(() => {
-    const covering = selectSessionTags(tagStore).filter(t =>
+    const covering = selectSessionTags({ tags: allTags }).filter(t =>
       t.open_position != null
       && t.open_position <= note.start_offset
       && (t.close_position == null || t.close_position >= note.end_offset),
     );
     const ids = new Set(covering.map(t => t.id));
-    const extraLinked = tagStore.tags.filter(t =>
+    const extraLinked = allTags.filter(t =>
       note.session_tag_ids.includes(t.id) && !ids.has(t.id),
     );
     return [...covering, ...extraLinked];
-  }, [tagStore.tags, note.start_offset, note.end_offset, note.session_tag_ids]);
+  }, [allTags, note.start_offset, note.end_offset, note.session_tag_ids]);
 
   const submit = async () => {
     try {
@@ -521,10 +526,11 @@ const CreateNoteCategoryForm: React.FC<CreateNoteCategoryFormProps> = ({ textId,
 
 export const Sidebar: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
-  const { currentText } = useTextStore();
-  const tagStore = useTagStore();
-  const regularTags = selectRegularTags(tagStore);
-  const sessionTags = selectSessionTags(tagStore);
+  const currentText = useTextStore(s => s.currentText);
+  const allTags = useTagStore(s => s.tags);
+  const allSpans = useTagStore(s => s.spans);
+  const regularTags = selectRegularTags({ tags: allTags });
+  const sessionTags = selectSessionTags({ tags: allTags });
   const sessionMode = useUIStore(s => s.sessionMode);
   const setSessionMode = useUIStore(s => s.setSessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
@@ -571,7 +577,9 @@ export const Sidebar: React.FC = () => {
   // Corrections apply on creation (no accept/reject) — the list is delete-only.
   // Incoming PENDING suggestions (routed here from derived texts) are the exception:
   // they await review — accept (stage or ripple) or reject.
-  const { suggestions, deleteSuggestion, fetchSuggestions } = useSuggestionStore();
+  const suggestions = useSuggestionStore(s => s.suggestions);
+  const deleteSuggestion = useSuggestionStore(s => s.deleteSuggestion);
+  const fetchSuggestions = useSuggestionStore(s => s.fetchSuggestions);
   const appliedSuggestions = useMemo(() => suggestions.filter(s => s.status !== 'pending'), [suggestions]);
   const pendingIncoming = useMemo(() => suggestions.filter(s => s.status === 'pending'), [suggestions]);
   const loadText = useTextStore(s => s.loadText);
@@ -895,18 +903,18 @@ export const Sidebar: React.FC = () => {
                 : 'text-bronze hover:bg-cream'
             }`}
           >
-            <Layers size={12} /> Annotations ({tagStore.spans.length})
+            <Layers size={12} /> Annotations ({allSpans.length})
           </button>
           {activeSection === 'annotations' && (
             <div className="flex-1 min-h-0 p-3 flex flex-col">
-              {tagStore.spans.length === 0 ? (
+              {allSpans.length === 0 ? (
                 <p className="text-xs text-ink-soft italic px-1">No annotation spans yet</p>
               ) : (
                 <div className="flex-1 min-h-0 overflow-y-auto">
                   <ul className="text-xs flex flex-col gap-1">
                     {/* One row PER OCCURRENCE: a span on a twice-transcluded source
                         serializes once per run, same id at different offsets. */}
-                    {tagStore.spans.map(s => (
+                    {allSpans.map(s => (
                       <li key={`${s.id}-${s.start_offset}`} className="py-0.5 flex items-center gap-1.5 truncate">
                         <span className="px-1.5 py-0.5 rounded text-cream-hi text-[10px] shrink-0" style={{ backgroundColor: s.tag.color }}>
                           {s.tag.name}

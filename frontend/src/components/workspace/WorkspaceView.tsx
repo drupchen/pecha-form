@@ -27,13 +27,17 @@ const LINE_BREAK_GROUP_OPTIONS: { key: LineBreakGroup; label: string; hint: stri
 ];
 
 export const WorkspaceView: React.FC = () => {
-  const { currentText } = useTextStore();
-  const { fetchTags, fetchSpans } = useTagStore();
-  const { fetchMarkers } = useMarkerStore();
-  const { fetchSuggestions } = useSuggestionStore();
-  const { fetchNotes, fetchCategories } = useNoteStore();
-  const { fetchNodes, saveStatus, error: treeError } = useTreeNodeStore();
-  const { fetchPassages } = usePassageStore();
+  const currentText = useTextStore(s => s.currentText);
+  const fetchTags = useTagStore(s => s.fetchTags);
+  const fetchSpans = useTagStore(s => s.fetchSpans);
+  const fetchMarkers = useMarkerStore(s => s.fetchMarkers);
+  const fetchSuggestions = useSuggestionStore(s => s.fetchSuggestions);
+  const fetchNotes = useNoteStore(s => s.fetchNotes);
+  const fetchCategories = useNoteStore(s => s.fetchCategories);
+  const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
+  const saveStatus = useTreeNodeStore(s => s.saveStatus);
+  const treeError = useTreeNodeStore(s => s.error);
+  const fetchPassages = usePassageStore(s => s.fetchPassages);
   const fetchBreaks = useDisplayBreakStore(s => s.fetchBreaks);
   const editMode = useUIStore(s => s.editMode);
   const setEditMode = useUIStore(s => s.setEditMode);

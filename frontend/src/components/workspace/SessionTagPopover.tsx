@@ -29,9 +29,10 @@ type TabKey = 'open' | 'close';
  * shows the next-unused number (per-letter) in an editable input.
  */
 export const SessionTagPopover: React.FC<Props> = ({ textId, unitStart, unitEnd, anchorRect, onClose }) => {
-  const tagStore = useTagStore();
-  const { createTag, updateTag } = tagStore;
-  const sessionTags = selectSessionTags(tagStore);
+  const allTags = useTagStore(s => s.tags);
+  const createTag = useTagStore(s => s.createTag);
+  const updateTag = useTagStore(s => s.updateTag);
+  const sessionTags = selectSessionTags({ tags: allTags });
   const consultMode = useUIStore(s => s.editMode === 'consult');
   const openTags = sessionTags.filter(t => t.open_position != null && t.close_position == null);
 

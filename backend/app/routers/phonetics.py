@@ -110,7 +110,8 @@ def list_text_phonetics(text_id: int, lang: Optional[str] = None):
         cursor = conn.cursor()
         if not cursor.execute("SELECT 1 FROM texts WHERE id = ?", (text_id,)).fetchone():
             raise HTTPException(404, "Text not found")
-        stream_ids = {t["id"] for t in base_tokens(conn, text_id)}
+        compose_cache: dict = {}
+        stream_ids = {t["id"] for t in base_tokens(conn, text_id, cache=compose_cache)}
         origins = [text_id] + _span_source_texts(cursor, text_id)
         out: List[PhoneticOut] = []
         for origin in origins:
@@ -123,10 +124,11 @@ def list_text_phonetics(text_id: int, lang: Optional[str] = None):
                     "SELECT * FROM phonetics WHERE origin_text_id = ?", (origin,)).fetchall()
             if not rows:
                 continue
-            toks = base_tokens(conn, origin)
+            toks = base_tokens(conn, origin, cache=compose_cache)
             by_id = {t["id"]: t for t in toks}
+            tok_pos = {t["id"]: i for i, t in enumerate(toks)}
             for r in rows:
-                ids = syllable_ids_between(toks, r["start_syl_id"], r["end_syl_id"])
+                ids = syllable_ids_between(toks, r["start_syl_id"], r["end_syl_id"], pos=tok_pos)
                 if not ids or not any(i in stream_ids for i in ids):
                     continue
                 out.append(PhoneticOut(

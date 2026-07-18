@@ -100,7 +100,12 @@ def clear_session_cookie(response) -> None:
 
 
 def _session_user(conn, request: Request):
-    """The users row for the request's session cookie, or None. Slides expiry."""
+    """The users row for the request's session cookie, or None. Slides expiry.
+
+    The slide is throttled: with a 30-day window, refreshing it at most once every
+    15 minutes is indistinguishable to the user, and it keeps the vast majority of
+    requests write-free — under WAL every write serializes through the single
+    writer, so an unconditional UPDATE+commit here throttled ALL traffic."""
     raw = request.cookies.get(SESSION_COOKIE)
     if not raw:
         return None
@@ -112,12 +117,15 @@ def _session_user(conn, request: Request):
     ).fetchone()
     if row is None:
         return None
-    conn.execute(
+    cur = conn.execute(
         "UPDATE sessions SET last_used_at = CURRENT_TIMESTAMP, "
-        f"expires_at = datetime('now', '+{SESSION_DAYS} days') WHERE token_hash = ?",
+        f"expires_at = datetime('now', '+{SESSION_DAYS} days') "
+        "WHERE token_hash = ? AND (last_used_at IS NULL "
+        "OR last_used_at <= datetime('now', '-15 minutes'))",
         (th,),
     )
-    conn.commit()
+    if cur.rowcount:
+        conn.commit()
     return row
 
 

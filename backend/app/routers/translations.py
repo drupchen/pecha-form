@@ -212,7 +212,8 @@ def list_text_translations(text_id: int):
         cursor = conn.cursor()
         if not cursor.execute("SELECT 1 FROM texts WHERE id = ?", (text_id,)).fetchone():
             raise HTTPException(404, "Text not found")
-        stream_ids = {t["id"] for t in base_tokens(conn, text_id)}
+        compose_cache: dict = {}
+        stream_ids = {t["id"] for t in base_tokens(conn, text_id, cache=compose_cache)}
         origins = [text_id] + _span_source_texts(cursor, text_id)
         out = []
         for origin in origins:
@@ -221,10 +222,19 @@ def list_text_translations(text_id: int):
             ).fetchall()
             if not rows:
                 continue
-            toks = base_tokens(conn, origin)
+            toks = base_tokens(conn, origin, cache=compose_cache)
             by_id = {t["id"]: t for t in toks}
+            tok_pos = {t["id"]: i for i, t in enumerate(toks)}
+            # One batched query for every chunk's translations (was one per chunk).
+            trans_by_chunk: dict = {}
+            chunk_ids = [ch["id"] for ch in rows]
+            for t in cursor.execute(
+                "SELECT * FROM translations WHERE chunk_id IN "
+                f"({','.join('?' * len(chunk_ids))})", chunk_ids,
+            ).fetchall():
+                trans_by_chunk.setdefault(t["chunk_id"], []).append(t)
             for ch in rows:
-                ids = syllable_ids_between(toks, ch["start_syl_id"], ch["end_syl_id"])
+                ids = syllable_ids_between(toks, ch["start_syl_id"], ch["end_syl_id"], pos=tok_pos)
                 if not ids or not any(i in stream_ids for i in ids):
                     continue
                 translations = [
@@ -233,9 +243,7 @@ def list_text_translations(text_id: int):
                         translated_from=t["translated_from"],
                         updated_at=str(t["updated_at"]),
                     )
-                    for t in cursor.execute(
-                        "SELECT * FROM translations WHERE chunk_id = ?", (ch["id"],)
-                    ).fetchall()
+                    for t in trans_by_chunk.get(ch["id"], [])
                 ]
                 out.append(ChunkOut(
                     id=ch["id"], origin_text_id=origin,

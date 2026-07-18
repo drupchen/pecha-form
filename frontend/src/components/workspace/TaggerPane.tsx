@@ -70,9 +70,10 @@ function readClickToken(): { unitStart: number; unitEnd: number; rect: DOMRect }
 }
 
 export const TaggerPane: React.FC = () => {
-  const { currentText } = useTextStore();
-  const { spans } = useTagStore();
-  const { markers, deleteMarker } = useMarkerStore();
+  const currentText = useTextStore(s => s.currentText);
+  const spans = useTagStore(s => s.spans);
+  const markers = useMarkerStore(s => s.markers);
+  const deleteMarker = useMarkerStore(s => s.deleteMarker);
   const passages = usePassageStore(s => s.passages);
   const addPassage = usePassageStore(s => s.addPassage);
   const treeNodes = useTreeNodeStore(s => s.nodes);
@@ -84,7 +85,7 @@ export const TaggerPane: React.FC = () => {
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const setPassageNotice = useUIStore(s => s.setPassageNotice);
-  const { suggestions } = useSuggestionStore();
+  const suggestions = useSuggestionStore(s => s.suggestions);
   const notes = useNoteStore(s => s.notes);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
@@ -136,13 +137,31 @@ export const TaggerPane: React.FC = () => {
   const saveTimer = useRef<number | null>(null);
   const [, forceTick] = useState(0);
 
+  // Which segment cards currently intersect the pane, maintained by an
+  // IntersectionObserver so reading the top-most visible segment never touches
+  // layout — the old per-scroll getBoundingClientRect walk forced a reflow per
+  // card on every scroll event.
+  const segEls = useRef<HTMLElement[]>([]);
+  const segVisible = useRef<Set<Element>>(new Set());
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (e.isIntersecting) segVisible.current.add(e.target);
+        else segVisible.current.delete(e.target);
+      }
+    }, { root: container });
+    const els = Array.from(container.querySelectorAll<HTMLElement>('[data-segment-syl]'));
+    segEls.current = els;
+    els.forEach(el => io.observe(el));
+    return () => { io.disconnect(); segVisible.current.clear(); segEls.current = []; };
+  }, [segments]);
+
   // The start syllable of the first segment still visible at/below the viewport's top.
   const topSegmentSyl = (): string | null => {
-    const container = scrollRef.current;
-    if (!container) return null;
-    const top = container.getBoundingClientRect().top;
-    for (const el of container.querySelectorAll<HTMLElement>('[data-segment-syl]')) {
-      if (el.getBoundingClientRect().bottom > top + 1) return el.dataset.segmentSyl || null;
+    for (const el of segEls.current) {
+      if (segVisible.current.has(el)) return el.dataset.segmentSyl || null;
     }
     return null;
   };

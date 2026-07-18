@@ -528,17 +528,17 @@ def get_text(id: int):
         raise HTTPException(404, "Text not found")
 
     res = dict(row)
-    res["units"] = _units_for(conn, id)
-    conn.close()
     # A secondary text has no raw_text of its own — project its composed content so
     # the workspace (which builds segments from raw_text) renders the derived text.
+    # One compose serves both the units projection and the raw text.
     if res.get("text_type") == "secondary":
         from ..derivation import compose_secondary, composed_raw_text
-        conn2 = get_db()
-        try:
-            res["raw_text"] = composed_raw_text(compose_secondary(conn2, id))
-        finally:
-            conn2.close()
+        toks = compose_secondary(conn, id)
+        res["units"] = units_from_syllables(toks)
+        res["raw_text"] = composed_raw_text(toks)
+    else:
+        res["units"] = _units_for(conn, id)
+    conn.close()
     return res
 
 

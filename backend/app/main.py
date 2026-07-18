@@ -3,6 +3,7 @@ import os
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from .auth import guard
@@ -14,6 +15,10 @@ from .routers import (
 )
 
 app = FastAPI(title="Sapche Backend API")
+
+# Whole-document JSON payloads (syllables, spans, translations) compress ~80% —
+# registered first so it wraps innermost, compressing after CORS/error handling.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 def _guarded(router, section, resolvers=None, write_level="modify"):
