@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 import { useUndoStore } from './useUndoStore';
 
 export interface Marker {
@@ -25,7 +26,7 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
 
   fetchMarkers: async (textId) => {
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/markers`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/markers`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       set({ markers: data });
@@ -39,7 +40,7 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
       // Part 6: prefer the syllable id — the server derives the position from the
       // same syllables table the frontend rendered (no units_json boundary check).
       const body = sylId ? { syl_id: sylId } : { position };
-      const res = await fetch(`${API_BASE}/texts/${textId}/markers`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/markers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -62,7 +63,7 @@ export const useMarkerStore = create<MarkerState>((set, get) => ({
   deleteMarker: async (markerId) => {
     const before = get().markers.find(m => m.id === markerId);
     try {
-      const res = await fetch(`${API_BASE}/markers/${markerId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/markers/${markerId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       set(state => ({ markers: state.markers.filter(m => m.id !== markerId) }));
       if (before) {

@@ -3,6 +3,7 @@ import {
   type DocumentItem,
 } from '../../api/client';
 import { deriveChunks } from '../translate/chunks';
+import { apiFetch } from '../../api/http';
 
 /**
  * Document content assembly (Phase D2). For each text page, reuse the translate
@@ -78,7 +79,7 @@ export const COMPILE_BUILD: object = {};
 const rk = (a: string, b: string) => `${a}-${b}`;
 
 async function fetchJson(url: string): Promise<any> {
-  const r = await fetch(url);
+  const r = await apiFetch(url);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

@@ -8,6 +8,7 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { usePassageStore } from '../../store/usePassageStore';
 import { useUIStore, type LineBreakGroup } from '../../store/useUIStore';
 import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
+import { useCan } from '../../store/usePermissions';
 import { SplitPane } from './SplitPane';
 import { TreePane } from './TreePane';
 import { TaggerPane } from './TaggerPane';
@@ -52,6 +53,15 @@ export const WorkspaceView: React.FC = () => {
   const lineBreakGroups = useUIStore(s => s.lineBreakGroups);
   const setLineBreakGroup = useUIStore(s => s.setLineBreakGroup);
   const [breakSettingsOpen, setBreakSettingsOpen] = useState(false);
+  const { canModify: canEditWorkspace } = useCan('workspace');
+
+  // Permission 'read' on the workspace = consult mode, permanently: every gate in
+  // the pane already keys off editMode === 'consult', so forcing the store value
+  // covers all of them at once. (Suggestion/note CRUD — which consult deliberately
+  // leaves live — is hard-gated separately, off useCan in the popovers.)
+  useEffect(() => {
+    if (!canEditWorkspace && editMode !== 'consult') setEditMode('consult');
+  }, [canEditWorkspace, editMode, setEditMode]);
 
   // While "place a passage" is armed, Escape cancels it.
   useEffect(() => {
@@ -229,6 +239,7 @@ export const WorkspaceView: React.FC = () => {
             }>{statusLabel}</span>
           )}
           {treeError && <span className="text-vermilion truncate max-w-md" title={treeError}>{treeError}</span>}
+          {canEditWorkspace && (
           <div
             className="flex rounded-md overflow-hidden text-xs font-medium"
             style={{ border: '1px solid var(--cline)' }}
@@ -258,6 +269,7 @@ export const WorkspaceView: React.FC = () => {
               <BookOpen size={12} /> Consult
             </button>
           </div>
+          )}
           <div className="relative flex items-center gap-1">
             <button
               type="button"

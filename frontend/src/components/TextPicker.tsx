@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useMemo } from 'react';
 import { useTextStore } from '../store/useTextStore';
 import type { Route } from '../App';
 import { GroupedTextRegion } from './GroupedTextRegion';
+import { useCan } from '../store/usePermissions';
 
 interface TextPickerProps {
   onNavigate: (route: Route) => void;
@@ -26,6 +27,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
     uploadNewFile, loadText, removeText, deriveSecondary, cloneWithEdits, updateMeta, loading,
   } = useTextStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { canModify: canEditTexts } = useCan('texts');
 
   useEffect(() => {
     fetchTexts();
@@ -128,6 +130,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
                   createGroup={(disp) => createGroup(toNs(disp))}
                   moveGroup={(src, dest) => moveGroup(toNs(src), dest ? toNs(dest) : DERIVED_NS)}
                   deleteGroup={(disp) => deleteGroup(toNs(disp))}
+                  readOnly={!canEditTexts}
                 />
 
                 <div style={{ borderTop: '1px solid var(--cline)' }} />
@@ -150,6 +153,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
                   onDerive={handleDerive}
                   onClone={handleClone}
                   onAddText={() => fileInputRef.current?.click()}
+                  readOnly={!canEditTexts}
                 />
               </>
             )}

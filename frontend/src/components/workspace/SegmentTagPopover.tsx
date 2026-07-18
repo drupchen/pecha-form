@@ -5,6 +5,7 @@ import { hasAdjacentNewline } from './segments';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore, selectRegularTags, selectSessionTags } from '../../store/useTagStore';
 import { useUIStore } from '../../store/useUIStore';
+import { useCan } from '../../store/usePermissions';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
 import { useNoteStore } from '../../store/useNoteStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -52,6 +53,9 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   const editPassage = usePassageStore(s => s.editPassage);
   const sessionMode = useUIStore(s => s.sessionMode);
   const consultMode = useUIStore(s => s.editMode === 'consult');
+  // Permission-read: the whole popover is a write surface (tags, suggestions,
+  // notes, splits) — with no workspace-modify permission it never opens.
+  const hardReadOnly = !useCan('workspace').canModify;
   const setPendingPassageSource = useUIStore(s => s.setPendingPassageSource);
   const lineBreaksOn = useUIStore(s => s.lineBreaksOn);
   const toggleLineBreaks = useUIStore(s => s.toggleLineBreaks);
@@ -109,6 +113,7 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   const [error, setError] = useState<string | null>(null);
 
   if (!currentText) return null;
+  if (hardReadOnly) return null;
 
   const newTagValid = sessionMode
     ? SESSION_TAG_NAME_RE.test(newTagName.trim())

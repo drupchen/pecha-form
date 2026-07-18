@@ -49,12 +49,15 @@ export interface GroupedTextRegionProps {
   onAddText?: () => void;            // columns toolbar "Add text"
   title?: string;                    // panel header label
   emptyHint?: string;                // panel empty-state hint
+  /** Permission-read on Texts: browse/open only — no rename, regroup, DnD,
+   *  create/delete, derive or clone affordances. */
+  readOnly?: boolean;
 }
 
 export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   layout, texts, groups, titleById, groupMime, onSelectDoc, renameText, setTextGroup,
   removeText, createGroup, moveGroup, reorderGroup, deleteGroup, onDerive, onClone,
-  onAddText, title, emptyHint,
+  onAddText, title, emptyHint, readOnly = false,
 }) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -137,6 +140,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   };
 
   const dropOnGroup = async (e: React.DragEvent, path: string) => {
+    if (readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     setDropTarget(null);
@@ -199,7 +203,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   const renderRow = (doc: TextInfo) => (
     <li
       key={doc.id}
-      draggable={editingId !== doc.id}
+      draggable={!readOnly && editingId !== doc.id}
       onDragStart={e => {
         e.dataTransfer.setData('text/plain', String(doc.id));
         e.dataTransfer.effectAllowed = 'move';
@@ -273,6 +277,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
       </div>
 
       <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 bg-cream rounded-lg shadow-sm px-1">
+        {!readOnly && (<>
         <button
           onClick={() => startEdit(doc)}
           className="p-2 text-bronze hover:text-lapis hover:bg-lapis/10 rounded-md transition-colors"
@@ -312,6 +317,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
         >
           <Trash2 size={18} />
         </button>
+        </>)}
         <button
           onClick={() => onSelectDoc(doc.id)}
           className="p-2 text-bronze hover:text-gold hover:bg-gold/10 rounded-md transition-colors"
@@ -331,8 +337,9 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
     return (
       <section key={node.path} style={{ borderBottom: '1px solid var(--cline)' }}>
         <div
-          draggable
+          draggable={!readOnly}
           onDragStart={e => {
+            if (readOnly) return;
             e.stopPropagation();
             e.dataTransfer.setData(groupMime, node.path);
             e.dataTransfer.effectAllowed = 'move';
@@ -355,6 +362,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
           <Folder size={15} className="text-bronze shrink-0" />
           <h2 className="font-display text-lg text-lapis truncate">{node.name}</h2>
           <span className="text-xs text-ink-soft font-mono ml-1">({subtreeCount(node)})</span>
+          {!readOnly && (
           <div className="ml-auto flex items-center gap-1 shrink-0">
             {isEmpty && (
               <button
@@ -373,6 +381,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
               <Plus size={16} />
             </button>
           </div>
+          )}
         </div>
         {addingUnder === node.path && renderNewGroupInput(24 + (depth + 1) * 20)}
         {isOpen && (
@@ -439,7 +448,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
     if (!e.currentTarget.contains(e.relatedTarget as Node)) setGapTarget(null);
   };
   const onRowDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    if (!isGroupDrag(e) || !reorderGroup) return;
+    if (readOnly || !isGroupDrag(e) || !reorderGroup) return;
     e.preventDefault();
     const beforePath = boundaryAtX(e.currentTarget, e.clientX);
     setGapTarget(null);
@@ -460,7 +469,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   );
 
   // A "New group" button/inline-input (top-level), reused by both layouts.
-  const newTopGroupControl = addingUnder === ADD_ROOT ? (
+  const newTopGroupControl = readOnly ? null : addingUnder === ADD_ROOT ? (
     <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white" style={{ border: '1px solid var(--cline)' }}>
       <FolderPlus size={15} className="text-bronze shrink-0" />
       <input
@@ -528,7 +537,7 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
     >
       <div className="flex-shrink-0 self-start flex flex-col gap-3" style={{ width: 380 }}>
         <div className="flex items-center gap-2">
-          {onAddText && (
+          {onAddText && !readOnly && (
             <button
               type="button"
               onClick={onAddText}

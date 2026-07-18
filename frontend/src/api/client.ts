@@ -1,11 +1,12 @@
-export const API_BASE = "http://localhost:8001/api";
+import { API_BASE, apiFetch, jfetch, J, withPrintToken } from './http';
+export { API_BASE, ApiError, PermissionError } from './http';
 
 export async function uploadText(file: File, title?: string) {
   const formData = new FormData();
   formData.append('file', file);
   if (title) formData.append('title', title);
 
-  const res = await fetch(`${API_BASE}/texts`, {
+  const res = await apiFetch(`${API_BASE}/texts`, {
     method: 'POST',
     body: formData,
   });
@@ -14,13 +15,13 @@ export async function uploadText(file: File, title?: string) {
 }
 
 export async function listTexts() {
-  const res = await fetch(`${API_BASE}/texts`);
+  const res = await apiFetch(`${API_BASE}/texts`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function getText(id: number) {
-  const res = await fetch(`${API_BASE}/texts/${id}`);
+  const res = await apiFetch(`${API_BASE}/texts/${id}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -28,7 +29,7 @@ export async function getText(id: number) {
 // Root display units with accepted root suggestions applied to the text but raw
 // offsets preserved — used by the Alignment tab's main-text column.
 export async function getCorrectedUnits(id: number): Promise<[number, number, string][]> {
-  const res = await fetch(`${API_BASE}/texts/${id}/corrected-units`);
+  const res = await apiFetch(`${API_BASE}/texts/${id}/corrected-units`);
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()).units;
 }
@@ -55,7 +56,7 @@ export interface EditorToken {
 }
 
 export async function getEditorTokens(id: number): Promise<EditorToken[]> {
-  const res = await fetch(`${API_BASE}/texts/${id}/editor-tokens`);
+  const res = await apiFetch(`${API_BASE}/texts/${id}/editor-tokens`);
   if (!res.ok) throw new Error(await res.text());
   return (await res.json()).tokens;
 }
@@ -92,13 +93,13 @@ export interface TranslationChunk {
 }
 
 export async function getLanguages(): Promise<Language[]> {
-  const res = await fetch(`${API_BASE}/languages`);
+  const res = await apiFetch(`${API_BASE}/languages`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function getTextTranslations(textId: number): Promise<TranslationChunk[]> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/translations`);
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/translations`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -112,7 +113,7 @@ export async function upsertTranslation(body: {
   status?: 'draft' | 'final';
   translated_from?: string | null;
 }): Promise<TranslationChunk> {
-  const res = await fetch(`${API_BASE}/translations`, {
+  const res = await apiFetch(`${API_BASE}/translations`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -162,12 +163,7 @@ export interface ChunkLayout {
   titles: Record<string, string>;
 }
 
-async function jfetch<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-const J = { 'Content-Type': 'application/json' };
+// jfetch/J now come from ./http — the auth-aware choke point.
 
 export const getOverrides = (textId: number) =>
   jfetch<TranslationOverride[]>(`${API_BASE}/texts/${textId}/translation-overrides`);
@@ -224,7 +220,7 @@ export async function setChunkLevel(body: {
   end_syl_id: string;
   level: number | null;
 }): Promise<TranslationChunk> {
-  const res = await fetch(`${API_BASE}/translation-chunks/level`, {
+  const res = await apiFetch(`${API_BASE}/translation-chunks/level`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -312,12 +308,12 @@ export const itemImageUrl = (itemId: number) => `${API_BASE}/document-items/${it
 export async function uploadItemImage(itemId: number, file: File): Promise<void> {
   const fd = new FormData();
   fd.append('file', file);
-  const res = await fetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'PUT', body: fd });
+  const res = await apiFetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'PUT', body: fd });
   if (!res.ok) throw new Error(await res.text());
 }
 
 export async function deleteItemImage(itemId: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/document-items/${itemId}/image`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
 }
 
@@ -325,7 +321,7 @@ export async function deleteItemImage(itemId: number): Promise<void> {
 export async function setItemImageSize(
   itemId: number, widthMm: number | null, heightMm: number | null,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/document-items/${itemId}/image/size`, {
+  const res = await apiFetch(`${API_BASE}/document-items/${itemId}/image/size`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
   });
@@ -336,14 +332,16 @@ export async function setItemImageSize(
 export interface OrgFont { id: number; family: string; weight: number; italic: boolean; mime: string }
 type StyleMap = Record<string, Record<string, unknown>>;
 
-export const getOrgStyles = (orgId = 1): Promise<StyleMap> =>
-  fetch(`${API_BASE}/styles?org_id=${orgId}`).then(r => r.json());
-export const putOrgStyle = (role: string, props: Record<string, unknown>, orgId = 1) =>
-  fetch(`${API_BASE}/styles/${role}?org_id=${orgId}`, {
+// The org dimension of every style/font/seal/layout call is the request's ACTIVE
+// org (X-Org-Id header via apiFetch) — no org_id parameter on the wire anymore.
+export const getOrgStyles = (): Promise<StyleMap> =>
+  jfetch<StyleMap>(`${API_BASE}/styles`);
+export const putOrgStyle = (role: string, props: Record<string, unknown>) =>
+  apiFetch(`${API_BASE}/styles/${role}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ props }),
-  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
-export const deleteOrgStyle = (role: string, orgId = 1) =>
-  fetch(`${API_BASE}/styles/${role}?org_id=${orgId}`, { method: 'DELETE' });
+  }).then(() => {});
+export const deleteOrgStyle = (role: string) =>
+  apiFetch(`${API_BASE}/styles/${role}`, { method: 'DELETE' });
 
 /** The org's page format and guides: sheet size + the four margins the text block and the
  *  binding/folio guides are drawn from. Always complete — never a blank meaning "inherit".
@@ -353,89 +351,87 @@ export type OrgLayout = {
   margin_top_mm: number; margin_bottom_mm: number;
   margin_bind_mm: number; margin_outer_mm: number;
 };
-export const getOrgLayout = (orgId = 1): Promise<OrgLayout> =>
-  fetch(`${API_BASE}/org-layout?org_id=${orgId}`).then(r => r.json());
-export const putOrgLayout = (config: Partial<OrgLayout>, orgId = 1): Promise<OrgLayout> =>
-  fetch(`${API_BASE}/org-layout?org_id=${orgId}`, {
+export const getOrgLayout = (): Promise<OrgLayout> =>
+  jfetch<OrgLayout>(`${API_BASE}/org-layout`);
+export const putOrgLayout = (config: Partial<OrgLayout>): Promise<OrgLayout> =>
+  jfetch<OrgLayout>(`${API_BASE}/org-layout`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config }),
-  }).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); });
+  });
 
 export const getDocStyles = (docId: number): Promise<StyleMap> =>
-  fetch(`${API_BASE}/documents/${docId}/styles`).then(r => r.json());
+  jfetch<StyleMap>(`${API_BASE}/documents/${docId}/styles`);
 export const putDocStyle = (docId: number, role: string, props: Record<string, unknown>) =>
-  fetch(`${API_BASE}/documents/${docId}/styles/${role}`, {
+  apiFetch(`${API_BASE}/documents/${docId}/styles/${role}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ props }),
-  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+  }).then(() => {});
 export const deleteDocStyle = (docId: number, role: string) =>
-  fetch(`${API_BASE}/documents/${docId}/styles/${role}`, { method: 'DELETE' });
+  apiFetch(`${API_BASE}/documents/${docId}/styles/${role}`, { method: 'DELETE' });
 
-export const getOrgFonts = (orgId = 1): Promise<OrgFont[]> =>
-  fetch(`${API_BASE}/org-fonts?org_id=${orgId}`).then(r => r.json());
-export const orgFontFileUrl = (fontId: number) => `${API_BASE}/org-fonts/${fontId}/file`;
+export const getOrgFonts = (): Promise<OrgFont[]> =>
+  jfetch<OrgFont[]>(`${API_BASE}/org-fonts`);
+// URL-loaded (no fetch, no headers) — carries the print token in print mode.
+export const orgFontFileUrl = (fontId: number) =>
+  withPrintToken(`${API_BASE}/org-fonts/${fontId}/file`);
 export async function uploadOrgFont(
-  file: File, family: string, weight = 400, italic = false, orgId = 1,
+  file: File, family: string, weight = 400, italic = false,
 ): Promise<OrgFont> {
   const fd = new FormData();
   fd.append('file', file); fd.append('family', family);
   fd.append('weight', String(weight)); fd.append('italic', String(italic));
-  fd.append('org_id', String(orgId));
-  const res = await fetch(`${API_BASE}/org-fonts`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error(await res.text());
+  const res = await apiFetch(`${API_BASE}/org-fonts`, { method: 'POST', body: fd });
   return res.json();
 }
 export const deleteOrgFont = (fontId: number) =>
-  fetch(`${API_BASE}/org-fonts/${fontId}`, { method: 'DELETE' });
+  apiFetch(`${API_BASE}/org-fonts/${fontId}`, { method: 'DELETE' });
 
 /** The org's cover SEAL — a template-level image printed where the ༀ ornament sits, on every
  *  booklet's cover. A booklet's own cover image (uploadItemImage) overrides it. */
 export interface OrgSeal { has_image: boolean; width_mm: number | null; height_mm: number | null }
 
-export const getOrgSeal = (orgId = 1): Promise<OrgSeal> =>
-  fetch(`${API_BASE}/org-seal?org_id=${orgId}`).then(r => r.json());
-export const orgSealUrl = (orgId = 1) => `${API_BASE}/org-seal/file?org_id=${orgId}`;
-export async function uploadOrgSeal(file: File, orgId = 1): Promise<OrgSeal> {
+export const getOrgSeal = (): Promise<OrgSeal> =>
+  jfetch<OrgSeal>(`${API_BASE}/org-seal`);
+// URL-loaded (<img src>) — carries the print token in print mode.
+export const orgSealUrl = () => withPrintToken(`${API_BASE}/org-seal/file`);
+export async function uploadOrgSeal(file: File): Promise<OrgSeal> {
   const fd = new FormData();
-  fd.append('file', file); fd.append('org_id', String(orgId));
-  const res = await fetch(`${API_BASE}/org-seal`, { method: 'PUT', body: fd });
-  if (!res.ok) throw new Error(await res.text());
+  fd.append('file', file);
+  const res = await apiFetch(`${API_BASE}/org-seal`, { method: 'PUT', body: fd });
   return res.json();
 }
 /** Display size in mm; null on a dimension = the image's natural size. */
 export async function setOrgSealSize(
-  widthMm: number | null, heightMm: number | null, orgId = 1,
+  widthMm: number | null, heightMm: number | null,
 ): Promise<OrgSeal> {
-  const res = await fetch(`${API_BASE}/org-seal?org_id=${orgId}`, {
+  const res = await apiFetch(`${API_BASE}/org-seal`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
   });
-  if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
-export const deleteOrgSeal = (orgId = 1) =>
-  fetch(`${API_BASE}/org-seal?org_id=${orgId}`, { method: 'DELETE' });
+export const deleteOrgSeal = () =>
+  apiFetch(`${API_BASE}/org-seal`, { method: 'DELETE' });
 
 // docx style templates
-export const styleTemplateUrl = (target: 'org' | 'document', documentId?: number, orgId = 1) =>
-  `${API_BASE}/style-template.docx?target=${target}&org_id=${orgId}` +
+export const styleTemplateUrl = (target: 'org' | 'document', documentId?: number) =>
+  `${API_BASE}/style-template.docx?target=${target}` +
   (documentId != null ? `&document_id=${documentId}` : '');
 export async function importStyleTemplate(
-  file: File, target: 'org' | 'document', documentId?: number, orgId = 1,
+  file: File, target: 'org' | 'document', documentId?: number,
 ): Promise<{ applied: string[]; count: number }> {
   const fd = new FormData();
-  fd.append('file', file); fd.append('target', target); fd.append('org_id', String(orgId));
+  fd.append('file', file); fd.append('target', target);
   if (documentId != null) fd.append('document_id', String(documentId));
-  const res = await fetch(`${API_BASE}/style-template/import`, { method: 'POST', body: fd });
-  if (!res.ok) throw new Error(await res.text());
+  const res = await apiFetch(`${API_BASE}/style-template/import`, { method: 'POST', body: fd });
   return res.json();
 }
 
 // Style Studio specimen (per-org editable sample)
-export const getStyleSample = (orgId = 1): Promise<{ content: string }> =>
-  fetch(`${API_BASE}/style-sample?org_id=${orgId}`).then(r => r.json());
-export const putStyleSample = (content: string, orgId = 1) =>
-  fetch(`${API_BASE}/style-sample?org_id=${orgId}`, {
+export const getStyleSample = (): Promise<{ content: string }> =>
+  jfetch<{ content: string }>(`${API_BASE}/style-sample`);
+export const putStyleSample = (content: string) =>
+  apiFetch(`${API_BASE}/style-sample`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
-  }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+  }).then(() => {});
 
 export interface DocumentSummary {
   id: number;
@@ -570,7 +566,7 @@ export const putFurniture = (id: number, body: { item_id: number; lang: string; 
     { method: 'PUT', headers: J, body: JSON.stringify(body) });
 
 export async function deleteText(id: number) {
-  const res = await fetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/texts/${id}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -580,7 +576,7 @@ export async function deleteText(id: number) {
 export async function updateTextMeta(
   id: number, patch: { title?: string; text_group?: string | null }
 ) {
-  const res = await fetch(`${API_BASE}/texts/${id}`, {
+  const res = await apiFetch(`${API_BASE}/texts/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -592,14 +588,14 @@ export async function updateTextMeta(
 // --- Group registry (Part 12): persistent group paths so empty groups survive. ---
 
 export async function listTextGroups(): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/text-groups`);
+  const res = await apiFetch(`${API_BASE}/text-groups`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 // Register a (possibly empty) group path. Returns the full updated path list.
 export async function createTextGroup(path: string): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/text-groups`, {
+  const res = await apiFetch(`${API_BASE}/text-groups`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -610,7 +606,7 @@ export async function createTextGroup(path: string): Promise<string[]> {
 
 // Reorganize a group: nest `src` under `dest` ("" = top level). Rewrites all texts + paths.
 export async function moveTextGroup(src: string, dest: string): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/text-groups/move`, {
+  const res = await apiFetch(`${API_BASE}/text-groups/move`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src_path: src, dest_path: dest }),
@@ -622,7 +618,7 @@ export async function moveTextGroup(src: string, dest: string): Promise<string[]
 // Reorder a group (Part 13): place `src` under `parent` ("" = root), immediately before the
 // sibling `beforePath` ("" = append). Reorders root columns and promotes a sub-group to root.
 export async function reorderTextGroup(src: string, parent: string, beforePath: string): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/text-groups/reorder`, {
+  const res = await apiFetch(`${API_BASE}/text-groups/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ src_path: src, parent_path: parent, before_path: beforePath }),
@@ -633,7 +629,7 @@ export async function reorderTextGroup(src: string, parent: string, beforePath: 
 
 // Delete an empty group (refused with 409 if any text still lives at/under it).
 export async function deleteTextGroup(path: string): Promise<string[]> {
-  const res = await fetch(`${API_BASE}/text-groups`, {
+  const res = await apiFetch(`${API_BASE}/text-groups`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
@@ -645,7 +641,7 @@ export async function deleteTextGroup(path: string): Promise<string[]> {
 // Create a secondary text derived from primary text `id`. The secondary has no
 // syllables of its own; its content is composed from the parent + derivation ops.
 export async function deriveText(id: number, title?: string) {
-  const res = await fetch(`${API_BASE}/texts/${id}/derive`, {
+  const res = await apiFetch(`${API_BASE}/texts/${id}/derive`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(title ? { title } : {}),
@@ -659,7 +655,7 @@ export async function deriveText(id: number, title?: string) {
 export async function extractText(
   id: number, body: { start_syl_id: string; end_syl_id: string; title?: string }
 ) {
-  const res = await fetch(`${API_BASE}/texts/${id}/extract`, {
+  const res = await apiFetch(`${API_BASE}/texts/${id}/extract`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -677,13 +673,13 @@ export interface ReadingPosition {
 }
 
 export async function getReadingPosition(id: number): Promise<ReadingPosition | null> {
-  const res = await fetch(`${API_BASE}/texts/${id}/reading-position`);
+  const res = await apiFetch(`${API_BASE}/texts/${id}/reading-position`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function putReadingPosition(id: number, sylId: string | null): Promise<ReadingPosition> {
-  const res = await fetch(`${API_BASE}/texts/${id}/reading-position`, {
+  const res = await apiFetch(`${API_BASE}/texts/${id}/reading-position`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ syl_id: sylId }),
@@ -698,7 +694,7 @@ export async function suggestUpstream(
   textId: number,
   body: { start_syl_id: string; end_syl_id: string | null; suggested_text: string },
 ): Promise<{ suggestion_id: number; routed_to_text_id: number; routed_to_title: string }> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/suggest-upstream`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/suggest-upstream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -711,7 +707,7 @@ export async function suggestUpstream(
 // corrections; 'ripple' = bake just this one into the base now (derived texts update
 // immediately). On a secondary owner it is applied as an edit op either way.
 export async function acceptSuggestion(id: number, mode: 'stage' | 'ripple') {
-  const res = await fetch(`${API_BASE}/suggestions/${id}/accept`, {
+  const res = await apiFetch(`${API_BASE}/suggestions/${id}/accept`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ mode }),
@@ -723,7 +719,7 @@ export async function acceptSuggestion(id: number, mode: 'stage' | 'ripple') {
 // Bake all staged suggestions into the primary's base layer (stable syllable uuids
 // survive), so the corrections ripple to every text derived from it, any depth.
 export async function applyCorrections(id: number) {
-  const res = await fetch(`${API_BASE}/texts/${id}/apply-corrections`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/texts/${id}/apply-corrections`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -731,7 +727,7 @@ export async function applyCorrections(id: number) {
 // Duplicate a primary text with its edits/deletions baked in (raw_text = corrected text).
 // The duplicate records `cloned_from_text_id` for the picker's original/duplicate badges.
 export async function cloneText(id: number, title?: string) {
-  const res = await fetch(`${API_BASE}/texts/${id}/clone`, {
+  const res = await apiFetch(`${API_BASE}/texts/${id}/clone`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(title ? { title } : {}),
@@ -769,7 +765,7 @@ export interface Passage {
 }
 
 export async function getPassages(textId: number): Promise<Passage[]> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/passages`);
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/passages`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -778,7 +774,7 @@ export async function createPassage(
   textId: number,
   body: { anchor_syl_id: string | null; members: PassageMemberInput[]; color?: string | null; position?: number; attach_prev?: boolean },
 ): Promise<Passage> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/passages`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/passages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -791,7 +787,7 @@ export async function updatePassage(
   passageId: number,
   patch: Partial<{ anchor_syl_id: string | null; position: number; color: string | null; own_segment: boolean; attach_prev: boolean; members: PassageMemberInput[]; translations: Record<string, Record<string, string>> }>,
 ): Promise<Passage> {
-  const res = await fetch(`${API_BASE}/passages/${passageId}`, {
+  const res = await apiFetch(`${API_BASE}/passages/${passageId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -801,7 +797,7 @@ export async function updatePassage(
 }
 
 export async function deletePassage(passageId: number) {
-  const res = await fetch(`${API_BASE}/passages/${passageId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/passages/${passageId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -817,7 +813,7 @@ export async function splitPassage(
     second_attach_prev?: boolean;
   },
 ): Promise<{ first: Passage; second: Passage }> {
-  const res = await fetch(`${API_BASE}/passages/${passageId}/split`, {
+  const res = await apiFetch(`${API_BASE}/passages/${passageId}/split`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -838,7 +834,7 @@ export interface ComposedResult {
 // The composed syllable sequence for a secondary text (parent links + overrides +
 // added/transcluded), each token tagged with its `source` provenance.
 export async function getComposed(textId: number): Promise<ComposedResult> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/composed`);
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/composed`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -849,7 +845,7 @@ export async function editRange(
   textId: number,
   body: { start_syl_id: string; end_syl_id: string; new_text: string },
 ): Promise<ComposedResult> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/edit-range`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/edit-range`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -864,7 +860,7 @@ export async function transclude(
   textId: number,
   body: { anchor_syl_id: string | null; src_text_id: number; src_start_syl_id?: string; src_end_syl_id?: string; anchor_op_id?: number },
 ): Promise<ComposedResult> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/transclude`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/transclude`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -874,7 +870,7 @@ export async function transclude(
 }
 
 export async function deleteDerivationOp(opId: number) {
-  const res = await fetch(`${API_BASE}/derivation-ops/${opId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/derivation-ops/${opId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -890,7 +886,7 @@ export interface DerivationOp {
 }
 
 export async function listDerivationOps(textId: number): Promise<DerivationOp[]> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/derivation-ops`);
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/derivation-ops`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -932,7 +928,7 @@ export interface Portion {
 }
 
 export async function listSessions(textId: number): Promise<SessionInfo[]> {
-  const res = await fetch(`${API_BASE}/texts/${textId}/sessions`);
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/sessions`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -941,7 +937,7 @@ export async function updateSessionMetadata(
   tagId: number,
   meta: { audio_original_url?: string; audio_restored_url?: string; srt_filename?: string },
 ) {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/metadata`, {
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/metadata`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(meta),
@@ -954,7 +950,7 @@ export async function importSrt(tagId: number, file: File, force = false) {
   const formData = new FormData();
   formData.append('file', file);
   const url = `${API_BASE}/sessions/${tagId}/srt${force ? '?force=true' : ''}`;
-  const res = await fetch(url, { method: 'POST', body: formData });
+  const res = await apiFetch(url, { method: 'POST', body: formData });
   if (!res.ok) {
     // 409 carries a structured detail { message, forceable }; fall back to raw text.
     const body = await res.text();
@@ -974,13 +970,13 @@ export async function importSrt(tagId: number, file: File, force = false) {
 export async function alignMainText(tagId: number, file: File) {
   const formData = new FormData();
   formData.append('file', file);
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/align-main-text`, { method: 'POST', body: formData });
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/align-main-text`, { method: 'POST', body: formData });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{ session_tag_id: number; cues: number; matched: number; linked_segments: number; unmatched_seg_ids: number[] }>;
 }
 
 export async function setMainTextSrtDir(textId: number, dir: string) {
-  const res = await fetch(`${API_BASE}/texts/${textId}/main-text-srt-dir`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/main-text-srt-dir`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ main_text_srt_dir: dir }),
@@ -990,7 +986,7 @@ export async function setMainTextSrtDir(textId: number, dir: string) {
 }
 
 export async function alignMainTextFromFolder(tagId: number) {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/align-main-text-from-folder`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/align-main-text-from-folder`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{ session_tag_id: number; cues: number; matched: number; linked_segments: number; unmatched_seg_ids: number[]; srt_path: string }>;
 }
@@ -998,13 +994,13 @@ export async function alignMainTextFromFolder(tagId: number) {
 // Recompute the recited-root-text ("main-text", shown as red syllables) spans
 // inside this session's transcript from its current portions + corrected text.
 export async function tagMainText(tagId: number) {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/tag-main-text`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/tag-main-text`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{ session_tag_id: number; portions: number; spans: number }>;
 }
 
 export async function alignAllMainTextFromFolder(textId: number) {
-  const res = await fetch(`${API_BASE}/texts/${textId}/align-main-text-from-folder`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/align-main-text-from-folder`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{
     text_id: number;
@@ -1014,13 +1010,13 @@ export async function alignAllMainTextFromFolder(textId: number) {
 }
 
 export async function listSrtSegments(tagId: number): Promise<SrtSegment[]> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/srt-segments`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/srt-segments`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function listPortions(tagId: number): Promise<Portion[]> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/portions`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/portions`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1029,7 +1025,7 @@ export async function createPortion(
   tagId: number,
   body: { start_offset: number; end_offset: number; segment_ids: number[]; color?: string },
 ): Promise<Portion> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/portions`, {
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/portions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1042,7 +1038,7 @@ export async function updatePortion(
   portionId: number,
   body: Partial<{ start_offset: number; end_offset: number; segment_ids: number[]; position: number; color: string }>,
 ): Promise<Portion> {
-  const res = await fetch(`${API_BASE}/portions/${portionId}`, {
+  const res = await apiFetch(`${API_BASE}/portions/${portionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -1052,13 +1048,13 @@ export async function updatePortion(
 }
 
 export async function deletePortion(portionId: number) {
-  const res = await fetch(`${API_BASE}/portions/${portionId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/portions/${portionId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function reassignSegmentPortion(segmentId: number, portionId: number) {
-  const res = await fetch(`${API_BASE}/srt-segments/${segmentId}/portion`, {
+  const res = await apiFetch(`${API_BASE}/srt-segments/${segmentId}/portion`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ portion_id: portionId }),
@@ -1104,13 +1100,13 @@ export interface TranscriptSuggestion {
 export async function listTranscriptSyllables(tagId: number, corrected = false): Promise<Record<number, TranscriptSyllable[]>> {
   // corrected=true: text reflects accepted suggestions (offsets stay raw) — Alignment tab.
   const qs = corrected ? '?corrected=true' : '';
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/transcript-syllables${qs}`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/transcript-syllables${qs}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function listTranscriptSpans(tagId: number): Promise<TranscriptSpan[]> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/transcript-spans`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/transcript-spans`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1118,7 +1114,7 @@ export async function listTranscriptSpans(tagId: number): Promise<TranscriptSpan
 export async function createTranscriptSpan(
   segmentId: number, tagId: number, start: number, end: number,
 ): Promise<TranscriptSpan> {
-  const res = await fetch(`${API_BASE}/srt-segments/${segmentId}/transcript-spans`, {
+  const res = await apiFetch(`${API_BASE}/srt-segments/${segmentId}/transcript-spans`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tag_id: tagId, start_offset: start, end_offset: end }),
@@ -1128,13 +1124,13 @@ export async function createTranscriptSpan(
 }
 
 export async function deleteTranscriptSpan(spanId: number) {
-  const res = await fetch(`${API_BASE}/transcript-spans/${spanId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/transcript-spans/${spanId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function listTranscriptSuggestions(tagId: number): Promise<TranscriptSuggestion[]> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/transcript-suggestions`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/transcript-suggestions`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1142,7 +1138,7 @@ export async function listTranscriptSuggestions(tagId: number): Promise<Transcri
 export async function createTranscriptSuggestion(
   segmentId: number, start: number, end: number, suggested_text: string,
 ): Promise<TranscriptSuggestion> {
-  const res = await fetch(`${API_BASE}/srt-segments/${segmentId}/transcript-suggestions`, {
+  const res = await apiFetch(`${API_BASE}/srt-segments/${segmentId}/transcript-suggestions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ start_offset: start, end_offset: end, suggested_text }),
@@ -1152,7 +1148,7 @@ export async function createTranscriptSuggestion(
 }
 
 export async function deleteTranscriptSuggestion(suggestionId: number) {
-  const res = await fetch(`${API_BASE}/transcript-suggestions/${suggestionId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/transcript-suggestions/${suggestionId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1171,7 +1167,7 @@ export interface TranscriptNote {
 }
 
 export async function listTranscriptNotes(tagId: number): Promise<TranscriptNote[]> {
-  const res = await fetch(`${API_BASE}/sessions/${tagId}/transcript-notes`);
+  const res = await apiFetch(`${API_BASE}/sessions/${tagId}/transcript-notes`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1179,7 +1175,7 @@ export async function listTranscriptNotes(tagId: number): Promise<TranscriptNote
 export async function createTranscriptNote(
   segmentId: number, start: number, end: number, body: string, category_id: number | null,
 ): Promise<TranscriptNote> {
-  const res = await fetch(`${API_BASE}/srt-segments/${segmentId}/transcript-notes`, {
+  const res = await apiFetch(`${API_BASE}/srt-segments/${segmentId}/transcript-notes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ start_offset: start, end_offset: end, body, category_id }),
@@ -1191,7 +1187,7 @@ export async function createTranscriptNote(
 export async function updateTranscriptNote(
   noteId: number, patch: { body?: string; category_id?: number | null },
 ): Promise<TranscriptNote> {
-  const res = await fetch(`${API_BASE}/transcript-notes/${noteId}`, {
+  const res = await apiFetch(`${API_BASE}/transcript-notes/${noteId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -1201,7 +1197,7 @@ export async function updateTranscriptNote(
 }
 
 export async function deleteTranscriptNote(noteId: number) {
-  const res = await fetch(`${API_BASE}/transcript-notes/${noteId}`, { method: 'DELETE' });
+  const res = await apiFetch(`${API_BASE}/transcript-notes/${noteId}`, { method: 'DELETE' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1234,7 +1230,7 @@ export interface SearchResult {
 }
 
 export async function searchTranscripts(q: string): Promise<SearchResult[]> {
-  const res = await fetch(`${API_BASE}/transcript-search?q=${encodeURIComponent(q)}`);
+  const res = await apiFetch(`${API_BASE}/transcript-search?q=${encodeURIComponent(q)}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -1242,7 +1238,7 @@ export async function searchTranscripts(q: string): Promise<SearchResult[]> {
 export async function buildManifest(textId: number, instanceId?: string) {
   const formData = new FormData();
   if (instanceId) formData.append('instance_id', instanceId);
-  const res = await fetch(`${API_BASE}/texts/${textId}/build-manifest`, {
+  const res = await apiFetch(`${API_BASE}/texts/${textId}/build-manifest`, {
     method: 'POST',
     body: formData,
   });
@@ -1280,25 +1276,25 @@ export interface PipelineRow {
 }
 
 export async function getCatalog() {
-  const res = await fetch(`${API_BASE}/catalog`);
+  const res = await apiFetch(`${API_BASE}/catalog`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function regenerateCatalog() {
-  const res = await fetch(`${API_BASE}/catalog/regenerate`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/catalog/regenerate`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function getPipeline(): Promise<{ source: string; rows: PipelineRow[] }> {
-  const res = await fetch(`${API_BASE}/pipeline`);
+  const res = await apiFetch(`${API_BASE}/pipeline`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function syncSessions(instanceId: string) {
-  const res = await fetch(`${API_BASE}/pipeline/${instanceId}/sync-sessions`, { method: 'POST' });
+  const res = await apiFetch(`${API_BASE}/pipeline/${instanceId}/sync-sessions`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

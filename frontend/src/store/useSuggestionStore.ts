@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API_BASE } from '../api/client';
+import { apiFetch } from '../api/http';
 import { useUndoStore } from './useUndoStore';
 
 export interface Suggestion {
@@ -43,7 +44,7 @@ export const useSuggestionStore = create<SuggestionState>((set, get) => ({
   fetchSuggestions: async (textId) => {
     set({ loading: true, error: null });
     try {
-      const res = await fetch(`${API_BASE}/texts/${textId}/suggestions`);
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/suggestions`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       set({ suggestions: data, loading: false });
@@ -59,7 +60,7 @@ export const useSuggestionStore = create<SuggestionState>((set, get) => ({
       const body = sylIds?.startSylId
         ? { start_syl_id: sylIds.startSylId, end_syl_id: sylIds.endSylId, suggested_text }
         : { start_offset, end_offset, suggested_text };
-      const res = await fetch(`${API_BASE}/texts/${textId}/suggestions`, {
+      const res = await apiFetch(`${API_BASE}/texts/${textId}/suggestions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -81,7 +82,7 @@ export const useSuggestionStore = create<SuggestionState>((set, get) => ({
   deleteSuggestion: async (suggestionId) => {
     const before = get().suggestions.find(s => s.id === suggestionId);
     try {
-      const res = await fetch(`${API_BASE}/suggestions/${suggestionId}`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/suggestions/${suggestionId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
       set(state => ({ suggestions: state.suggestions.filter(s => s.id !== suggestionId) }));
       if (before) {

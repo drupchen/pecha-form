@@ -5,6 +5,7 @@ import { Mark, mergeAttributes } from '@tiptap/core';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import { Bold, Italic, MessageSquarePlus } from 'lucide-react';
 import { sanitizeTranslationHtml } from './sanitize';
+import { useCan } from '../../store/usePermissions';
 
 /**
  * Per-chunk translation editor. Inactive chunks render their body as static
@@ -241,7 +242,11 @@ export const ChunkEditor: React.FC<{
   onSave: (html: string) => void;
 }> = ({ value, placeholder, onSave }) => {
   const [editing, setEditing] = useState(false);
-  if (editing) {
+  // Permission-read on Translate: the box never activates — the static body
+  // renders exactly as it would while inactive. Gated here (not at the call
+  // sites) so every mount of the editor is covered at once.
+  const canEdit = useCan('translate').canModify;
+  if (editing && canEdit) {
     return (
       <InnerEditor
         initial={value}
@@ -252,12 +257,12 @@ export const ChunkEditor: React.FC<{
   const html = sanitizeTranslationHtml(value);
   return (
     <div
-      data-tbox
-      role="button"
-      tabIndex={0}
-      onClick={() => setEditing(true)}
-      onFocus={() => setEditing(true)}
-      className="chunk-editor flex-1 min-h-[72px] w-full text-sm p-2 rounded-md bg-cream-hi/50 cursor-text hover:bg-white transition-colors"
+      {...(canEdit ? { 'data-tbox': true, role: 'button', tabIndex: 0 } : {})}
+      onClick={() => canEdit && setEditing(true)}
+      onFocus={() => canEdit && setEditing(true)}
+      className={`chunk-editor flex-1 min-h-[72px] w-full text-sm p-2 rounded-md bg-cream-hi/50 transition-colors ${
+        canEdit ? 'cursor-text hover:bg-white' : ''
+      }`}
       style={{ border: '1px solid var(--cline)' }}
     >
       {html
