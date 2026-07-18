@@ -17,7 +17,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../a
 
 from app.tokenizer import prepare_and_tokenize, simple_syllable_tokenize, normalize_spaces
 from app.manifest import generate_syllables, tile_line
-from app.transcript_manifest import clean_segment_text, generate_segment_syllables
+# (The transcript-import tests that lived here exercised app/transcript_manifest.py,
+# a sapche_discovery module that was never ported — transcripts are not a pecha-form
+# feature. They were dropped with the module, not skipped.)
 
 
 def run_invariant_tests(text: str, units: list):
@@ -38,9 +40,14 @@ def run_invariant_tests(text: str, units: list):
     # Concatenation
     assert "".join(u[2] for u in units) == text, "Boundary invariant failed on concatenation"
     
-    # No whitespace-only units
+    # No whitespace-only units — EXCEPT pure-newline units, which are deliberate:
+    # newlines survive tokenization as standalone SPACE units so the display-break
+    # machinery can render and edit line breaks (see generate_syllables' newline
+    # assertion below). Bare spaces must still never form a unit of their own.
     for s, e, t in units:
-        assert t.strip() != "", f"Whitespace-only unit at [{s}:{e}]: {repr(t)}"
+        assert t.strip() != "" or t.strip("\n") == "", (
+            f"Whitespace-only unit at [{s}:{e}]: {repr(t)}"
+        )
 
 
 # ── Real sadhana excerpts ──────────────────────────────────────────────
@@ -189,42 +196,3 @@ def test_tile_line_gathers_extra_tsek_runs():
         # Always tiles the line exactly.
         assert "".join(t for _, t in got) == line, f"{line!r} -> {got!r}"
         assert got == expected, f"{line!r} -> {got!r} (expected {expected!r})"
-
-
-def test_generate_segment_syllables_tsek_run_segment():
-    """The real segment that crashed publish (id=4459): leading + trailing tsek
-    runs. It must tile exactly and surface each run as a single PUNCT syllable."""
-    seg = "་་་་་ལུས་ལས་བྱུང་བ་རེད་འདུག་གམ། ནང་གི་རྩ་་་་"
-    syls = generate_segment_syllables(seg, "inst", "S1", 1)
-    assert "".join(s["text"] for s in syls) == seg          # exact tiling
-    assert syls[0]["start_offset"] == 0
-    assert syls[-1]["end_offset"] == len(seg)
-    assert syls[0]["text"] == "་་་་་" and syls[0]["nature"] == "PUNCT"
-    assert syls[-1]["text"] == "་་་་" and syls[-1]["nature"] == "PUNCT"
-
-
-def test_clean_segment_text_trailing_space_rule():
-    """The transcript-import clean-up pass: strip both ends, then add a trailing
-    space only after a single shad or one of ``ཀ ག ཤ ཿ``; verse stops and other
-    endings are left untouched; a bare double shad ``།།`` is repaired to ``། །``."""
-    cases = {
-        "":                         "",
-        "   ":                      "",
-        "  ཐུགས་རྗེ་ཆེ།  ":          "ཐུགས་རྗེ་ཆེ། ",   # single shad → trailing space
-        "ཕྱག་འཚལ་ལོ།":              "ཕྱག་འཚལ་ལོ། ",
-        "ཆོས་དང་ཚོགས། །":           "ཆོས་དང་ཚོགས། །",   # verse stop (space before shad) → as-is
-        "མྱུར་དུ་བདག །":            "མྱུར་དུ་བདག །",     # letter-space-shad → as-is
-        "འགྲུབ་གྱུར་ནས།། །།":       "འགྲུབ་གྱུར་ནས།། །།",  # double-shad verse stop → as-is
-        "བཞུགས་སོ།།":               "བཞུགས་སོ། །",       # bare double shad (error) → reconstruct
-        "སེམས་ཅན་ཐམས་ཅད་ཅིག":      "སེམས་ཅན་ཐམས་ཅད་ཅིག ",  # ends ག → trailing space
-        "བཀྲ་ཤིས་བདེ་ལེགས་ཤ":       "བཀྲ་ཤིས་བདེ་ལེགས་ཤ ",  # ends ཤ → trailing space
-        "ཨོཾ་ཨཱཿ":                   "ཨོཾ་ཨཱཿ ",          # ends ཿ → trailing space
-        "བདེ་ལེགས་ཀ":               "བདེ་ལེགས་ཀ ",        # ends ཀ → trailing space
-        "ཐམས་ཅད་":                  "ཐམས་ཅད་",           # ends in tsek → as-is
-        "ཨཱཿཧཱུྃ":                    "ཨཱཿཧཱུྃ",            # ends in other letter → as-is
-    }
-    for src, expected in cases.items():
-        got = clean_segment_text(src)
-        assert got == expected, f"{src!r} -> {got!r} (expected {expected!r})"
-        # Idempotent: feeding the output back yields the same string.
-        assert clean_segment_text(got) == got, f"not idempotent on {got!r}"
