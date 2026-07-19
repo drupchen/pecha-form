@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  itemImageUrl, orgSealUrl,
+  itemImageUrl, orgSealUrl, withUrlAuth,
   type DocumentItem, type LayoutConfig, type DocumentLayoutRow, type DocumentFurnitureRow,
   type OrgSeal,
 } from '../../api/client';
@@ -1083,14 +1083,14 @@ export const FurnitureContent: React.FC<{
     height: item.image_height_mm ? `${item.image_height_mm}mm` : undefined,
   };
   const bkImage = <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
-                       src={itemImageUrl(item.id)} style={imgStyle} alt="" />;
+                       src={withUrlAuth(itemImageUrl(item.id))} style={imgStyle} alt="" />;
 
   if (item.kind === 'cover') {
     // At the ༀ ornament's place: this booklet's own cover image if it has one, else the org's
     // seal from the template, else (neither) the ༀ glyph — see TitleContent.
     const sealSized = orgSeal?.width_mm != null || orgSeal?.height_mm != null;
     const sealImage = orgSeal?.has_image
-      ? <img className={`bk-image${sealSized ? '' : ' bk-image-nat'}`} src={orgSealUrl()} alt=""
+      ? <img className={`bk-image${sealSized ? '' : ' bk-image-nat'}`} src={withUrlAuth(orgSealUrl())} alt=""
              style={{ width: orgSeal.width_mm ? `${orgSeal.width_mm}mm` : undefined,
                       height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
       : undefined;

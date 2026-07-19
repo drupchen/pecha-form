@@ -53,6 +53,19 @@ export function withPrintToken(url: string): string {
   return `${url}${url.includes('?') ? '&' : '?'}print_token=${encodeURIComponent(tok)}`;
 }
 
+/** Authenticate a URL loaded WITHOUT fetch — an <img src>, a PDF/download <a href>, an
+ *  @font-face src — which cannot carry the X-Org-Id header apiFetch adds. In headless print
+ *  mode that is the print token (as `withPrintToken`); in the normal authenticated app it is
+ *  the active org as a query param, which the guard accepts for safe GET/HEAD requests. The
+ *  session cookie still rides along (same-site), so this only supplies the missing org. */
+export function withUrlAuth(url: string): string {
+  const tok = printToken();
+  const q = url.includes('?') ? '&' : '?';
+  if (tok) return `${url}${q}print_token=${encodeURIComponent(tok)}`;
+  const orgId = handlers?.getOrgId();
+  return orgId == null ? url : `${url}${q}org=${orgId}`;
+}
+
 export async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   const ptoken = printToken();

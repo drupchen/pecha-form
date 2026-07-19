@@ -255,6 +255,14 @@ def _print_token_ctx(request: Request) -> AuthContext | None:
 
 def _org_from_header(request: Request) -> int | None:
     raw = request.headers.get("X-Org-Id")
+    if raw is None and request.method in ("GET", "HEAD"):
+        # A URL loaded WITHOUT fetch — an <img src>, a PDF/download <a href>, an
+        # @font-face — cannot send the X-Org-Id header, so a cookie-authenticated
+        # read may name its org in the query string instead. Restricted to safe
+        # methods: writes still require the header, whose custom-header nature is
+        # what makes it CSRF-resistant. The resource resolvers still confirm the
+        # named org actually owns the thing being read.
+        raw = request.query_params.get("org")
     if raw is None:
         return None
     try:

@@ -10,7 +10,7 @@ import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout,
   getVersions,
-  uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize,
+  uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize, withUrlAuth,
   type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
@@ -626,7 +626,7 @@ export const DocumentsView: React.FC = () => {
                           <div className="flex items-center gap-3 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {it.has_image ? (
-                              <img src={`${itemImageUrl(it.id)}?v=${imgBust}`} alt=""
+                              <img src={withUrlAuth(`${itemImageUrl(it.id)}?v=${imgBust}`)} alt=""
                                    className="h-16 w-16 object-contain rounded bg-white"
                                    style={{ border: '1px solid var(--cline)' }} />
                             ) : (

@@ -1,5 +1,5 @@
-import { API_BASE, apiFetch, jfetch, J, withPrintToken } from './http';
-export { API_BASE, ApiError, PermissionError } from './http';
+import { API_BASE, apiFetch, jfetch, J, withUrlAuth } from './http';
+export { API_BASE, ApiError, PermissionError, withUrlAuth } from './http';
 
 export async function uploadText(file: File, title?: string) {
   const formData = new FormData();
@@ -393,9 +393,9 @@ export const deleteDocStyle = (docId: number, role: string) =>
 
 export const getOrgFonts = (): Promise<OrgFont[]> =>
   jfetch<OrgFont[]>(`${API_BASE}/org-fonts`);
-// URL-loaded (no fetch, no headers) — carries the print token in print mode.
+// URL-loaded (no fetch, no headers) — the print token in print mode, else the active org.
 export const orgFontFileUrl = (fontId: number) =>
-  withPrintToken(`${API_BASE}/org-fonts/${fontId}/file`);
+  withUrlAuth(`${API_BASE}/org-fonts/${fontId}/file`);
 export async function uploadOrgFont(
   file: File, family: string, weight = 400, italic = false,
 ): Promise<OrgFont> {
@@ -414,8 +414,9 @@ export interface OrgSeal { has_image: boolean; width_mm: number | null; height_m
 
 export const getOrgSeal = (): Promise<OrgSeal> =>
   jfetch<OrgSeal>(`${API_BASE}/org-seal`);
-// URL-loaded (<img src>) — carries the print token in print mode.
-export const orgSealUrl = () => withPrintToken(`${API_BASE}/org-seal/file`);
+// URL-loaded (<img src>) — a pure builder; call sites wrap it in `withUrlAuth` to add the
+// active org (or the print token in print mode), since an <img> sends no headers.
+export const orgSealUrl = () => `${API_BASE}/org-seal/file`;
 export async function uploadOrgSeal(file: File): Promise<OrgSeal> {
   const fd = new FormData();
   fd.append('file', file);
@@ -534,9 +535,10 @@ export const deleteVersion = (id: number, versionId: number) =>
   jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/versions/${versionId}`,
     { method: 'DELETE' });
 /** The frozen PDF for one edition of a version — a plain URL (opened in a tab / downloaded),
- *  like `itemImageUrl`. `download` flips the Content-Disposition to an attachment. */
+ *  like `itemImageUrl`. `download` flips the Content-Disposition to an attachment. Carries the
+ *  active org (or print token) in the query so the browser's bare GET clears the guard. */
 export const versionPdfUrl = (id: number, versionId: number, lang: string, download = false) =>
-  `${API_BASE}/documents/${id}/versions/${versionId}/pdf?lang=${encodeURIComponent(lang)}${download ? '&download=1' : ''}`;
+  withUrlAuth(`${API_BASE}/documents/${id}/versions/${versionId}/pdf?lang=${encodeURIComponent(lang)}${download ? '&download=1' : ''}`);
 /** The gunzipped snapshot JSON (tip-of-major versions only) for the read-only viewer. */
 export const getVersionSnapshot = (id: number, versionId: number) =>
   jfetch<VersionSnapshot>(`${API_BASE}/documents/${id}/versions/${versionId}/snapshot`);

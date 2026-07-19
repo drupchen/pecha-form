@@ -170,7 +170,7 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-title-sub:first-of-type { margin-top: 1mm; }
 /* Origin (the source cycle) and author/translator credit — their own faces, and like every
    title slot they carry no slant of their own. */
-.bk-title-origin { font-family: var(--font-title); font-size: 11pt; line-height: 1.35; }
+.bk-title-origin { font-family: var(--font-translation); font-size: 11pt; line-height: 1.35; }
 .bk-title-author { font-family: var(--font-translation); font-size: 11pt; line-height: 1.35; }
 .bk-copyright { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; font-family: var(--font-translation);

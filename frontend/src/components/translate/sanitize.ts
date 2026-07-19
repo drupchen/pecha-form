@@ -47,11 +47,15 @@ function walk(node: Node, doc: Document): Node[] {
   return out;
 }
 
-/** Sanitize a stored/edited body to the allowed subset. Plain text (no tags)
- *  passes through escaped, so pre-rich T1 bodies render unchanged. */
+/** Sanitize a stored/edited body to the allowed subset. Plain text (no tags AND no
+ *  entities) passes through escaped, so pre-rich T1 bodies render unchanged. A string
+ *  carrying an entity like `&#x27;` (an apostrophe from a title paragraph split out of its
+ *  `<p>` wrapper) must go through the parser instead — the fast path would escape its `&`
+ *  and double-encode it to a literal `&#x27;`. The parser decodes real entities and still
+ *  escapes bare ampersands, so both cases render correctly. */
 export function sanitizeTranslationHtml(html: string): string {
   if (!html) return '';
-  if (!/[<>]/.test(html)) {
+  if (!/[<>&]/.test(html)) {
     const div = document.createElement('div');
     div.textContent = html;
     return div.innerHTML;

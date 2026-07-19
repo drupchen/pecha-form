@@ -7,7 +7,7 @@ import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
   putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
   getStyleSample, putStyleSample, getOrgSeal, uploadOrgSeal, deleteOrgSeal, setOrgSealSize,
-  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout,
+  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout, withUrlAuth,
   type OrgFont, type OrgSeal, type LayoutConfig, type OrgLayout,
 } from '../../api/client';
 import {
@@ -358,7 +358,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       <div className="specimen-seal">
         {seal?.has_image ? (
           <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
-               src={`${orgSealUrl()}?v=${sealBust}`} alt=""
+               src={withUrlAuth(`${orgSealUrl()}?v=${sealBust}`)} alt=""
                style={{ width: seal.width_mm ? `${seal.width_mm}mm` : undefined,
                         height: seal.height_mm ? `${seal.height_mm}mm` : undefined }} />
         ) : (

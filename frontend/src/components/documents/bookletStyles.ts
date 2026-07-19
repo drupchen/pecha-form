@@ -1,4 +1,4 @@
-import { API_BASE, getOrgStyles, getDocStyles, getOrgFonts, type OrgFont } from '../../api/client';
+import { API_BASE, withUrlAuth, getOrgStyles, getDocStyles, getOrgFonts, type OrgFont } from '../../api/client';
 
 /**
  * Booklet style designer (Phase 4) — data-driven typography. Each named ROLE maps to a
@@ -140,7 +140,11 @@ const RAW_ROLE_DEFS: RoleDef[] = [
   { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub', marksFromContent: true,
     def: { fontFamily: 'Calibri', fontSize: '12pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Subtitle Calibri 12
   { role: 'title_origin', label: 'Title page — origin', selector: '.bk-title-origin', marksFromContent: true,
-    def: { fontFamily: 'var(--font-title)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // the source cycle
+    // Gentium Basic (like the author credit below), NOT var(--font-title): that title face
+    // (Libertinus Serif) ships only a Semibold cut, so a marksFromContent slot — which emits no
+    // font-weight — would render bold with no way to see where. A regular-weight family lets the
+    // origin sit at normal weight, and `<strong>` in the field still bolds a run deliberately.
+    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // the source cycle
   { role: 'title_author', label: 'Title page — author', selector: '.bk-title-author', marksFromContent: true,
     def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // author / translator credit
   { role: 'copyright', label: 'Copyright', selector: '.bk-copyright',
@@ -209,7 +213,7 @@ export const ORG_BASE: Record<string, StyleProps> = {
   title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
   title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   title_sub: { fontFamily: 'Calibri', fontSize: '12pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
-  title_origin: { fontFamily: 'Libertinus Serif', fontSize: '11pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_origin: { fontFamily: 'Gentium Basic', fontSize: '11pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   title_author: { fontFamily: 'Gentium Basic', fontSize: '11pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   copyright: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.5' },
   toc: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.5' },
@@ -267,7 +271,7 @@ function ruleFor(selector: string, p: StyleProps, marksFromContent = false): str
 /** Generate the booklet's typographic CSS from resolved role props + org fonts. */
 export function compileStyleCss(resolved: Record<string, StyleProps>, fonts: OrgFont[]): string {
   const faces = fonts.map(f =>
-    `@font-face { font-family: '${f.family}'; src: url('${API_BASE}/org-fonts/${f.id}/file'); ` +
+    `@font-face { font-family: '${f.family}'; src: url('${withUrlAuth(`${API_BASE}/org-fonts/${f.id}/file`)}'); ` +
     `font-weight: ${f.weight}; font-style: ${f.italic ? 'italic' : 'normal'}; font-display: swap; }`);
   const rules = ROLE_DEFS.map(rd =>
     ruleFor(rd.selector, resolved[rd.role] ?? rd.def, rd.marksFromContent)).filter(Boolean);

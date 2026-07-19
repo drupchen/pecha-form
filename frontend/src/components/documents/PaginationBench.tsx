@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
 import {
-  API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
+  API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   getOrgSeal, putPaginationStamp,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
@@ -12,7 +12,7 @@ import {
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   PageGround, shiftHostOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
-  furnitureGroundOf as furnitureGroundRead, furnitureSpaceOf as furnitureSpaceRead,
+  furnitureSpaceOf as furnitureSpaceRead,
   FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
@@ -1289,6 +1289,35 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     };
   };
 
+  /** The overview's block-placement ground: a live grab bar, like the detailed view, but one
+   *  drag moves the block in EVERY edition at once — the whole reason to place a title block
+   *  from the overview is to keep the four columns aligned. A per-edition block (#title_main /
+   *  _sub / _origin / _author, the seal) writes to all languages; a shared one (#title_tib*,
+   *  the booklet's own Tibetan) writes its single '' row exactly as the detailed view does. The
+   *  handle reads THIS column's current value, so each column shows where its edition sits. */
+  const furnitureGroundOfAll = (item: DocumentItem, colLang: string): BlockGroundOf =>
+    (key: string) => {
+      const perEdition = key.startsWith('#') && !key.startsWith('#title_tib');
+      const langs = perEdition ? (doc?.languages ?? [colLang]) : [''];
+      const slots = langs.map((lg) => ({
+        item_id: item.id, anchor_syl_id: key,
+        kind: FURNITURE_SHIFT_KIND as DocumentLayoutKind, lang: lg,
+      }));
+      return {
+        valueMm: furnitureShiftMm(rows, item.id, key, colLang),
+        onCommit: (mm: number) => {
+          const label = `${KIND_LABEL[FURNITURE_SHIFT_KIND] ?? 'block placement'} changed`
+            + (perEdition ? ' (all editions)' : '');
+          void withUndo(label, slots, async () => {
+            for (const body of slots) {
+              Math.abs(mm) < 0.05 ? await deleteLayoutRow(documentId, body)
+                                  : await putLayoutRow(documentId, { ...body, value: mm });
+            }
+          }, slotStr(slots[0]));
+        },
+      };
+    };
+
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
     translation: 'width_translation', section: 'width_section',
@@ -1743,7 +1772,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                       orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
-                      groundOf={furnitureGroundRead(rows, item.id, ed.lang)}
+                      groundOf={furnitureGroundOfAll(item, ed.lang)}
                       spaceOf={furnitureSpaceRead(rows, item.id)}
                       pageHeightMm={config?.page_height_mm} />
                   </div>
@@ -2022,7 +2051,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         {msg && (
           <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
         )}
-        <a href={`${API_BASE}/documents/${documentId}/pdf?lang=${lang}`}
+        <a href={withUrlAuth(`${API_BASE}/documents/${documentId}/pdf?lang=${lang}`)}
            className="px-2 py-1 rounded-md flex items-center gap-1 text-jade hover:bg-cream"
            style={{ border: '1px solid var(--cline)' }}
            title={`Export the ${lang.toUpperCase()} edition as a print-ready PDF`}>
