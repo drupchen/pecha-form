@@ -1,19 +1,19 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
+import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getOrgSeal, putPaginationStamp,
+  getTitleFields, putTitleShift, getOrgSeal, putPaginationStamp,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
+  type DocumentFurnitureRow, type TitlePageField, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
 import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
-  MM_PX, rootVars, Verso, Recto, FurniturePage, InternalTitlePage,
+  MM_PX, rootVars, Verso, Recto, FurniturePage, FurnitureContent, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
-  type DerivedBooklet,
+  type DerivedBooklet, type PageUnit, type TocRow, type TitleField,
 } from './bookletRender';
 import {
   awaitBookletFonts, readStream, readHairlineAdvance, flowPages,
@@ -44,7 +44,13 @@ interface CompiledEdition {
 /** One overview column: an edition's derived stream, or the reason it has none. An edition
  *  that failed to compile or fell out of step is a LABELLED placeholder column, never a
  *  silent omission. `lines: null` with neither flag set = still compiling. */
-interface OverviewEdition { lang: string; lines: DocLine[] | null; outOfStep: boolean; error: boolean }
+interface OverviewEdition {
+  lang: string; lines: DocLine[] | null; outOfStep: boolean; error: boolean;
+  /** This edition's TOC rows and cover title lines — furniture (the TOC page, the cover's
+   *  translated title) renders per edition in the overview, not just the on-screen one. */
+  tocRows: TocRow[];
+  mainTitleLines: DocLine[];
+}
 
 /**
  * Bump when a RENDERER change moves line geometry without moving `styleCss` or
@@ -186,6 +192,41 @@ const ShiftMark: React.FC<{ mm: number }> = ({ mm }) => {
   );
 };
 
+/** The title page's per-field placement: one vertical slider per field, stacked in the page's
+ *  right margin, each nudging its field up/down (mm) off its default centred spot. Bench-only —
+ *  the value writes back to `title_page_field` and moves the field via `translateY`. */
+const TITLE_SLIDER_FIELDS: [TitleField, string][] = [
+  ['image', 'image'], ['tibetan', 'བོད'], ['title', 'title'],
+  ['subtitle', 'sub'], ['origin', 'origin'], ['author', 'author'],
+  ['content', 'block'],
+];
+const TitleFieldSliders: React.FC<{
+  shiftOf: (f: TitleField) => number;
+  onSet: (f: TitleField, mm: number) => void;
+  rangeMm: number;
+  only?: Set<TitleField>;
+}> = ({ shiftOf, onSet, rangeMm, only }) => (
+  <div className="bk-title-sliders" title="Move each title-page field up or down on the page (shared across editions). Double-click a slider to reset it.">
+    {TITLE_SLIDER_FIELDS.filter(([f]) => !only || only.has(f)).map(([f, label]) => {
+      const v = shiftOf(f);
+      // Vertical range: dragging UP raises the field, so the input's max (top) is the most
+      // NEGATIVE shift. `direction: rtl` on a vertical range puts the max at the top.
+      return (
+        <div key={f} className={`bk-title-slider${Math.abs(v) > 0.05 ? ' is-set' : ''}`}>
+          <span className="bk-title-slider-label">{label}</span>
+          <input type="range" min={-rangeMm} max={rangeMm} step={0.5} value={-v}
+                 style={{ writingMode: 'vertical-lr' as any, direction: 'rtl' }}
+                 onChange={(e) => onSet(f, -Number(e.target.value))}
+                 onDoubleClick={() => onSet(f, 0)} />
+          <span className="bk-title-slider-val">
+            {Math.abs(v) > 0.05 ? (v > 0 ? `↓${v.toFixed(0)}` : `↑${(-v).toFixed(0)}`) : ''}
+          </span>
+        </div>
+      );
+    })}
+  </div>
+);
+
 /**
  * A fingerprint of the BALANCING rows the pagination was flowed against — the third drift
  * source, next to the content signature and the style fingerprint.
@@ -271,6 +312,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const treeVersion = useTreeNodeStore(s => s.version);
   const trVersion = useTranslationStore(s => s.version);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
+  const [titleFields, setTitleFields] = useState<TitlePageField[]>([]);
   const [styleCss, setStyleCss] = useState('');
   // The org's cover seal travels with the styles: it is part of the template, and the studio
   // can change it, so it is re-read whenever the styles are.
@@ -353,15 +395,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     let alive = true;
     (async () => {
       setLoading(true);
-      const [d, lay, furn, css, seal] = await Promise.all([
+      const [d, lay, furn, tf, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        getTitleFields(documentId), loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
       setFurniture(furn);
+      setTitleFields(tf);
       setStyleCss(css);
       setOrgSeal(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
@@ -390,6 +433,44 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     })();
     return () => { alive = false; };
   }, [lang, treeVersion, trVersion, codeTick]);
+
+  // ── Manual data refresh: pull the server's CURRENT content into the preview ──
+  // The version bumps above only see edits made in THIS app instance. An edit from
+  // anywhere else — another tab, another user, an import — changes nothing the bench
+  // watches, so the preview goes on presenting the stream it compiled at mount. This is
+  // that missing path, on a button: re-read everything the bench renders from and
+  // recompile. No loading flash — the pages swap in place (the viewport anchor holds the
+  // scroll) — and no re-flow of its own: if the content actually moved, the drift
+  // detector notices the fresh stream and the quiet-period re-flow follows as usual.
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshData = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      compileCache.current.clear();
+      setAllCompiles(null);
+      const [d, lay, furn, tf, css, seal] = await Promise.all([
+        getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
+        getTitleFields(documentId), loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+      setDoc(d);
+      setConfig(lay.config);
+      setRows(lay.rows);
+      setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
+      setFurniture(furn);
+      setTitleFields(tf);
+      setStyleCss(css);
+      setOrgSeal(seal);
+      const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
+      setLang(edition);
+      const compiled = await compileEdition(d.items, edition);
+      setLines(compiled.lines);
+      setLinesLang(edition);
+      setTitleByItem(compiled.titleByItem);
+      setHeadingsByItem(compiled.headingsByItem);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   // The overview's columns: every edition compiled (through the cache — after the first
   // toggle this is instant). Per-edition try/catch: an edition that fails to compile becomes
@@ -430,19 +511,23 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // `renderLines`, so a click at index i in any column resolves through the same anchor.
   // `splitMode` is passed live (unlike the seed) so recto word-picking works in every column.
   const overviewEditions: OverviewEdition[] = useMemo(() => {
+    const empty = { tocRows: [] as TocRow[], mainTitleLines: [] as DocLine[] };
     if (!overview || !doc || !allCompiles) {
       return overview && doc
-        ? doc.languages.map((lg) => ({ lang: lg, lines: null, outOfStep: false, error: false }))
+        ? doc.languages.map((lg) => ({ lang: lg, lines: null, outOfStep: false, error: false, ...empty }))
         : [];
     }
     return doc.languages.map((lg) => {
       const c = allCompiles.get(lg);
-      if (!c) return { lang: lg, lines: null, outOfStep: false, error: false };  // compiling
-      if (c === 'error') return { lang: lg, lines: null, outOfStep: false, error: true };
+      if (!c) return { lang: lg, lines: null, outOfStep: false, error: false, ...empty };  // compiling
+      if (c === 'error') return { lang: lg, lines: null, outOfStep: false, error: true, ...empty };
       const d = deriveBooklet(doc.items, rows, c.lines, c.titleByItem, furniture, lg,
                               splitMode, c.headingsByItem);
       const outOfStep = d.lines.length !== renderLines.length;
-      return { lang: lg, lines: outOfStep ? null : d.lines, outOfStep, error: false };
+      // The TOC and cover title are this edition's own. Furniture bodies are independent of
+      // the stream, so an out-of-step edition still shows its furniture.
+      return { lang: lg, lines: outOfStep ? null : d.lines, outOfStep, error: false,
+               tocRows: d.tocRows, mainTitleLines: d.mainTitleLines };
     });
   }, [overview, doc, allCompiles, rows, furniture, splitMode, renderLines]);
   // Placeholder columns are named in the toolbar too — a column that says nothing reads as
@@ -611,6 +696,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           if (firstOf.get(keys[i]) !== i) unbreakable.add(i);
           // A split head shares the split row's anchor — a break there would upsert over it.
           if (l.splitAnchor != null && anchorOf(l) === l.splitAnchor) unbreakable.add(i);
+          // A merged instruction (its Tibetan moved to the previous line, token-empty) must
+          // never START a page: its verso is on the host's page, so a break before it would
+          // strand its recto translation a page away from its Tibetan.
+          if (l.role === 'small' && l.smallKind === 'instructions' && l.tokens.length === 0)
+            unbreakable.add(i);
         });
         // The halves of a MANUAL split (the only splits left in the virgin stream) may not
         // be split again: their anchor already carries a split row.
@@ -785,10 +875,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    * Keep the automatic breaks where they belong — live, because the bench IS the PDF editor.
    *
    * A document with no breaks at all seeds immediately; there is nothing to disturb. After
-   * that, drift re-flows the pages on a short debounce — long enough to batch a burst of
-   * edits into one pass, not a quiet period the user has to wait out. The pages moving behind
-   * the cursor is wanted: the user tunes a booklet from a point downwards, so closing a gap
-   * IS a request for the flow to pull the following lines back up.
+   * that, drift re-flows the pages on a TWO-SPEED debounce. The ordinary speed is short
+   * (600 ms) — long enough to batch a burst of edits into one pass, not a quiet period the
+   * user has to wait out. But the gap STEPPERS are clicked in evaluation-paced bursts —
+   * four or five +'s with a glance at the result between each, and those pauses run
+   * 1–2.5 s (a KLM Mental operator plus saccades) — so a stepper click widens the window
+   * to 2 s: past the burst's worst-case pause, still an "it settles when I stop" wait.
+   * Moving the pointer OFF the stepper cluster says the burst is over (`settleBurst`) and
+   * drops back to the short delay. The pages moving behind the cursor is wanted: the user
+   * tunes a booklet from a point downwards, so closing a gap IS a request for the flow to
+   * pull the following lines back up.
    *
    * The drift itself is measured by the three detectors — the stream signature, the style
    * fingerprint, and the balancing fingerprint (gaps, widths, recto cuts change measured
@@ -797,16 +893,24 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    * keeps two re-flows from overlapping, and when one finishes the rows/stamp update re-runs
    * this effect, so anything that drifted mid-flight re-arms at once.
    */
+  const balanceBurstRef = useRef(0);   // last gap-stepper click, ms epoch
+  const [burstSettled, setBurstSettled] = useState(0);
+  const settleBurst = () => {
+    if (!balanceBurstRef.current) return;
+    balanceBurstRef.current = 0;
+    setBurstSettled((t) => t + 1);     // re-arm the drift timer at the short delay
+  };
   useEffect(() => {
     if (!config || !lines.length || seeding || !streamReady) return;
     if (!hasStoredBreaks) { void requestSeed(false); return; }
     if (!stamp.sig) return;    // never stamped: nothing to compare to
     if (!drifted) return;
-    const t = window.setTimeout(() => { void requestSeed(true); }, 600);
+    const delay = Date.now() - balanceBurstRef.current < 3000 ? 2000 : 600;
+    const t = window.setTimeout(() => { void requestSeed(true); }, delay);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, lines, seeding, streamReady, hasStoredBreaks, drifted, styleStale, balanceStale,
-      balanceFp, dirty, stamp.sig]);
+      balanceFp, dirty, stamp.sig, burstSettled]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
@@ -1170,10 +1274,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // lang = that edition's recto. The two sides — and the editions among themselves — tune
   // their blank lines completely apart.
   const adjustGap = (l: DocLine, delta: number, rowLang: string) => {
+    balanceBurstRef.current = Date.now();   // stepper burst: hold the re-flow (see drift effect)
     const next = (rowVal(l, 'line_space', rowLang) ?? 0) + delta;
     next === 0 ? void delRow(l, 'line_space', rowLang) : void putRow(l, 'line_space', next, rowLang);
   };
   const toggleNoSpace = (l: DocLine, rowLang: string) => {
+    balanceBurstRef.current = Date.now();
     if (rowHas(l, 'line_nospace', rowLang)) void delRow(l, 'line_nospace', rowLang);
     else void putRow(l, 'line_nospace', 1, rowLang);
   };
@@ -1327,6 +1433,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       ...(interactive ? {
         onGap: (d: number) => adjustGap(l, d, gapLang),
         onToggleNoSpace: () => toggleNoSpace(l, gapLang),
+        onBurstEnd: settleBurst,
         // `forLang` rides through, not the component `lang` — an overview column's width grip
         // must write ITS edition's row.
         onWidth: (t: WidthTarget, mm: number | null) => setWidth(l, t, mm, forLang),
@@ -1381,6 +1488,60 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const local = Math.max(0, scrollTop - bodyOffsetTop);
   const vFirst = Math.max(0, Math.floor(local / spreadHpx) - 1);
   const vLast = Math.min(bodyUnits.length, Math.ceil((local + viewH) / spreadHpx) + 1);
+
+  // ── Keep the viewport anchored to CONTENT across re-derives ──
+  // Every balancing edit replaces `bodyUnits`, and the body's height with it. The spreads
+  // are absolutely positioned, so the browser's native scroll anchoring cannot hold the
+  // view (absolutely positioned boxes are ineligible anchors); when the body shrinks past
+  // the current offset the scroll clamps to the end — deleting a blank line mid-document
+  // threw the bench to the last page. So the bench anchors by hand: remember which unit
+  // tops the viewport (by its first line's stable anchor, not its index — a re-flow
+  // renumbers pages), and after each re-derive scroll back to wherever that content
+  // repacked to. The anchor also survives the overview toggle, where the unit HEIGHT
+  // changes instead of the units.
+  const viewAnchor = useRef<{ key: string; lineIdx: number; offsetPx: number } | null>(null);
+  const unitKeyOf = (u: PageUnit): string => {
+    if (u.kind === 'title') return `title:${u.item.id}`;
+    const l = renderLines[u.s.start];
+    return l ? `${l.itemId}:${anchorOf(l)}` : '';
+  };
+  const recordViewAnchor = (top: number) => {
+    const rel = top - bodyOffsetTop;
+    // Above the body (front matter): nothing to anchor to, and nothing below can clamp
+    // a viewport that is already at the top — leave the scroll alone on re-derives.
+    if (rel < 0 || !bodyUnits.length) { viewAnchor.current = null; return; }
+    const si = Math.min(bodyUnits.length - 1, Math.floor(rel / spreadHpx));
+    const u = bodyUnits[si];
+    viewAnchor.current = {
+      key: unitKeyOf(u),
+      lineIdx: u.kind === 'spread' ? u.s.start : -1,
+      offsetPx: rel - si * spreadHpx,
+    };
+  };
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const a = viewAnchor.current;
+    if (!el || !a) return;
+    let idx = bodyUnits.findIndex((u) => unitKeyOf(u) === a.key);
+    if (idx < 0 && a.lineIdx >= 0) {
+      // The anchored line is gone (it was the one deleted) or renamed — fall back to the
+      // unit now holding its old stream position, clamped into the new stream.
+      const li = Math.min(a.lineIdx, renderLines.length - 1);
+      idx = bodyUnits.findIndex((u) => u.kind === 'spread' && li >= u.s.start && li < u.s.end);
+    }
+    if (idx < 0) return;
+    const next = Math.max(0, Math.min(
+      idx * spreadHpx + Math.min(a.offsetPx, spreadHpx - 1) + bodyOffsetTop,
+      el.scrollHeight - el.clientHeight));
+    if (Math.abs(el.scrollTop - next) > 1) el.scrollTop = next;
+    // The window slice must be computed from the same value, or a stale `scrollTop` renders
+    // an empty slice until the scroll event catches up.
+    setScrollTop(next);
+    recordViewAnchor(next);   // re-record, so the anchor stays fresh without a scroll
+    // Content-shaped deps only: this must fire on re-derives and geometry changes, never
+    // on the user's own scrolling.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodyUnits, spreadHpx, bodyOffsetTop]);
 
   /**
    * Flag any mounted page whose ink runs past the text block.
@@ -1544,13 +1705,85 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     };
   };
 
-  const renderFurniture = (item: DocumentItem) => (
-    <FurniturePage key={`f${item.id}`} item={item}
-      titleLines={item.kind === 'cover' ? mainTitleLines : []}
-      body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
-      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
-      tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)} />
-  );
+  // The cover's dedicated origin/author text (per edition) and each field's vertical nudge
+  // (shared, lang=''). A gloss/title distinction aside, these feed `TitleContent`.
+  const titleContentOf = (itemId: number, field: string, forLang: string): string | null =>
+    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === forLang)?.body ?? null;
+  const titleShiftOf = (itemId: number) => (field: TitleField): number =>
+    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === '')?.shift_mm ?? 0;
+  const setTitleShift = (itemId: number, field: TitleField, mm: number) => {
+    void putTitleShift(documentId, { item_id: itemId, field, shift_mm: mm })
+      .then(() => getTitleFields(documentId)).then(setTitleFields)
+      .catch((e: any) => setMsg(e.message || 'Title placement save failed'));
+  };
+
+  const renderFurniture = (item: DocumentItem) => {
+    // Overview: a furniture page (cover, TOC, copyright, back cover, image) is per-language
+    // too — its title/copyright/caption text differs by edition. Show one column per edition,
+    // scaled into the same row as the body spreads, instead of the single current-lang page.
+    if (overview && overviewEditions.length) {
+      // Furniture has no shared Tibetan verso (the cover's Tibetan title rides in each page),
+      // so a row is one page PER EDITION — narrower than a body row's 1+N, centred to match.
+      const nEd = overviewEditions.length;
+      const furnWpx = config
+        ? (config.page_width_mm * nEd + 10 * (nEd - 1)) * MM_PX : 0;
+      return (
+        <div key={`f${item.id}`} className="booklet-ov-row"
+             style={{ width: furnWpx * ovScale, height: pageHpx * ovScale, marginTop: OV_LABEL_HPX }}>
+          <div className="booklet-ov-scale"
+               style={{ transform: `scale(${ovScale})`, width: furnWpx,
+                        ['--ov-inv' as string]: `${1 / ovScale}` }}>
+            <div className="booklet-spread">
+              {overviewEditions.map((ed) => (
+                <div key={ed.lang} className="booklet-page furniture" data-plang={ed.lang}>
+                  <button type="button" className="bk-col-label bk-col-label-btn"
+                          style={{ fontSize: 11 / ovScale }}
+                          title={`Open the ${ed.lang} edition in the detailed view`}
+                          onClick={() => { setLang(ed.lang); setOverview(false); }}>
+                    {ed.lang}
+                  </button>
+                  <div className="booklet-content">
+                    <FurnitureContent item={item}
+                      titleLines={item.kind === 'cover' ? ed.mainTitleLines : []}
+                      body={furnitureBodyOf(furniture, item, ed.lang)}
+                      toc={item.kind === 'toc' ? ed.tocRows : []}
+                      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
+                      tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
+                      origin={titleContentOf(item.id, 'origin', ed.lang)}
+                      author={titleContentOf(item.id, 'author', ed.lang)}
+                      shiftOf={titleShiftOf(item.id)} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+    const isCover = item.kind === 'cover';
+    // The cover places its six fields; a TOC / copyright / back cover places its one content
+    // block. An image or blank page has nothing to place.
+    const blockPage = item.kind === 'toc' || item.kind === 'copyright' || item.kind === 'backcover';
+    const sliderFields = isCover
+      ? new Set<TitleField>(['image', 'tibetan', 'title', 'subtitle', 'origin', 'author'])
+      : blockPage ? new Set<TitleField>(['content']) : null;
+    return (
+      <FurniturePage key={`f${item.id}`} item={item}
+        titleLines={isCover ? mainTitleLines : []}
+        body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
+        orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
+        tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
+        origin={isCover ? titleContentOf(item.id, 'origin', lang) : null}
+        author={isCover ? titleContentOf(item.id, 'author', lang) : null}
+        shiftOf={sliderFields ? titleShiftOf(item.id) : undefined}
+        overlay={sliderFields ? (
+          <TitleFieldSliders shiftOf={titleShiftOf(item.id)}
+            onSet={(f, mm) => setTitleShift(item.id, f, mm)}
+            only={sliderFields}
+            rangeMm={Math.round((config?.page_height_mm ?? 200) / 2)} />
+        ) : undefined} />
+    );
+  };
 
   if (!doc || !config) {
     return <div className="flex-1 flex items-center justify-center text-ink-soft">Loading booklet…</div>;
@@ -1799,6 +2032,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
+        <button type="button" onClick={() => void refreshData()} disabled={refreshing}
+                className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
+                style={{ border: '1px solid var(--cline)' }}
+                title="Re-read the booklet's content from the server — text, translations, headings, furniture, styles — and recompile the preview. Use when an edit made elsewhere hasn't rippled in. If the content moved, a re-flow follows on its own.">
+          <RotateCw size={12} className={refreshing ? 'animate-spin' : ''} /> re-read
+        </button>
         {msg && (
           <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
         )}
@@ -1844,7 +2083,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       {/* Pages (+ optional style designer drawer). Front-matter furniture, then the
           virtualized body spreads, then back-matter furniture. */}
       <div className="flex-1 flex overflow-hidden">
-      <div ref={scrollRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      <div ref={scrollRef}
+           onScroll={(e) => { const t = e.currentTarget.scrollTop;
+                              setScrollTop(t); recordViewAnchor(t); }}
            className="flex-1 overflow-auto" style={{ background: 'var(--cream)', position: 'relative' }}>
         {frontMatter.length > 0 && (
           <div className="flex flex-col items-center gap-6 pt-6">{frontMatter.map(renderFurniture)}</div>
@@ -1862,7 +2103,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
             const inner = u.kind === 'title' ? (
               <InternalTitlePage titleLines={u.titleLines}
                                  widthOf={furnitureWidthOf(u.item)}
-                                 tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)} />
+                                 tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)}
+                                 origin={titleContentOf(u.item.id, 'origin', lang)}
+                                 author={titleContentOf(u.item.id, 'author', lang)}
+                                 shiftOf={titleShiftOf(u.item.id)}
+                                 overlay={overview ? undefined : (
+                                   <TitleFieldSliders shiftOf={titleShiftOf(u.item.id)}
+                                     onSet={(f, mm) => setTitleShift(u.item.id, f, mm)}
+                                     rangeMm={Math.round((config?.page_height_mm ?? 200) / 2)} />
+                                 )} />
             ) : (
               <div className="booklet-spread" data-unit={si}>
                 {spreadCols.map((col) => {

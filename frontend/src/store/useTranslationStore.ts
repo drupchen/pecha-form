@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  getLanguages, getTextTranslations, upsertTranslation, setChunkLevel,
+  getLanguages, getTextTranslations, upsertTranslation, setChunkLevel, setChunkRenderAs,
   getOverrides, putOverride, ackOverride, deleteOverride,
   getSeen, markSeen as apiMarkSeen,
   getSuggestions, createSuggestion, resolveSuggestion,
@@ -40,6 +40,9 @@ interface TranslationState {
   setLevel: (args: {
     contextTextId: number; startSylId: string; endSylId: string; level: number | null;
   }) => Promise<void>;
+  setRenderAs: (args: {
+    contextTextId: number; startSylId: string; endSylId: string; renderAs: string | null;
+  }) => Promise<void>;
   // T2 — overrides
   saveOverride: (textId: number, chunkId: number, lang: string, body: string) => Promise<void>;
   revertOverride: (textId: number, chunkId: number, lang: string) => Promise<void>;
@@ -57,6 +60,7 @@ interface TranslationState {
   addTitle: (args: { textId: number | null; anchor: string | null; level: number }) => Promise<void>;
   setTitleBody: (layoutId: number, lang: string, body: string) => Promise<void>;
   setTitleLevel: (layoutId: number, level: number) => Promise<void>;
+  setTitleRenderAs: (layoutId: number, renderAs: string | null) => Promise<void>;
   removeLayout: (layoutId: number) => Promise<void>;
 }
 
@@ -126,6 +130,20 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
       start_syl_id: startSylId,
       end_syl_id: endSylId,
       level,
+    });
+    set(s => ({
+      chunks: [...s.chunks.filter(c => c.id !== updated.id
+        && rangeKey(c.start_syl_id, c.end_syl_id) !== rangeKey(startSylId, endSylId)), updated],
+      version: s.version + 1,
+    }));
+  },
+
+  setRenderAs: async ({ contextTextId, startSylId, endSylId, renderAs }) => {
+    const updated = await setChunkRenderAs({
+      context_text_id: contextTextId,
+      start_syl_id: startSylId,
+      end_syl_id: endSylId,
+      render_as: renderAs,
     });
     set(s => ({
       chunks: [...s.chunks.filter(c => c.id !== updated.id
@@ -205,6 +223,11 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
 
   setTitleLevel: async (layoutId, level) => {
     const row = await patchLayout(layoutId, { level });
+    set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l), version: s.version + 1 }));
+  },
+
+  setTitleRenderAs: async (layoutId, renderAs) => {
+    const row = await patchLayout(layoutId, { render_as: renderAs });
     set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l), version: s.version + 1 }));
   },
 

@@ -30,7 +30,7 @@ interface Block { id: string; kind: string; parts: string[] }
 
 /** Specimen block kinds — each mirrors a role's real booklet DOM so the styles apply. */
 const KINDS: { kind: string; label: string; roles: string[]; parts: number }[] = [
-  { kind: 'title', label: 'Title page', roles: ['title_tib', 'title_main', 'title_sub'], parts: 3 },
+  { kind: 'title', label: 'Title page', roles: ['title_tib', 'title_main', 'title_sub', 'title_origin', 'title_author'], parts: 5 },
   { kind: 'section_1', label: 'Section title 1', roles: ['section_1'], parts: 1 },
   { kind: 'section_2', label: 'Section title 2', roles: ['section_2'], parts: 1 },
   { kind: 'section_3', label: 'Section title 3', roles: ['section_3'], parts: 1 },
@@ -42,6 +42,7 @@ const KINDS: { kind: string; label: string; roles: string[]; parts: number }[] =
   { kind: 'integrated', label: 'Tibetan + phonetics + translation', roles: ['tibetan_inline', 'phonetics', 'translation'], parts: 3 },
   { kind: 'mantra', label: 'Mantra', roles: ['mantra'], parts: 1 },
   { kind: 'small', label: 'Small letters / homage', roles: ['small'], parts: 1 },
+  { kind: 'small_verses', label: 'Small letters — verses', roles: ['small_verses'], parts: 1 },
   { kind: 'intro', label: 'Introduction', roles: ['intro'], parts: 1 },
   { kind: 'copyright', label: 'Copyright', roles: ['copyright'], parts: 1 },
   { kind: 'toc', label: 'Table-of-contents entry', roles: ['toc'], parts: 2 },
@@ -65,7 +66,7 @@ const INDENTS = ['0', '2mm', '4mm', '6mm', '8mm', '10mm', '12mm', '15mm', '20mm'
 // style is exercised on real liturgical text (verso pairs and integrated Tibetan+phonetics
 // +translation are grouped; standalone Tibetan/sections/mantra/small map one-to-one).
 const DEFAULT_BLOCKS: Block[] = [
-  { id: uid(), kind: "title", parts: ["༄༅། རང་བྱུང་པདྨའི་སྙིང་ཐིག་ལས། ཕྲིན་ལས་འབྲིང་པོ་དངོས་གྲུབ་ཀུན་འབྱུང་བཞུགས་སོ།།", "", ""] },
+  { id: uid(), kind: "title", parts: ["༄༅། རང་བྱུང་པདྨའི་སྙིང་ཐིག་ལས། ཕྲིན་ལས་འབྲིང་པོ་དངོས་གྲུབ་ཀུན་འབྱུང་བཞུགས་སོ།།", "Essence of Accomplishment", "A Method to Accomplish the Heart of the Guru", "From The Heart Essence of the Spontaneously Arisen Padma", "Translated by Sean Price"] },
   { id: uid(), kind: "tibetan_inline", parts: ["ཧཱུྃ༔ ཨོ་རྒྱན་ཡུལ་གྱི་ནུབ་བྱང་མཚམས༔\nཔདྨ་གེ་སར་སྡོང་པོ་ལ༔\nཡ་མཚན་མཆོག་གི་དངོས་གྲུབ་བརྙེས༔\nཔདྨ་འབྱུང་གནས་ཞེས་སུ་གྲགས༔"] },
   { id: uid(), kind: "tibetan_inline", parts: ["\nའཁོར་དུ་མཁའ་འགྲོ་མང་པོས་བསྐོར༔\nཁྱེད་ཀྱི་རྗེས་སུ་བདག་སྒྲུབ་ཀྱིས༔\nབྱིན་གྱིས་བརླབ་ཕྱིར་གཤེགས་སུ་གསོལ༔"] },
   { id: uid(), kind: "tibetan_inline", parts: ["གུ་རུ་པདྨ་སིདྡྷི་ཧཱུྃ༔"] },
@@ -84,6 +85,9 @@ const DEFAULT_BLOCKS: Block[] = [
   { id: uid(), kind: "pair", parts: ["khyen tsé nü pé daknyi la", "The very embodiment of knowledge, love, and capability,"] },
   { id: uid(), kind: "pair", parts: ["miché depé kyab su chi", "With unshakable faith, I go for refuge. X3"] },
   { id: uid(), kind: "small", parts: ["Le refuge, qui commence la préparation."] },
+  // Long enough to WRAP in the specimen column — a hanging indent that never wraps shows
+  // nothing at all.
+  { id: uid(), kind: "small_verses", parts: ["I bow to the natural deities of the three roots. I'm Pema Totreng Tsal, the embodiment of all buddhas' activity, with boundless ability, love, and wisdom."] },
   { id: uid(), kind: "intro", parts: ["This practice, drawn from the Heart Essence of the Self-Arisen Padma, is recited before the main sadhana."] },
   { id: uid(), kind: "integrated", parts: ["ན་མོ༔ བླ་མ་སངས་རྒྱས་རིན་པོ་ཆེ༔", "namo lama sangyé rinpoché", "Namo ! Lama, précieux Bouddha,"] },
   { id: uid(), kind: "integrated", parts: ["སྐྱབས་གནས་རྒྱ་མཚོའི་ཡེ་ཤེས་སྐུ༔", "kyabné gyatsö yéshé kou", "Corps de sagesse de l’océan des objets de refuge,"] },
@@ -393,7 +397,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       <Editable key={i} className={cls} tag={tag}
                 html={b.parts[i] ?? ''} onChange={h => editPart(b.id, i, h)} />;
     switch (b.kind) {
-      case 'title': return <div className="bk-titlepage">{sealSlot()}{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}</div>;
+      case 'title': return <div className="bk-titlepage">{sealSlot()}{E(0, 'bk-tibetan bk-title-tib')}{E(1, 'bk-title-main')}{E(2, 'bk-title-sub')}{E(3, 'bk-title-origin')}{E(4, 'bk-title-author')}</div>;
       case 'section_1': return <div className="bk-line">{E(0, 'bk-section bk-section-l1')}</div>;
       case 'section_2': return <div className="bk-line">{E(0, 'bk-section bk-section-l2')}</div>;
       case 'section_3': return <div className="bk-line">{E(0, 'bk-section bk-section-l3')}</div>;
@@ -419,6 +423,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       case 'integrated': return <div className="bk-line bk-integrated">{E(0, 'bk-tibetan-inline')}{E(1, 'bk-phonetics')}{E(2, 'bk-translation')}</div>;
       case 'mantra': return <div className="bk-line bk-role-mantra">{E(0, 'bk-phonetics')}</div>;
       case 'small': return <div className="bk-line bk-role-small">{E(0, 'bk-translation')}</div>;
+      case 'small_verses': return <div className="bk-line bk-role-small bk-smallkind-verses">{E(0, 'bk-translation')}</div>;
       case 'intro': return <div className="bk-line bk-role-intro">{E(0, 'bk-translation')}</div>;
       case 'copyright': return E(0, 'bk-copyright');
       case 'toc': return <div className="bk-toc"><div className="bk-toc-entry">{E(0, 'bk-toc-title')}<span className="bk-toc-dots" />{E(1, 'bk-toc-page')}</div></div>;
@@ -595,6 +600,19 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                       {inherit}
                       {p.indent && !INDENTS.includes(p.indent) && <option value={p.indent}>{p.indent}</option>}
                       {INDENTS.map(i => <option key={i} value={i}>{i}</option>)}
+                    </select>
+                    {/* Hanging indent — WRAPPED lines only; the first line stays put.
+                        Options carry a "hang" prefix so the two indent selects read apart.
+                        The template has no blanks, so org scope offers "no hang" (unset)
+                        instead of inherit; "hang 0" stays an explicit off a document can
+                        say over an org that hangs. */}
+                    <select className={sel} style={border} title="Hanging indent: wrapped lines indent by this much"
+                            value={p.hangingIndent ?? ''}
+                            onChange={e => void setProp(rd.role, 'hangingIndent', e.target.value)}>
+                      {scope === 'org' ? <option value="">no hang</option> : inherit}
+                      {p.hangingIndent && !INDENTS.includes(p.hangingIndent)
+                        && <option value={p.hangingIndent}>hang {p.hangingIndent}</option>}
+                      {INDENTS.map(i => <option key={i} value={i}>{i === '0' ? 'hang 0 (none)' : `hang ${i}`}</option>)}
                     </select>
                   </div>
                 </div>

@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Library, Plus, Trash2, ChevronUp, ChevronDown, FileText, Image as ImageIcon,
-  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate, Pencil,
+  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate, Pencil, GitBranch,
 } from 'lucide-react';
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
@@ -9,10 +9,12 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout,
+  getTitleFields, putTitleField, getVersions,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize,
-  type Language, type DocumentItemKind, type DocumentFurnitureRow,
+  type Language, type DocumentItemKind, type DocumentFurnitureRow, type TitlePageField,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
+import { VersionsPanel } from './Versions';
 import { useCan } from '../../store/usePermissions';
 import { compileDocument } from './compile';
 import { deriveBooklet, TIBETAN_LANG, type NavNode } from './bookletRender';
@@ -87,6 +89,7 @@ export const DocumentsView: React.FC = () => {
   const [pickingText, setPickingText] = useState(false);
   const [paginating, setPaginating] = useState(false);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
+  const [titleFields, setTitleFields] = useState<TitlePageField[]>([]);
   const [editingItem, setEditingItem] = useState<number | null>(null);
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
@@ -96,6 +99,8 @@ export const DocumentsView: React.FC = () => {
   const [sourceTibetan, setSourceTibetan] = useState<Map<number, string>>(new Map());
   const [navLang, setNavLang] = useState<string>('');
   const [navLoading, setNavLoading] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
+  const [latestSemver, setLatestSemver] = useState<string | null>(null);
   const pickRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -106,10 +111,23 @@ export const DocumentsView: React.FC = () => {
 
   // Load furniture content whenever the open document changes.
   useEffect(() => {
-    if (current) getFurniture(current.id).then(setFurniture).catch(() => setFurniture([]));
-    else setFurniture([]);
+    if (current) {
+      getFurniture(current.id).then(setFurniture).catch(() => setFurniture([]));
+      getTitleFields(current.id).then(setTitleFields).catch(() => setTitleFields([]));
+    } else { setFurniture([]); setTitleFields([]); }
     setEditingItem(null);
+    setShowVersions(false);
   }, [current?.id]);
+
+  // The current-version chip: the newest 'ready' semver. Refreshed on open and whenever the
+  // versions drawer closes (a bump made there may have produced a new tip).
+  const refreshLatestVersion = useCallback(() => {
+    if (!current) { setLatestSemver(null); return; }
+    getVersions(current.id)
+      .then(vs => setLatestSemver(vs.find(v => v.status === 'ready')?.semver ?? null))
+      .catch(() => setLatestSemver(null));
+  }, [current?.id]);
+  useEffect(() => { refreshLatestVersion(); }, [refreshLatestVersion]);
 
   // Compute the real navigation outline (what the PDF bookmarks contain) for the preview
   // pane — same pipeline as the print page, so preview == PDF navigation.
@@ -154,6 +172,18 @@ export const DocumentsView: React.FC = () => {
 
   const furnitureBody = (itemId: number, langCode: string) =>
     furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
+
+  // The cover's dedicated title-page fields (origin, author), per language.
+  const titleFieldBody = (itemId: number, field: string, langCode: string) =>
+    titleFields.find(f => f.item_id === itemId && f.field === field && f.lang === langCode)?.body ?? '';
+  const saveTitleField = async (itemId: number, field: string, langCode: string, body: string) => {
+    if (!current) return;
+    if (body === titleFieldBody(itemId, field, langCode)) return;
+    try {
+      await putTitleField(current.id, { item_id: itemId, field, lang: langCode, body });
+      setTitleFields(await getTitleFields(current.id));
+    } catch { /* surfaced by the general error path */ }
+  };
 
   /**
    * The cover's Tibetan, when this booklet has been given its own.
@@ -320,6 +350,13 @@ export const DocumentsView: React.FC = () => {
                 {current.title}
               </h2>
             )}
+            {latestSemver && (
+              <span className="px-1.5 py-0.5 rounded-full text-[11px] text-lapis bg-cream-hi shrink-0"
+                    style={{ border: '1px solid var(--cline)' }}
+                    title="Latest published version">
+                v{latestSemver}
+              </span>
+            )}
             <div className="flex items-center gap-1 text-xs">
               <span className="text-ink-soft mr-1">languages</span>
               {languages.map(l => {
@@ -349,6 +386,16 @@ export const DocumentsView: React.FC = () => {
               title="Open the pagination bench"
             >
               <LayoutTemplate size={13} /> layout
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowVersions(s => !s)}
+              className={`px-2 py-1 rounded-md text-xs flex items-center gap-1 ${
+                showVersions ? 'bg-lapis text-cream-hi' : 'text-lapis hover:bg-cream'}`}
+              style={{ border: '1px solid var(--cline)' }}
+              title="Versions: freeze and consult frozen PDFs"
+            >
+              <GitBranch size={13} /> versions
             </button>
             <div className="flex-1" />
             {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
@@ -487,6 +534,31 @@ export const DocumentsView: React.FC = () => {
                               className="flex-1 px-2 py-1 rounded bg-white text-sm resize-y"
                               style={{ border: '1px solid var(--cline)',
                                        fontFamily: "'Chogyal', 'Jomolhari', serif", lineHeight: 1.6 }} />
+                            {/* Dedicated cover fields (title + sub-title come from the text). Each
+                                gets its own style and can be placed on the title page in the bench. */}
+                            {(['origin', 'author'] as const).map(field => (
+                              <div key={field} className="flex flex-col gap-1 mt-1">
+                                <span className="text-[11px] text-ink-soft">
+                                  {field === 'origin'
+                                    ? 'Origin — the source cycle (per language)'
+                                    : 'Author / translator credit (per language)'}
+                                </span>
+                                {current.languages.map(code => (
+                                  <label key={code} className="flex items-start gap-2">
+                                    <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
+                                    <textarea
+                                      defaultValue={titleFieldBody(it.id, field, code)}
+                                      onBlur={e => void saveTitleField(it.id, field, code, e.target.value)}
+                                      rows={1}
+                                      placeholder={field === 'origin'
+                                        ? 'e.g. From The Heart Essence of the Spontaneously Arisen Padma'
+                                        : 'e.g. Translated by …'}
+                                      className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
+                                      style={{ border: '1px solid var(--cline)' }} />
+                                  </label>
+                                ))}
+                              </div>
+                            ))}
                           </div>
                         )}
                         <div className="text-[11px] text-ink-soft">
@@ -604,6 +676,15 @@ export const DocumentsView: React.FC = () => {
                 clickable navigation. Folios reflect the current pagination.
               </div>
             </div>
+
+            {showVersions && (
+              <VersionsPanel
+                documentId={current.id}
+                languages={current.languages}
+                canEdit={canEditDocs}
+                onClose={() => { setShowVersions(false); refreshLatestVersion(); }}
+              />
+            )}
           </div>
         </div>
       )}

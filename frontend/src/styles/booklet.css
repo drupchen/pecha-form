@@ -142,6 +142,28 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-title-sub { font-family: var(--font-title); font-size: 12.5pt; font-style: italic;
   line-height: 1.35; }
 .bk-title-sub:first-of-type { margin-top: 1mm; }
+/* Origin (the source cycle) and author/translator credit — their own styled fields. */
+.bk-title-origin { font-family: var(--font-title); font-size: 11pt; font-style: italic;
+  line-height: 1.35; }
+.bk-title-author { font-family: var(--font-translation); font-size: 11pt; line-height: 1.35;
+  color: #333; }
+/* Each field rides a wrapper so its vertical nudge (translateY) moves it alone. The wrapper
+   keeps the title page's own centring + inter-line spacing, so grouping a field's lines does
+   not change how they sit. */
+.bk-title-field { display: flex; flex-direction: column; align-items: center; gap: 4mm; }
+.bk-title-field:empty { display: none; }
+
+/* Bench-only: the per-field vertical placement sliders, stacked in the title page's right
+   margin. Hidden in print (the overlay is not even rendered there, this is belt-and-braces). */
+.bk-title-sliders { position: absolute; top: 0; right: 1mm; bottom: 0; z-index: 6;
+  display: flex; flex-direction: column; justify-content: center; gap: 1.5mm; }
+.bk-title-slider { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.bk-title-slider-label { font: 500 7px/1 system-ui, sans-serif; color: #999; }
+.bk-title-slider input[type='range'] { height: 42px; width: 14px; cursor: ns-resize; }
+.bk-title-slider.is-set input[type='range'] { accent-color: var(--vermilion, #c53030); }
+.bk-title-slider-val { font: 600 7px/1 system-ui, sans-serif; color: var(--vermilion, #c53030);
+  min-height: 8px; }
+@media print { .bk-title-sliders { display: none; } }
 .bk-copyright { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; font-family: var(--font-translation);
   font-size: 11pt; color: #333; }
@@ -291,9 +313,12 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  * overflow is. A design warning, never ink — `.booklet-print` never carries the class, and
  * `@media print` is the belt to that braces. */
 .bk-overfull {
-  outline: 1px solid rgba(197, 48, 48, 0.6);
-  outline-offset: -1px;
-  box-shadow: inset 0 -3px 0 var(--vermilion, #c53030), 0 1px 6px rgba(0, 0, 0, 0.14);
+  /* Thick enough that it cannot be missed — a hairline here read as decoration and an
+   * overfull page shipped unnoticed. Full-strength vermilion, and a heavy bar at the
+   * foot, where the ink is being lost. */
+  outline: 3px solid var(--vermilion, #c53030);
+  outline-offset: -3px;
+  box-shadow: inset 0 -6px 0 var(--vermilion, #c53030), 0 1px 8px rgba(197, 48, 48, 0.35);
 }
 @media print { .bk-overfull { outline: none; box-shadow: none; } }
 
@@ -341,9 +366,16 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  * Both selectors are the same rule. The bench wraps every line in `.bk-linewrap` and the
  * print page does not, so the wrapper has to go inline too — otherwise they would sit side by
  * side in the PDF and stack on the bench, which is the one thing these two renderers may
- * never do. */
+ * never do.
+ *
+ * `title` rides here too: sapche (ས་བཅད) and title are one thing named in two languages, so a
+ * translation-only sapche (a heading with no Tibetan of its own — empty on the verso) must be
+ * a zero-width inline-block that the chain flows THROUGH, not a block that severs it. A tagged
+ * title WITH Tibetan combines just as a sapche topic does, which is what they are. */
 .booklet-page.verso .bk-line.bk-role-sapche,
-.booklet-page.verso .bk-linewrap:has(> .bk-line.bk-role-sapche) {
+.booklet-page.verso .bk-line.bk-role-title,
+.booklet-page.verso .bk-linewrap:has(> .bk-line.bk-role-sapche),
+.booklet-page.verso .bk-linewrap:has(> .bk-line.bk-role-title) {
   display: inline-block;
 }
 /* Tibetan integrated on the recto, sitting ABOVE its phonetics (not left on the verso). */
@@ -772,15 +804,6 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-editpop-row button:hover { background: var(--vermilion, #c53030); color: #fff; }
 @media print { .bk-editmark-wrap, .bk-editpop { display: none !important; } }
 
-/* Instruction translations merged onto a line by the (Tibetan-side) continuation rule:
- * the trail stands as its OWN small block under the line's content — the standalone small
- * line's look, without a line of its own in the stream. The Style Studio's Small role
- * addresses this shape too (its selector carries both). */
-.bk-smalltrail {
-  font-family: var(--font-small);
-  font-size: 9pt;
-}
-
 /* The mid-content hairline continuation rule (matches the reference booklets).
  * `position: relative` anchors the bench's split chip; the rule's INK never changes —
  * the chip is an overlay, and the printed page draws exactly this same rule. */
@@ -926,3 +949,9 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 /* `flow-root` so the probe's height CONTAINS its children's margins — otherwise they
    collapse out through it and the two probes measure the same. */
 .bk-hairprobe { display: flow-root; }
+
+/* Read-only version-snapshot viewer: the frozen translation/phonetics bodies are stored
+   as HTML; give their paragraphs a little breathing room (the global reset zeroes them). */
+.bk-snap-body p { margin: 0 0 0.35em; }
+.bk-snap-body p:last-child { margin-bottom: 0; }
+.bk-snap-body em { font-style: italic; }

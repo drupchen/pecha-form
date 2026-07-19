@@ -14,12 +14,16 @@ from starlette.background import BackgroundTask
 
 from ..auth import active_org_id, mint_print_token
 from ..db import get_db
+import gzip
+import io
 import json
 import os
+import queue as _queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 
 from ..schemas import (
     DocumentCreate, DocumentUpdate, DocumentOut, DocumentDetailOut,
@@ -28,6 +32,8 @@ from ..schemas import (
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
     DocumentLayoutConfigIn, DocumentLayoutOut, PaginationStampIn,
     DocumentFurnitureRow, DocumentFurnitureIn, ImageSizeIn,
+    TitlePageFieldRow, TitleFieldIn, TitleShiftIn,
+    DocumentVersionCreate, DocumentVersionOut,
 )
 from .translations import _sanitize_body
 from .tree_nodes import get_nested_tree
@@ -524,6 +530,87 @@ def upsert_furniture(document_id: int, payload: DocumentFurnitureIn):
         conn.close()
 
 
+# ─── Title-page fields (origin/author content + per-field vertical placement) ────
+
+_TITLE_FIELDS = {"image", "tibetan", "title", "subtitle", "origin", "author", "content"}
+
+
+@router.get("/documents/{document_id}/title-fields", response_model=List[TitlePageFieldRow])
+def list_title_fields(document_id: int):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        return [TitlePageFieldRow(item_id=r["item_id"], field=r["field"], lang=r["lang"],
+                                  body=r["body"], shift_mm=r["shift_mm"])
+                for r in conn.execute(
+                    "SELECT item_id, field, lang, body, shift_mm FROM title_page_field "
+                    "WHERE document_id = ?", (document_id,)).fetchall()]
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/title-field", response_model=TitlePageFieldRow)
+def upsert_title_field(document_id: int, payload: TitleFieldIn):
+    """The cover's dedicated origin/author text, per edition (title/sub-title still come from
+    the text). An empty body clears the row."""
+    if payload.field not in ("origin", "author"):
+        raise HTTPException(400, "field must be 'origin' or 'author'")
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                            (payload.item_id, document_id)).fetchone():
+            raise HTTPException(404, "Item not in this document")
+        body = _sanitize_body(payload.body)
+        if body.strip():
+            conn.execute(
+                "INSERT INTO title_page_field (document_id, item_id, field, lang, body) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(document_id, item_id, field, lang) DO UPDATE SET body = excluded.body",
+                (document_id, payload.item_id, payload.field, payload.lang, body))
+        else:
+            conn.execute(
+                "DELETE FROM title_page_field WHERE document_id = ? AND item_id = ? "
+                "AND field = ? AND lang = ?",
+                (document_id, payload.item_id, payload.field, payload.lang))
+        _touch(conn, document_id)
+        conn.commit()
+        return TitlePageFieldRow(item_id=payload.item_id, field=payload.field,
+                                 lang=payload.lang, body=body or None)
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/title-shift", response_model=TitlePageFieldRow)
+def upsert_title_shift(document_id: int, payload: TitleShiftIn):
+    """A title-page field's vertical nudge (mm), shared across editions (lang=''). 0 clears."""
+    if payload.field not in _TITLE_FIELDS:
+        raise HTTPException(400, "unknown title field")
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                            (payload.item_id, document_id)).fetchone():
+            raise HTTPException(404, "Item not in this document")
+        if abs(payload.shift_mm) < 0.05:
+            conn.execute(
+                "DELETE FROM title_page_field WHERE document_id = ? AND item_id = ? "
+                "AND field = ? AND lang = ''",
+                (document_id, payload.item_id, payload.field))
+        else:
+            conn.execute(
+                "INSERT INTO title_page_field (document_id, item_id, field, lang, shift_mm) "
+                "VALUES (?, ?, ?, '', ?) "
+                "ON CONFLICT(document_id, item_id, field, lang) DO UPDATE SET shift_mm = excluded.shift_mm",
+                (document_id, payload.item_id, payload.field, payload.shift_mm))
+        _touch(conn, document_id)
+        conn.commit()
+        return TitlePageFieldRow(item_id=payload.item_id, field=payload.field, lang="",
+                                 shift_mm=payload.shift_mm)
+    finally:
+        conn.close()
+
+
 # ─── PDF export (Phase D3) ───────────────────────────────────────────────────
 # The booklet is printed by headless Chromium off the frontend's `?print=` route —
 # the SAME rendering engine as the on-screen pagination bench, so the PDF is WYSIWYG.
@@ -542,6 +629,47 @@ def _find_chrome() -> str | None:
     return None
 
 
+def _render_booklet_pdf(document_id: int, org_id: int, lang: str) -> bytes:
+    """Render ONE edition of the booklet to PDF bytes via headless Chromium, with the
+    navigation outline injected. Shared by the live `export_pdf` and the version renderer,
+    so a frozen version can never diverge from a live export. Raises HTTPException on failure.
+
+    The headless Chrome has no session cookie — the print page authenticates every API call
+    with a short-lived signed print token (read-only, bound to the org). It only transits
+    the local process argv."""
+    chrome = _find_chrome()
+    if not chrome:
+        raise HTTPException(500, "No Chrome/Chromium binary found on the server for PDF export.")
+    fd, out_path = tempfile.mkstemp(suffix=".pdf", prefix="booklet_")
+    os.close(fd)
+    try:
+        token = mint_print_token(document_id, org_id)
+        url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}&print_token={token}"
+        cmd = [
+            chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+            "--no-pdf-header-footer", "--virtual-time-budget=25000",
+            f"--print-to-pdf={out_path}", url,
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "PDF render timed out. Is the frontend reachable at PECHA_FRONTEND_URL?")
+        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            raise HTTPException(500, "PDF render produced no output.")
+        # Navigation outline (bookmarks) — best-effort; a failure yields a booklet without
+        # bookmarks rather than no PDF.
+        try:
+            outline = _fetch_outline(chrome, url)
+            if outline:
+                _inject_outline(out_path, outline)
+        except Exception:
+            pass
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        _safe_unlink(out_path)
+
+
 @router.get("/documents/{document_id}/pdf")
 def export_pdf(document_id: int, lang: str = "en"):
     conn = get_db()
@@ -551,47 +679,11 @@ def export_pdf(document_id: int, lang: str = "en"):
         org_id = doc["org_id"]
     finally:
         conn.close()
-
-    chrome = _find_chrome()
-    if not chrome:
-        raise HTTPException(500, "No Chrome/Chromium binary found on the server for PDF export.")
-
-    fd, out_path = tempfile.mkstemp(suffix=".pdf", prefix="booklet_")
-    os.close(fd)
-    # The headless Chrome has no session cookie — the print page authenticates every
-    # API call with this short-lived signed token instead (read-only, bound to the
-    # document's org). It only ever transits the local process argv.
-    token = mint_print_token(document_id, org_id)
-    url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}&print_token={token}"
-    cmd = [
-        chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-        "--no-pdf-header-footer", "--virtual-time-budget=25000",
-        f"--print-to-pdf={out_path}", url,
-    ]
-    try:
-        subprocess.run(cmd, capture_output=True, timeout=180, check=False)
-    except subprocess.TimeoutExpired:
-        _safe_unlink(out_path)
-        raise HTTPException(504, "PDF render timed out. Is the frontend reachable at PECHA_FRONTEND_URL?")
-
-    if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-        _safe_unlink(out_path)
-        raise HTTPException(500, "PDF render produced no output.")
-
-    # Add the PDF navigation outline (bookmarks) — best-effort; a failure just yields a
-    # booklet without bookmarks rather than no PDF.
-    try:
-        outline = _fetch_outline(chrome, url)
-        if outline:
-            _inject_outline(out_path, outline)
-    except Exception:
-        pass
-
+    pdf = _render_booklet_pdf(document_id, org_id, lang)
     safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
-    filename = f"{safe}-{lang}.pdf"
-    return FileResponse(
-        out_path, media_type="application/pdf", filename=filename,
-        background=BackgroundTask(_safe_unlink, out_path),
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}-{lang}.pdf"'},
     )
 
 
@@ -737,3 +829,404 @@ def set_item_image_size(item_id: int, payload: ImageSizeIn):
         return {"ok": True, "width_mm": payload.width_mm, "height_mm": payload.height_mm}
     finally:
         conn.close()
+
+
+# ═══ Booklet versioning (semver): frozen PDFs + tip-of-major data snapshots ═══════
+#
+# A version bump freezes the booklet: every version stores the rendered PDF *bytes*
+# per edition (so old versions consult/re-export unchanged, independent of the live
+# DB), and the tip of each major additionally keeps a lossless data snapshot
+# (translations/phonetics/layout/styles/content) for read-only fine-grained access.
+#
+# The PDF render (headless Chromium, minutes) runs on a single module-level daemon
+# thread fed by a queue — NOT FastAPI BackgroundTasks, which would pin a request-
+# threadpool slot and starve the all-sync document routes. The queue also serializes
+# bumps. ASSUMES a single uvicorn worker (in-process queue). Stuck 'rendering' rows
+# left by a restart are marked failed in init_db (db.py).
+
+_version_render_q: "_queue.Queue[int]" = _queue.Queue()
+_version_worker_started = False
+_version_worker_lock = threading.Lock()
+
+
+def _start_version_worker():
+    global _version_worker_started
+    with _version_worker_lock:
+        if _version_worker_started:
+            return
+        threading.Thread(target=_version_worker_loop, name="version-render",
+                         daemon=True).start()
+        _version_worker_started = True
+
+
+def _version_worker_loop():
+    while True:
+        version_id = _version_render_q.get()
+        try:
+            _render_version(version_id)
+        except Exception as e:  # never let the worker thread die
+            conn = get_db()
+            try:
+                conn.execute(
+                    "UPDATE document_versions SET status='failed', error=? WHERE id=?",
+                    (str(e)[:500], version_id))
+                conn.commit()
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        finally:
+            _version_render_q.task_done()
+
+
+def _render_version(version_id: int):
+    """Render every edition of a version to frozen PDF bytes. Own DB connection
+    (runs off the request thread); a token is minted per edition."""
+    conn = get_db()
+    try:
+        v = conn.execute(
+            "SELECT document_id, org_id, langs FROM document_versions WHERE id=?",
+            (version_id,)).fetchone()
+        if not v:
+            return
+        document_id, org_id = v["document_id"], v["org_id"]
+        langs = json.loads(v["langs"] or "[]")
+    finally:
+        conn.close()
+
+    for lang in langs:
+        pdf = _render_booklet_pdf(document_id, org_id, lang)  # may raise → worker marks failed
+        page_count = None
+        try:
+            from pypdf import PdfReader
+            page_count = len(PdfReader(io.BytesIO(pdf)).pages)
+        except Exception:
+            pass
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT INTO document_version_pdf (version_id, lang, pdf, page_count, byte_size) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(version_id, lang) DO UPDATE SET "
+                "pdf=excluded.pdf, page_count=excluded.page_count, byte_size=excluded.byte_size",
+                (version_id, lang, pdf, page_count, len(pdf)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    conn = get_db()
+    try:
+        conn.execute("UPDATE document_versions SET status='ready', error=NULL WHERE id=?",
+                     (version_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _next_semver(conn, document_id: int, bump: str) -> tuple[int, int]:
+    """Compute the next (major, minor). No versions yet → 1.0; 'minor' → maj.(min+1)
+    of the current max; 'major' → (maxmajor+1).0."""
+    row = conn.execute(
+        "SELECT major, minor FROM document_versions WHERE document_id=? "
+        "ORDER BY major DESC, minor DESC LIMIT 1", (document_id,)).fetchone()
+    if not row:
+        return (1, 0)
+    if bump == "major":
+        return (row["major"] + 1, 0)
+    return (row["major"], row["minor"] + 1)
+
+
+def _version_out(row) -> DocumentVersionOut:
+    return DocumentVersionOut(
+        id=row["id"], document_id=row["document_id"], major=row["major"],
+        minor=row["minor"], semver=row["semver"], bump=row["bump"], note=row["note"],
+        status=row["status"], error=row["error"], langs=json.loads(row["langs"] or "[]"),
+        has_snapshot=bool(row["has_snapshot"]), created_at=row["created_at"])
+
+
+# ─── Data snapshot (Phase B): lossless capture of the compile inputs ──────────────
+
+def _dump(conn, sql: str, params=()) -> list:
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _text_closure(conn, root_ids: list[int]) -> list[int]:
+    """The transitive set of texts a booklet composes from: each item's text plus its
+    ancestors (parent_text_id) and derivation sources (derivation_ops.src_text_id).
+    Snapshotting this whole closure makes the capture faithful to what the print route
+    actually renders (transcluded content lives in the source texts)."""
+    seen: set[int] = set()
+    stack = [t for t in root_ids if t is not None]
+    while stack:
+        tid = stack.pop()
+        if tid is None or tid in seen:
+            continue
+        seen.add(tid)
+        r = conn.execute("SELECT parent_text_id FROM texts WHERE id=?", (tid,)).fetchone()
+        if r and r["parent_text_id"] is not None:
+            stack.append(r["parent_text_id"])
+        for s in conn.execute(
+                "SELECT DISTINCT src_text_id FROM derivation_ops "
+                "WHERE text_id=? AND src_text_id IS NOT NULL", (tid,)):
+            stack.append(s["src_text_id"])
+    return sorted(seen)
+
+
+def _in_clause(ids: list) -> str:
+    """A safe `IN (…)` fragment for a list of ints (ids are DB-internal, not user text)."""
+    return "(" + ",".join(str(int(i)) for i in ids) + ")" if ids else "(NULL)"
+
+
+def _capture_snapshot(conn, document_id: int) -> dict:
+    """Serialize every compile input the print route consumes into a plain dict
+    (gzipped by the caller). Raw table rows keyed by table → lossless, and enough
+    to re-render or restore later; the viewer reads the translation/phonetics parts."""
+    org_id = _require_doc(conn, document_id)["org_id"]
+    root_ids = [r["text_id"] for r in conn.execute(
+        "SELECT text_id FROM document_items WHERE document_id=? AND text_id IS NOT NULL",
+        (document_id,)).fetchall()]
+    texts = _text_closure(conn, root_ids)
+    tc = _in_clause(texts)
+
+    chunk_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM translation_chunks WHERE origin_text_id IN {tc}").fetchall()]
+    cc = _in_clause(chunk_ids)
+    op_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM derivation_ops WHERE text_id IN {tc}").fetchall()]
+    oc = _in_clause(op_ids)
+    layout_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM chunk_layouts WHERE text_id IN {tc}").fetchall()]
+    lc = _in_clause(layout_ids)
+    passage_ids = [r["id"] for r in conn.execute(
+        f"SELECT id FROM passages WHERE text_id IN {tc}").fetchall()]
+    pc = _in_clause(passage_ids)
+
+    snap = {
+        "schema": 1,
+        "document_id": document_id,
+        "document": _dump(conn, "SELECT * FROM documents WHERE id=?", (document_id,)),
+        "document_items": _dump(conn, "SELECT * FROM document_items WHERE document_id=?", (document_id,)),
+        "document_languages": _dump(conn, "SELECT * FROM document_languages WHERE document_id=?", (document_id,)),
+        "document_layout": _dump(conn, "SELECT * FROM document_layout WHERE document_id=?", (document_id,)),
+        "document_furniture": _dump(conn, "SELECT * FROM document_furniture WHERE document_id=?", (document_id,)),
+        "title_page_field": _dump(conn, "SELECT * FROM title_page_field WHERE document_id=?", (document_id,)),
+        "document_style_overrides": _dump(conn, "SELECT * FROM document_style_overrides WHERE document_id=?", (document_id,)),
+        # org-scoped styling (resolved against overrides at render time)
+        "style_roles": _dump(conn, "SELECT * FROM style_roles WHERE org_id=?", (org_id,)),
+        "org_layout": _dump(conn, "SELECT * FROM org_layout WHERE org_id=?", (org_id,)),
+        # image/seal/font BLOBs go to document_version_asset — meta only here
+        "document_images": _dump(conn,
+            "SELECT item_id, document_id, width_mm, height_mm, mime FROM document_images "
+            "WHERE document_id=?", (document_id,)),
+        "tags": _dump(conn, f"SELECT * FROM tags WHERE org_id=? AND (text_id IS NULL OR text_id IN {tc})", (org_id,)),
+        "text_ids": texts,
+        "texts": {},
+    }
+    for tid in texts:
+        snap["texts"][str(tid)] = {
+            "text": _dump(conn, "SELECT * FROM texts WHERE id=?", (tid,)),
+            "syllables": _dump(conn, "SELECT * FROM syllables WHERE text_id=? ORDER BY idx", (tid,)),
+            "spans": _dump(conn, "SELECT * FROM spans WHERE text_id=?", (tid,)),
+            "display_breaks": _dump(conn, "SELECT * FROM display_breaks WHERE text_id=?", (tid,)),
+            "markers": _dump(conn, "SELECT * FROM markers WHERE text_id=?", (tid,)),
+            "derivation_ops": _dump(conn, "SELECT * FROM derivation_ops WHERE text_id=?", (tid,)),
+            "tree_nodes": _dump(conn, "SELECT * FROM tree_nodes WHERE text_id=?", (tid,)),
+            "passages": _dump(conn, "SELECT * FROM passages WHERE text_id=?", (tid,)),
+            "translation_chunks": _dump(conn, "SELECT * FROM translation_chunks WHERE origin_text_id=?", (tid,)),
+            "phonetics": _dump(conn, "SELECT * FROM phonetics WHERE origin_text_id=?", (tid,)),
+            "chunk_layouts": _dump(conn, "SELECT * FROM chunk_layouts WHERE text_id=?", (tid,)),
+        }
+    # cross-text child tables, captured once by the collected id sets
+    snap["translations"] = _dump(conn, f"SELECT * FROM translations WHERE chunk_id IN {cc}")
+    snap["translation_overrides"] = _dump(conn, f"SELECT * FROM translation_overrides WHERE chunk_id IN {cc}")
+    snap["derivation_op_syllables"] = _dump(conn, f"SELECT * FROM derivation_op_syllables WHERE op_id IN {oc}")
+    snap["layout_titles"] = _dump(conn, f"SELECT * FROM layout_titles WHERE layout_id IN {lc}")
+    snap["passage_members"] = _dump(conn, f"SELECT * FROM passage_members WHERE passage_id IN {pc}")
+    return snap
+
+
+def _store_snapshot(conn, version_id: int, document_id: int):
+    """Capture + gzip the snapshot JSON, copy the binary assets, mark has_snapshot."""
+    org_id = _require_doc(conn, document_id)["org_id"]
+    snap = _capture_snapshot(conn, document_id)
+    blob = gzip.compress(json.dumps(snap, ensure_ascii=False, default=str).encode("utf-8"))
+    conn.execute(
+        "INSERT INTO document_version_snapshot (version_id, data, byte_size, created_at) "
+        "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(version_id) DO UPDATE SET data=excluded.data, byte_size=excluded.byte_size",
+        (version_id, blob, len(blob)))
+    # Binary assets → document_version_asset (image/seal/font), for future re-render/restore.
+    for img in conn.execute(
+            "SELECT item_id, mime, width_mm, height_mm, data FROM document_images "
+            "WHERE document_id=?", (document_id,)).fetchall():
+        conn.execute(
+            "INSERT OR REPLACE INTO document_version_asset "
+            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'image', ?, ?, ?, ?)",
+            (version_id, str(img["item_id"]), img["mime"],
+             json.dumps({"width_mm": img["width_mm"], "height_mm": img["height_mm"]}),
+             img["data"]))
+    seal = conn.execute("SELECT mime, data FROM org_seal WHERE org_id=?", (org_id,)).fetchone()
+    if seal:
+        conn.execute(
+            "INSERT OR REPLACE INTO document_version_asset "
+            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', '', ?, '{}', ?)",
+            (version_id, seal["mime"], seal["data"]))
+    for font in conn.execute(
+            "SELECT id, family, weight, italic, mime, data FROM org_fonts WHERE org_id=?",
+            (org_id,)).fetchall():
+        conn.execute(
+            "INSERT OR REPLACE INTO document_version_asset "
+            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'font', ?, ?, ?, ?)",
+            (version_id, str(font["id"]), font["mime"],
+             json.dumps({"family": font["family"], "weight": font["weight"], "italic": font["italic"]}),
+             font["data"]))
+    conn.execute("UPDATE document_versions SET has_snapshot=1 WHERE id=?", (version_id,))
+
+
+def _prune_major_snapshots(conn, document_id: int, keep_version_id: int, major: int):
+    """Keep exactly one data snapshot per major, at its current tip. Drop the snapshot
+    (and its assets) from every OTHER version in the same major; their PDFs stay."""
+    stale = conn.execute(
+        "SELECT id FROM document_versions WHERE document_id=? AND major=? AND id!=? "
+        "AND has_snapshot=1", (document_id, major, keep_version_id)).fetchall()
+    for r in stale:
+        conn.execute("DELETE FROM document_version_snapshot WHERE version_id=?", (r["id"],))
+        conn.execute("DELETE FROM document_version_asset WHERE version_id=?", (r["id"],))
+        conn.execute("UPDATE document_versions SET has_snapshot=0 WHERE id=?", (r["id"],))
+
+
+# ─── Version endpoints (all path-scoped by document_id → the main.py "documents"
+#     guard supplies org isolation; no _ORG_RESOLVERS change needed) ───────────────
+
+@router.get("/documents/{document_id}/versions", response_model=List[DocumentVersionOut])
+def list_versions(document_id: int):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        rows = conn.execute(
+            "SELECT * FROM document_versions WHERE document_id=? "
+            "ORDER BY major DESC, minor DESC", (document_id,)).fetchall()
+        return [_version_out(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@router.post("/documents/{document_id}/versions", response_model=DocumentVersionOut)
+def create_version(document_id: int, payload: DocumentVersionCreate):
+    """Bump the booklet. Synchronously: freeze a lossless data snapshot (of the exact
+    current DB), prune old same-major snapshots, insert the version row; then enqueue
+    the (slow) PDF render off-thread. Returns the row in 'rendering'."""
+    if payload.bump not in ("major", "minor"):
+        raise HTTPException(400, "bump must be 'major' or 'minor'")
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        langs = _doc_languages(conn, document_id)
+        if not langs:
+            raise HTTPException(400, "This booklet has no languages to publish.")
+        org_id = _require_doc(conn, document_id)["org_id"]
+        major, minor = _next_semver(conn, document_id, payload.bump)
+        semver = f"{major}.{minor}"
+        cur = conn.execute(
+            "INSERT INTO document_versions "
+            "(document_id, org_id, major, minor, semver, bump, note, status, langs, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'rendering', ?, CURRENT_TIMESTAMP)",
+            (document_id, org_id, major, minor, semver, payload.bump, payload.note,
+             json.dumps(langs)))
+        version_id = cur.lastrowid
+        # Snapshot (sync) freezes the exact bump moment; then keep one per major (tip).
+        _store_snapshot(conn, version_id, document_id)
+        _prune_major_snapshots(conn, document_id, version_id, major)
+        conn.commit()
+        row = conn.execute("SELECT * FROM document_versions WHERE id=?", (version_id,)).fetchone()
+    finally:
+        conn.close()
+    _start_version_worker()
+    _version_render_q.put(version_id)
+    return _version_out(row)
+
+
+@router.get("/documents/{document_id}/versions/{version_id}/pdf")
+def get_version_pdf(document_id: int, version_id: int, lang: str = "en", download: int = 0):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        v = conn.execute(
+            "SELECT semver FROM document_versions WHERE id=? AND document_id=?",
+            (version_id, document_id)).fetchone()
+        if not v:
+            raise HTTPException(404, "Version not found")
+        row = conn.execute(
+            "SELECT pdf FROM document_version_pdf WHERE version_id=? AND lang=?",
+            (version_id, lang)).fetchone()
+        if not row:
+            raise HTTPException(404, "No PDF for this version/edition (still rendering, or failed).")
+        pdf = row["pdf"]
+        semver = v["semver"]
+    finally:
+        conn.close()
+    disp = "attachment" if download else "inline"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'{disp}; filename="v{semver}-{lang}.pdf"'})
+
+
+@router.post("/documents/{document_id}/versions/{version_id}/retry",
+             response_model=DocumentVersionOut)
+def retry_version(document_id: int, version_id: int):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        row = conn.execute(
+            "SELECT * FROM document_versions WHERE id=? AND document_id=?",
+            (version_id, document_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "Version not found")
+        if row["status"] == "rendering":
+            raise HTTPException(409, "This version is already rendering.")
+        conn.execute("UPDATE document_versions SET status='rendering', error=NULL WHERE id=?",
+                     (version_id,))
+        conn.commit()
+        row = conn.execute("SELECT * FROM document_versions WHERE id=?", (version_id,)).fetchone()
+    finally:
+        conn.close()
+    _start_version_worker()
+    _version_render_q.put(version_id)
+    return _version_out(row)
+
+
+@router.delete("/documents/{document_id}/versions/{version_id}")
+def delete_version(document_id: int, version_id: int):
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute(
+                "SELECT 1 FROM document_versions WHERE id=? AND document_id=?",
+                (version_id, document_id)).fetchone():
+            raise HTTPException(404, "Version not found")
+        conn.execute("DELETE FROM document_versions WHERE id=?", (version_id,))  # CASCADE pdf/snapshot/asset
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.get("/documents/{document_id}/versions/{version_id}/snapshot")
+def get_version_snapshot(document_id: int, version_id: int):
+    """The gunzipped snapshot JSON for the read-only viewer (tip-of-major versions only)."""
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        if not conn.execute(
+                "SELECT 1 FROM document_versions WHERE id=? AND document_id=?",
+                (version_id, document_id)).fetchone():
+            raise HTTPException(404, "Version not found")
+        row = conn.execute(
+            "SELECT data FROM document_version_snapshot WHERE version_id=?",
+            (version_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "This version has no data snapshot.")
+        data = json.loads(gzip.decompress(row["data"]).decode("utf-8"))
+    finally:
+        conn.close()
+    return data

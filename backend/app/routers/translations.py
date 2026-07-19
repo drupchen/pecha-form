@@ -48,6 +48,9 @@ class ChunkOut(BaseModel):
     kind: str
     # Title level for heading chunks (sapche/title), NULL = not a heading.
     level: Optional[int] = None
+    # How a heading renders in the booklet: NULL/'title' = section heading,
+    # 'small_intro' = small-face gloss.
+    render_as: Optional[str] = None
     # The chunk's full Tibetan text resolved from its origin — so a booklet that
     # includes the chunk only PARTIALLY can still display the whole unit.
     text: str
@@ -248,7 +251,7 @@ def list_text_translations(text_id: int):
                 out.append(ChunkOut(
                     id=ch["id"], origin_text_id=origin,
                     start_syl_id=ch["start_syl_id"], end_syl_id=ch["end_syl_id"],
-                    kind=ch["kind"], level=ch["level"],
+                    kind=ch["kind"], level=ch["level"], render_as=ch["render_as"],
                     text="".join(by_id[i]["text"] for i in ids),
                     translations=translations,
                 ))
@@ -290,7 +293,7 @@ def upsert_translation(payload: TranslationUpsertIn):
         return ChunkOut(
             id=ch["id"], origin_text_id=ch["origin_text_id"],
             start_syl_id=ch["start_syl_id"], end_syl_id=ch["end_syl_id"], kind=ch["kind"],
-            level=ch["level"],
+            level=ch["level"], render_as=ch["render_as"],
             text="".join(by_id[i]["text"] for i in ids), translations=translations,
         )
     finally:
@@ -331,7 +334,49 @@ def set_chunk_level(payload: ChunkLevelIn):
         return ChunkOut(
             id=ch["id"], origin_text_id=ch["origin_text_id"],
             start_syl_id=ch["start_syl_id"], end_syl_id=ch["end_syl_id"], kind=ch["kind"],
-            level=ch["level"],
+            level=ch["level"], render_as=ch["render_as"],
+            text="".join(by_id[i]["text"] for i in ids), translations=translations,
+        )
+    finally:
+        conn.close()
+
+
+class ChunkRenderAsIn(BaseModel):
+    context_text_id: int
+    start_syl_id: str
+    end_syl_id: str
+    render_as: Optional[str] = None   # 'small_intro' | None/'title'
+
+
+@router.put("/translation-chunks/render-as", response_model=ChunkOut)
+def set_chunk_render_as(payload: ChunkRenderAsIn):
+    """How a heading chunk renders in the booklet: 'small_intro' = a small-face gloss,
+    NULL/'title' = a section heading. Language-independent; whole chunk. Created if absent."""
+    if payload.render_as not in (None, "title", "small_intro"):
+        raise HTTPException(400, "render_as must be 'small_intro', 'title', or null")
+    value = None if payload.render_as == "title" else payload.render_as
+    conn = get_db()
+    try:
+        chunk_id = _find_or_create_chunk(
+            conn, payload.context_text_id, payload.start_syl_id,
+            payload.end_syl_id, "text")
+        conn.execute("UPDATE translation_chunks SET render_as = ? WHERE id = ?",
+                     (value, chunk_id))
+        conn.commit()
+        ch = conn.execute("SELECT * FROM translation_chunks WHERE id = ?", (chunk_id,)).fetchone()
+        toks = base_tokens(conn, ch["origin_text_id"])
+        by_id = {t["id"]: t for t in toks}
+        ids = syllable_ids_between(toks, ch["start_syl_id"], ch["end_syl_id"])
+        translations = [
+            TranslationOut(lang=t["lang"], body=t["body"], status=t["status"],
+                           translated_from=t["translated_from"], updated_at=str(t["updated_at"]))
+            for t in conn.execute("SELECT * FROM translations WHERE chunk_id = ?",
+                                  (chunk_id,)).fetchall()
+        ]
+        return ChunkOut(
+            id=ch["id"], origin_text_id=ch["origin_text_id"],
+            start_syl_id=ch["start_syl_id"], end_syl_id=ch["end_syl_id"], kind=ch["kind"],
+            level=ch["level"], render_as=ch["render_as"],
             text="".join(by_id[i]["text"] for i in ids), translations=translations,
         )
     finally:
@@ -605,6 +650,7 @@ class LayoutOut(BaseModel):
     anchor_after: bool = False
     level: Optional[int] = None
     lang: Optional[str] = None      # NULL = shared across editions; else that edition only
+    render_as: Optional[str] = None  # title only: 'small_intro' = gloss, else a heading
     disabled: bool = False
     position: int = 0
     titles: dict = {}               # lang -> body (title rows)
@@ -620,7 +666,7 @@ def _layout_out(conn, r) -> LayoutOut:
                      # "before the chunk starting here", which is what 'segment' means.
                      move_mode=r["move_mode"] or "segment",
                      anchor_after=bool(r["anchor_after"]), level=r["level"],
-                     lang=r["lang"],
+                     lang=r["lang"], render_as=r["render_as"],
                      disabled=bool(r["disabled"]), position=r["position"], titles=titles)
 
 
@@ -688,6 +734,7 @@ class LayoutPatch(BaseModel):
     anchor_syl_id: Optional[str] = None
     level: Optional[int] = None
     disabled: Optional[bool] = None
+    render_as: Optional[str] = None   # 'small_intro' = gloss, 'title'/'' clears to a heading
     clear_anchor: bool = False      # anchor NULL = end of stream
 
 
@@ -705,6 +752,10 @@ def patch_layout(layout_id: int, payload: LayoutPatch):
             sets.append("anchor_syl_id = ?"); args.append(payload.anchor_syl_id)
         if payload.level is not None:
             sets.append("level = ?"); args.append(payload.level)
+        if payload.render_as is not None:
+            # 'title' (or empty) clears back to a heading; 'small_intro' = gloss.
+            sets.append("render_as = ?")
+            args.append(None if payload.render_as in ("", "title") else payload.render_as)
         if payload.disabled is not None:
             sets.append("disabled = ?"); args.append(int(payload.disabled))
         if sets:

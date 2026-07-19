@@ -71,6 +71,9 @@ export interface LineAdj {
   widthRange?: WidthRange;
   onGap?: (delta: number) => void;
   onToggleNoSpace?: () => void;
+  /** The pointer left the gap-stepper cluster: the click burst is over, so a pending
+   *  re-flow may settle at the short delay instead of waiting out the burst window. */
+  onBurstEnd?: () => void;
   /** Persist a block's new width (null clears it). Absent = non-interactive (print). */
   onWidth?: (target: WidthTarget, mm: number | null) => void;
 }
@@ -195,10 +198,23 @@ const NO_WIDTH: BlockWidthOf = () => ({ valueMm: 0, min: 0, max: 0 });
  * already starts with one, so the three forms never collide.
  */
 export const anchorOf = (l: DocLine): string =>
-  l.opId != null ? `${l.startSylId}#${l.opId}` : l.startSylId;
+  l.startSylId
+    ? (l.opId != null ? `${l.startSylId}#${l.opId}` : l.startSylId)
+    // Syllable-less lines — translation-only titles (`startSylId: ''`, `tokens: []`) — anchor by
+    // their unique, stable `key` (`${item}:title-${layoutId}`). Without this every title in an item
+    // collapses to the same empty `${item}:` anchor, so a break placed on one resolves to the first
+    // title (or nowhere) and the flow's uniqueness backstop marks the rest unbreakable — the reason
+    // the scissors before a title looked live but did nothing.
+    : l.key;
 
 /** The anchor a line's SPLIT rows hang off — the original line's, so head and tail agree. */
 export const splitAnchorOf = (l: DocLine): string => l.splitAnchor ?? anchorOf(l);
+
+/** The small family's variant as a class (` bk-smallkind-verses` …), so a style rule can
+ *  target ONE variant — the studio's "small – verses" card styles verses lines apart from
+ *  the family card. Only `small` carries a kind; every other role contributes nothing. */
+const smallKindCls = (l: DocLine): string =>
+  l.role === 'small' && l.smallKind ? ` bk-smallkind-${l.smallKind}` : '';
 
 /** The width props for one block of a line, from its `LineAdj`. */
 function widthProps(adj: LineAdj, target: WidthTarget, verso: boolean) {
@@ -223,7 +239,7 @@ export const Gap: React.FC<{ adj: LineAdj; side?: PageSide }> = ({ adj, side }) 
     : '';
   if (adj.noSpace) {
     return adj.onToggleNoSpace ? (
-      <div className="bk-gap-removed">
+      <div className="bk-gap-removed" onPointerLeave={adj.onBurstEnd}>
         <button type="button" className="bk-gapctl" title={`Restore blank line.${scope}`}
                 onClick={adj.onToggleNoSpace}>+ line</button>
       </div>
@@ -237,7 +253,7 @@ export const Gap: React.FC<{ adj: LineAdj; side?: PageSide }> = ({ adj, side }) 
          style={{ height: 'calc(var(--translation-pt) * var(--leading)'
                         + ` + ${adj.gapDeltaMm}mm + var(--gap-fill, 0mm))` }}>
       {adj.onGap && (
-        <span className="bk-gapctl-group">
+        <span className="bk-gapctl-group" onPointerLeave={adj.onBurstEnd}>
           <button type="button" className="bk-gapctl" title={`Less space.${scope}`} onClick={() => adj.onGap!(-1)}>−</button>
           <button type="button" className="bk-gapctl" title={`More space.${scope}`} onClick={() => adj.onGap!(1)}>+</button>
           <button type="button" className="bk-gapctl" title={`Remove blank line.${scope}`} onClick={adj.onToggleNoSpace}>×</button>
@@ -262,9 +278,20 @@ export const Gap: React.FC<{ adj: LineAdj; side?: PageSide }> = ({ adj, side }) 
  * being what the bench showed.
  */
 export function versoGapSuppressed(lines: DocLine[], i: number): boolean {
-  if (lines[i]?.role !== 'sapche') return false;
-  const next = lines[i + 1]?.role;
-  return next === 'sapche' || next === 'verse' || next === 'prose';
+  // A line whose Tibetan flows straight into a following MERGED instruction (whose tokens
+  // were moved here, leaving it token-empty) keeps no blank line before that instruction on
+  // the VERSO — the two Tibetans are one continuous line. The recto still shows the blank
+  // (the instruction is its own translation line). A text-first instruction keeps its tokens
+  // and so does not suppress the previous line's gap.
+  const next = lines[i + 1];
+  if (next && next.role === 'small' && next.smallKind === 'instructions'
+      && next.tokens.length === 0) return true;
+  // sapche (ས་བཅད) and title are the same thing in two languages — a section heading. Both
+  // combine on the verso, so a translation-only title standing between two topics keeps the
+  // chain intact instead of severing it with a blank line.
+  const isHeading = (r?: string) => r === 'sapche' || r === 'title';
+  if (!isHeading(lines[i]?.role)) return false;
+  return isHeading(next?.role) || next?.role === 'verse' || next?.role === 'prose';
 }
 
 export const Verso: React.FC<{
@@ -281,7 +308,7 @@ export const Verso: React.FC<{
   onSplit?: (k: number) => void;
 }> = ({ l, adj = NO_ADJ, atPageTop, noGap, onSplit }) => {
   return (
-    <div className={`bk-line bk-role-${l.role}${onSplit ? ' bk-splitmode' : ''}`
+    <div className={`bk-line bk-role-${l.role}${smallKindCls(l)}${onSplit ? ' bk-splitmode' : ''}`
                     + (atPageTop ? ' bk-atpagetop' : '')}>
       {/* Split mode owns the syllable clicks — no width grip competing for the pointer. */}
       <WidthLine className="bk-tibetan" {...widthProps(adj, 'tibetan', true)}
@@ -324,7 +351,8 @@ export const Recto: React.FC<{
 }> = ({ l, adj = NO_ADJ, atPageTop, onWordSplit }) => {
   const isSection = l.role === 'title' || l.role === 'sapche';
   const isMantra = l.role === 'mantra';
-  const lineCls = `bk-line bk-pair bk-role-${l.role}` + (atPageTop ? ' bk-atpagetop' : '');
+  const lineCls = `bk-line bk-pair bk-role-${l.role}${smallKindCls(l)}`
+                + (atPageTop ? ' bk-atpagetop' : '');
 
   // Split mode: every recto text becomes clickable words. On a pair BOTH blocks do — one
   // click sets that element's cut and leaves the other's where it stands. The words shown
@@ -361,19 +389,10 @@ export const Recto: React.FC<{
       </div>
     );
   }
-  // Instruction line(s) merged onto this line: the continuation rule is a TIBETAN-side
-  // rule — the verso concatenates, while the translation side keeps looking exactly as it
-  // did before the merge existed. Each merged instruction renders as its OWN small block,
-  // with the blank line that stood before it (`gapBefore`) reproduced — the pre-rule
-  // standalone small line, minus the line-stream line. Never spliced into the paragraph.
-  const trailBlocks = l.smallTrails?.map((t, i) => (
-    <React.Fragment key={i}>
-      {t.gapBefore && <Gap adj={adj} side="recto" />}
-      <WidthLine className="bk-smalltrail" {...widthProps(adj, 'translation', false)}>
-        <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(t.html) }} />
-      </WidthLine>
-    </React.Fragment>
-  ));
+  // A merged instruction (continuation rule, TIBETAN-side only) keeps its own recto line:
+  // its Tibetan was moved to the host line (this line's `tokens` are empty), so the verso
+  // renders nothing here, while the translation below renders as an ordinary standalone
+  // small line — never appended to the host's translation.
   return (
     <div className={lineCls}>
       {isSection ? (
@@ -405,7 +424,6 @@ export const Recto: React.FC<{
           )}
         </>
       )}
-      {trailBlocks}
       {l.emptyAfter && <Gap adj={adj} side="recto" />}
     </div>
   );
@@ -428,6 +446,11 @@ export interface TocRow {
 /** The centred title block (Tibetan title + translated main title / italic subtitle),
  *  shared by the booklet cover and each text's internal title page. `seal` shows the ༀ
  *  ornament (cover only); `image` (a seal/logo) renders in its place when supplied. */
+/** The placeable fields: the six title-page slots, plus `content` — the single block a TOC /
+ *  copyright / back-cover page nudges as a whole. Keyed for the shift store + styles. */
+export type TitleField = 'image' | 'tibetan' | 'title' | 'subtitle' | 'origin' | 'author'
+  | 'content';
+
 export const TitleContent: React.FC<{
   titleLines: DocLine[]; seal?: boolean; image?: React.ReactNode;
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
@@ -440,7 +463,12 @@ export const TitleContent: React.FC<{
    * text.
    */
   tibetan?: string | null;
-}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, tibetan }) => {
+  /** The cover's dedicated fields (this edition's text), rendered under the sub-title. */
+  origin?: string | null;
+  author?: string | null;
+  /** Vertical nudge (mm) per field — moves that field only, off its default centred spot. */
+  shiftOf?: (field: TitleField) => number;
+}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, tibetan, origin, author, shiftOf }) => {
   // The booklet's own lines, or the text's. An override is plain text — it has no syllables,
   // so its lines anchor their widths on a block key instead (see `anchorOf`).
   const ownLines = (tibetan ?? '').split('\n').map((t) => t.trim()).filter(Boolean);
@@ -449,11 +477,24 @@ export const TitleContent: React.FC<{
   // one entry per title line.
   const trans = (titleLines.find((t) => t.paragraphs?.length)?.paragraphs)
     ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
+  // Each field rides a wrapper that translates it vertically by its nudge — `translateY` so a
+  // move disturbs only that field, never the flow of the others.
+  const shift = (field: TitleField, node: React.ReactNode) => {
+    const mm = shiftOf?.(field) ?? 0;
+    return (
+      <div className={`bk-title-field bk-title-field-${field}`}
+           style={Math.abs(mm) > 0.001 ? { transform: `translateY(${mm}mm)` } : undefined}>
+        {node}
+      </div>
+    );
+  };
   return (
     <div className="bk-titlepage">
-      {image}
-      {seal && !image && <div className="bk-seal">ༀ</div>}
-      {ownLines.length
+      {shift('image', <>
+        {image}
+        {seal && !image && <div className="bk-seal">ༀ</div>}
+      </>)}
+      {shift('tibetan', ownLines.length
         ? ownLines.map((line, i) => (
           <WidthLine key={`o${i}`} className="bk-tibetan bk-title-tib"
                      {...widthOf(`#title_tib${i}`)}>
@@ -470,15 +511,25 @@ export const TitleContent: React.FC<{
                 title abstains rather than be confidently wrong. */}
             {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
           </WidthLine>
-        ))}
-      {trans[0] && (
+        )))}
+      {trans[0] && shift('title', (
         <WidthLine className="bk-title-main" {...widthOf('#title_main')}>
           <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
         </WidthLine>
-      )}
-      {trans.slice(1).map((p, i) => (
+      ))}
+      {trans.length > 1 && shift('subtitle', trans.slice(1).map((p, i) => (
         <WidthLine key={`sub${i}`} className="bk-title-sub" {...widthOf(`#title_sub${i}`)}>
           <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
+        </WidthLine>
+      )))}
+      {origin && origin.trim() && shift('origin', (
+        <WidthLine className="bk-title-origin" {...widthOf('#title_origin')}>
+          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(origin) }} />
+        </WidthLine>
+      ))}
+      {author && author.trim() && shift('author', (
+        <WidthLine className="bk-title-author" {...widthOf('#title_author')}>
+          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(author) }} />
         </WidthLine>
       ))}
     </div>
@@ -527,7 +578,16 @@ export const FurnitureContent: React.FC<{
   widthOf?: BlockWidthOf;
   /** This booklet's own Tibetan for the cover title (see `TitleContent`). */
   tibetan?: string | null;
-}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan }) => {
+  /** Cover title page: dedicated origin/author text (this edition) and per-field nudges. */
+  origin?: string | null;
+  author?: string | null;
+  shiftOf?: (field: TitleField) => number;
+}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan,
+        origin, author, shiftOf }) => {
+  // A TOC / copyright / back-cover page nudges its whole content block up or down.
+  const cShift = shiftOf?.('content') ?? 0;
+  const cStyle: React.CSSProperties | undefined =
+    Math.abs(cShift) > 0.001 ? { transform: `translateY(${cShift}mm)` } : undefined;
   // The imported image, sized from the stored width/height (mm); null = natural.
   const sized = item.image_width_mm != null || item.image_height_mm != null;
   const imgStyle: React.CSSProperties = {
@@ -547,6 +607,7 @@ export const FurnitureContent: React.FC<{
                       height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
       : undefined;
     return <TitleContent titleLines={titleLines} seal widthOf={widthOf} tibetan={tibetan}
+                        origin={origin} author={author} shiftOf={shiftOf}
                         image={item.has_image ? bkImage : sealImage} />;
   }
   if (item.kind === 'copyright') {
@@ -555,7 +616,7 @@ export const FurnitureContent: React.FC<{
       return <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
     }
     return (
-      <div className="bk-copyright">
+      <div className="bk-copyright" style={cStyle}>
         {item.has_image && bkImage}
         {body && <FurnitureLines body={body} block="copyright" widthOf={widthOf} />}
       </div>
@@ -563,7 +624,7 @@ export const FurnitureContent: React.FC<{
   }
   if (item.kind === 'toc') {
     return (
-      <div className="bk-toc">
+      <div className="bk-toc" style={cStyle}>
         {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
         {toc.map((e, i) => (
           <WidthLine key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
@@ -596,7 +657,7 @@ export const FurnitureContent: React.FC<{
     // Optional image and/or per-language text, centred; empty otherwise.
     if (!item.has_image && !body) return null;
     return (
-      <div className="bk-backcover">
+      <div className="bk-backcover" style={cStyle}>
         {item.has_image && bkImage}
         {body && <FurnitureLines body={body} block="backcover" widthOf={widthOf}
                                  className="bk-copyright" />}
@@ -612,10 +673,16 @@ export const FurniturePage: React.FC<{
   orgSeal?: OrgSeal | null;
   widthOf?: BlockWidthOf;
   tibetan?: string | null;
-}> = (props) => (
+  origin?: string | null;
+  author?: string | null;
+  shiftOf?: (field: TitleField) => number;
+  /** Bench-only overlay (the per-field placement sliders), rendered inside the page box. */
+  overlay?: React.ReactNode;
+}> = ({ overlay, ...props }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content"><FurnitureContent {...props} /></div>
+      {overlay}
     </div>
   </div>
 );
@@ -623,12 +690,17 @@ export const FurniturePage: React.FC<{
 /** A text's internal title page as a facing-page mock (bench use). */
 export const InternalTitlePage: React.FC<{
   titleLines: DocLine[]; widthOf?: BlockWidthOf; tibetan?: string | null;
-}> = ({ titleLines, widthOf, tibetan }) => (
+  origin?: string | null; author?: string | null;
+  shiftOf?: (field: TitleField) => number;
+  overlay?: React.ReactNode;
+}> = ({ titleLines, widthOf, tibetan, origin, author, shiftOf, overlay }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content">
-        <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan} />
+        <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan}
+                      origin={origin} author={author} shiftOf={shiftOf} />
       </div>
+      {overlay}
     </div>
   </div>
 );
@@ -881,8 +953,6 @@ function splitDocLine(
   const head: DocLine = {
     ...l, key: `${l.key}#h`, tokens: l.tokens.slice(0, k), endSylId: l.tokens[k - 1].id,
     phonetics: hPhon, translation: hTrans, emptyAfter: false, splitAnchor: anchor,
-    // The merged-instruction trails sit at the END of the line, so they follow the tail.
-    smallTrails: undefined,
   };
   const tail: DocLine = {
     ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k), startSylId: l.tokens[k].id,
@@ -994,8 +1064,14 @@ export function deriveBooklet(
   lines.forEach((l, i) => {
     const k = `${l.itemId}:${anchorOf(l)}`;
     if (!idxOf.has(k)) idxOf.set(k, i);
-    const bare = `${l.itemId}:${l.startSylId}`;
-    if (!legacyIdx.has(bare)) legacyIdx.set(bare, i);
+    // Syllable-less title lines have no bare-syllable vintage: an old row with an empty
+    // anchor (written before titles anchored by `key`) must resolve NOWHERE, not to the
+    // first title in the item — matched there it pins a page nobody can un-pin, because
+    // the lift deletes by the line's CURRENT anchor and never finds the '' row.
+    if (l.startSylId) {
+      const bare = `${l.itemId}:${l.startSylId}`;
+      if (!legacyIdx.has(bare)) legacyIdx.set(bare, i);
+    }
   });
   const findIdx = (r: DocumentLayoutRow) => {
     const k = `${r.item_id}:${r.anchor_syl_id}`;

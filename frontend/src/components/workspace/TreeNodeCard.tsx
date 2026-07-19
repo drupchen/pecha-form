@@ -268,7 +268,10 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
   const onBodyClick = () => {
     setLastHoveredTreeNodeId(node.id);
     setSelectedTreeNodeId(node.id);
-    if (sessionMode) {
+    // Clicking a section jumps the content to it — in session mode (tagger) AND in the
+    // read-only CONSULT panes (the translate / phonetics benches mount the tree with
+    // `forceConsult`, so a plain `sessionMode` gate left their sidebars un-clickable).
+    if (sessionMode || consultMode) {
       const target = findFirstLinkedSegmentStart(node);
       if (target != null) scrollToLinkPartner(target, rootRef.current);
     }

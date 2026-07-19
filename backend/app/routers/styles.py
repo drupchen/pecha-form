@@ -32,6 +32,8 @@ ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "translation":   ("Translation", ["Translation Words", "Translation With-Tib"]),
     "mantra":        ("Mantras", ["Mantra", "Mantras Words"]),
     "small":         ("Small Letters", ["Small Words", "Small"]),
+    # The verses variant of the small family — its own studio role (hanging indent).
+    "small_verses":  ("Small Letters Verses", ["Small Verses"]),
     "intro":         ("Introduction", ["Intro"]),
     # Section titles by outline level (three tiers). Legacy single "Sections"/"Section"
     # imports onto level 1.
@@ -41,6 +43,8 @@ ROLE_STYLE_NAMES: dict[str, tuple[str, list[str]]] = {
     "title_tib":     ("Title Tibetan", ["ཁ་བྱང་།", "ཁ་བྱང"]),
     "title_main":    ("Title", ["Text Title", "Book Title", "Main Title"]),
     "title_sub":     ("Subtitle", ["Sub Title"]),
+    "title_origin":  ("Title Origin", ["Origin"]),
+    "title_author":  ("Title Author", ["Author"]),
     "copyright":     ("Copyright", []),
     "toc":           ("Table of Contents", ["TOC", "Contents"]),
     "folio":         ("Folio", ["Page Number", "Footer"]),
@@ -58,6 +62,7 @@ _TEMPLATE_DEFAULTS: dict[str, dict] = {
     "translation":   {"font": "Gentium Basic", "size": 11, "indent": 42.5},      # Translation
     "mantra":        {"font": "Gentium Basic", "size": 12, "bold": True, "indent": 28.4},  # Mantras (Words)
     "small":         {"font": "Libertinus Serif Display", "size": 9},            # Small Letters
+    "small_verses":  {"font": "Libertinus Serif Display", "size": 9},            # Small Letters (verses variant)
     "intro":         {"font": "Gentium Basic", "size": 11},                      # Introduction
 
     "section_1":     {"font": "Libertinus Serif Display", "size": 15},           # Sections L1 (upright)
@@ -66,6 +71,8 @@ _TEMPLATE_DEFAULTS: dict[str, dict] = {
     "title_tib":     {"font": "Chogyal", "size": 24},                            # ཁ་བྱང
     "title_main":    {"font": "Libertinus Serif Semibold", "size": 18},          # Title
     "title_sub":     {"font": "Calibri", "size": 12, "italic": True},            # Subtitle
+    "title_origin":  {"font": "Libertinus Serif", "size": 11, "italic": True},   # Origin (source cycle)
+    "title_author":  {"font": "Gentium Basic", "size": 11},                      # Author / translator
     "copyright":     {"font": "Gentium Basic", "size": 11},
     "toc":           {"font": "Gentium Basic", "size": 11},
     "folio":         {"font": "Georgia", "size": 9},

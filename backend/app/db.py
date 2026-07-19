@@ -401,6 +401,10 @@ CREATE TABLE IF NOT EXISTS translation_chunks (
     -- Title level for heading chunks (sapche/title): 1..n, NULL = not a heading.
     -- Language-independent (structural) — feeds TOC + PDF heading styles.
     level          INTEGER,
+    -- How a heading chunk RENDERS in the booklet: NULL/'title' = a section heading,
+    -- 'small_intro' = a small-face gloss (the small family's intro kind). Per-heading,
+    -- language-independent — a sapche that reads as commentary, not a Western title.
+    render_as      TEXT,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(origin_text_id, start_syl_id, end_syl_id)
 );
@@ -487,6 +491,8 @@ CREATE TABLE IF NOT EXISTS chunk_layouts (
     move_mode        TEXT,
     anchor_after     INTEGER NOT NULL DEFAULT 0,
     level            INTEGER,
+    -- 'small_intro' renders this translation-only title as a small-face gloss.
+    render_as        TEXT,
     disabled         INTEGER NOT NULL DEFAULT 0,
     position         INTEGER NOT NULL DEFAULT 0,
     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -605,6 +611,23 @@ CREATE TABLE IF NOT EXISTS document_furniture (
     PRIMARY KEY (document_id, item_id, lang)
 );
 
+-- The title page's per-field content and placement, per booklet item (the cover, and later
+-- each text's internal title page). `field` names one of the six title-page slots
+-- (image|tibetan|title|subtitle|origin|author). Two row shapes share the table:
+--   CONTENT  — field in (origin, author), lang = an edition code, `body` set: the dedicated
+--              origin/author text this cover shows (title/sub-title still come from the text).
+--   SHIFT    — any field, lang = '' (shared across editions), `shift_mm` set: the vertical
+--              nudge that places the field up/down from its default centred position.
+CREATE TABLE IF NOT EXISTS title_page_field (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    item_id     INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
+    field       TEXT NOT NULL,
+    lang        TEXT NOT NULL DEFAULT '',
+    body        TEXT,
+    shift_mm    REAL,
+    PRIMARY KEY (document_id, item_id, field, lang)
+);
+
 -- The image for an `image_page` furniture item (Phase D3). One image per item, stored
 -- inline (booklet images are few and small); shared across language editions.
 CREATE TABLE IF NOT EXISTS document_images (
@@ -642,6 +665,61 @@ CREATE TABLE IF NOT EXISTS document_style_overrides (
     role        TEXT NOT NULL,
     props       TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (document_id, role)
+);
+
+-- ─── Booklet versioning (semver) ────────────────────────────────────────────────
+-- A version is a frozen point in the booklet's life. EVERY version stores the rendered
+-- PDF per edition (static, DB-independent — consult/re-export unchanged). The LATEST minor
+-- of each major additionally keeps a full DATA snapshot (the compile inputs) so those
+-- milestones retain fine-grained read-only access to translations/phonetics/etc. `status`
+-- tracks the background PDF render; `has_snapshot` flips off when a newer minor in the same
+-- major supersedes this one (its PDF stays; only the data snapshot is pruned).
+CREATE TABLE IF NOT EXISTS document_versions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    org_id       INTEGER NOT NULL,
+    major        INTEGER NOT NULL,
+    minor        INTEGER NOT NULL,
+    semver       TEXT NOT NULL,
+    bump         TEXT NOT NULL CHECK (bump IN ('major', 'minor')),
+    note         TEXT,
+    status       TEXT NOT NULL DEFAULT 'rendering' CHECK (status IN ('rendering', 'ready', 'failed')),
+    error        TEXT,
+    langs        TEXT NOT NULL DEFAULT '[]',   -- JSON list of editions rendered
+    has_snapshot INTEGER NOT NULL DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (document_id, major, minor)
+);
+CREATE INDEX IF NOT EXISTS idx_document_versions_doc ON document_versions(document_id);
+
+-- One frozen PDF per version per edition (bytes stored inline, like every other asset here).
+CREATE TABLE IF NOT EXISTS document_version_pdf (
+    version_id INTEGER NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+    lang       TEXT NOT NULL,
+    pdf        BLOB NOT NULL,
+    page_count INTEGER,
+    byte_size  INTEGER,
+    PRIMARY KEY (version_id, lang)
+);
+
+-- The full data snapshot (gzipped JSON of every compile input) for a milestone version.
+CREATE TABLE IF NOT EXISTS document_version_snapshot (
+    version_id INTEGER PRIMARY KEY REFERENCES document_versions(id) ON DELETE CASCADE,
+    data       BLOB NOT NULL,             -- gzip(JSON) of the composed inputs
+    byte_size  INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Binary assets frozen with a snapshot (item images, org seal, org fonts) — kept for a
+-- future re-render/restore; the read-only text viewer does not need them.
+CREATE TABLE IF NOT EXISTS document_version_asset (
+    version_id INTEGER NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('image', 'seal', 'font')),
+    ref        TEXT NOT NULL DEFAULT '',  -- item_id (image), font_id (font), '' (seal)
+    mime       TEXT,
+    meta       TEXT,                      -- JSON: sizes etc.
+    data       BLOB NOT NULL,
+    PRIMARY KEY (version_id, kind, ref)
 );
 
 -- Org-uploaded fonts (@font-face), selectable by any role alongside the bundled fonts.
@@ -831,7 +909,8 @@ _COLUMN_MIGRATIONS = {
                  # source; this holds a per-occurrence edit that leaves the source intact.
                  ("translations", "TEXT")],
     # level: title level for heading chunks (sapche/title), NULL = not a heading.
-    "translation_chunks": [("level", "INTEGER")],
+    # render_as: 'small_intro' renders the heading as a small-face gloss instead of a title.
+    "translation_chunks": [("level", "INTEGER"), ("render_as", "TEXT")],
     "text_portions": [
         ("color", "TEXT"),
         # Base "listen to this passage" audio timing, set by main-text SRT
@@ -890,7 +969,10 @@ _COLUMN_MIGRATIONS = {
     # source range for that language, leaving the other languages untouched).
     "chunk_layouts": [("move_mode", "TEXT"),
                       ("anchor_after", "INTEGER NOT NULL DEFAULT 0"),
-                      ("lang", "TEXT")],
+                      ("lang", "TEXT"),
+                      # render_as: 'small_intro' renders a translation-only title as a
+                      # small-face gloss instead of a section heading.
+                      ("render_as", "TEXT")],
 }
 
 
@@ -1071,7 +1153,9 @@ def _rename_documents_to_texts(conn) -> None:
     # LEGACY `documents` table (the former `texts`) carries text columns like
     # `raw_text`; distinguish them so this historical rename never touches the booklets.
     NEW_BOOKLET_TABLES = {"document_items", "document_languages", "document_layout",
-                          "document_furniture", "document_images", "document_style_overrides"}
+                          "document_furniture", "document_images", "document_style_overrides",
+                          "title_page_field", "document_versions", "document_version_pdf",
+                          "document_version_snapshot", "document_version_asset"}
     documents_is_legacy = "documents" in tables and "raw_text" in {
         r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if documents_is_legacy:
@@ -1491,6 +1575,11 @@ def init_db():
         conn.execute("INSERT OR IGNORE INTO organizations (id, name) VALUES (1, 'Default organization')")
         for org in conn.execute("SELECT id FROM organizations").fetchall():
             seed_org_roles(conn, org["id"])
+        # A booklet version whose PDF render was killed mid-flight by a process restart is
+        # orphaned in 'rendering' — mark it failed so it is never shown as ready (the user
+        # retries to re-render). The table only exists after the schema above.
+        conn.execute("UPDATE document_versions SET status = 'failed', "
+                     "error = 'interrupted by restart' WHERE status = 'rendering'")
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)

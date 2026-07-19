@@ -20,6 +20,11 @@ export interface StyleProps {
   lineHeight?: string;   // unitless number as string, or var()
   align?: 'left' | 'center' | 'right' | 'justify';
   indent?: string;       // left indent (→ margin-left), a CSS length like '10mm'
+  /** Hanging indent: WRAPPED lines indent by this much, the first line stays put
+   *  (→ padding-left + negative text-indent, composing with `indent`'s margin).
+   *  A CSS length like '4mm'; unset/'0' = none. Block selectors only — on an inline
+   *  span (see the `tibetan_small` note) text-indent has nothing to hang. */
+  hangingIndent?: string;
 }
 
 /** The two booklet layouts the Style Studio groups roles by. */
@@ -92,16 +97,21 @@ const RAW_ROLE_DEFS: RoleDef[] = [
     def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '15mm', align: 'left' }, place: { twopage: G_TR, running: G_RUN } },  // Gentium 11, indent 42.5pt
   { role: 'mantra', label: 'Mantra', selector: '.bk-role-mantra .bk-phonetics',
     def: { fontFamily: 'var(--font-translation)', fontSize: '12pt', fontWeight: 700, italic: false, indent: '10mm' }, place: { twopage: G_TR, running: G_RUN } },  // Mantras (Words) Gentium 12 bold, upright
-  // TWO shapes: a line that is WHOLLY small, and the `.bk-smalltrail` block — instruction
-  // translations merged onto a line by the (Tibetan-side) continuation rule, standing as
-  // their own small block under that line's content. Both are blocks; all props behave.
-  { role: 'small', label: 'Small letters / homage', selector: '.bk-role-small .bk-translation, .booklet-root .bk-smalltrail',
+  // A line that is WHOLLY small — a homage, or a merged instruction (its Tibetan moved to the
+  // preceding line, so only its translation remains here as its own recto line). A block; all
+  // props behave.
+  { role: 'small', label: 'Small letters / homage', selector: '.bk-role-small .bk-translation',
     def: { fontFamily: 'var(--font-small)', fontSize: '9pt', italic: false, indent: '0' }, place: { twopage: G_TR, running: G_RUN } },  // Small Letters Libertinus Serif Display 9, upright
-  // The whole small FAMILY ("small - instructions/verses/colophon/intro") shares this one
-  // `small` role: the variants differ by PURPOSE (the coming continuation rule), not by
-  // type — until a variant needs its own face, one style speaks for all four.
+  // The small FAMILY ("small - instructions/verses/colophon/intro") shares the `small` role
+  // above — EXCEPT the verses variant, which has its own card: verses are the one variant
+  // set as poetry, and poetry wants its wrapped lines hung. The selector rides on the
+  // line's `bk-smallkind-verses` class (bookletRender appends the variant), and the role
+  // sits AFTER `small` so its rule wins for verses lines; its def mirrors `small`'s, so
+  // the split changes nothing but the hang until a designer says otherwise.
+  { role: 'small_verses', label: 'Small letters — verses', selector: '.bk-role-small.bk-smallkind-verses .bk-translation',
+    def: { fontFamily: 'var(--font-small)', fontSize: '9pt', italic: false, indent: '0', hangingIndent: '4mm' }, place: { twopage: G_TR, running: G_RUN } },
   { role: 'intro', label: 'Introduction', selector: '.bk-role-intro .bk-translation',
-    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '0' }, place: { twopage: G_TR, running: G_RUN } },  // a normal reading line, unindented
+    def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '0', hangingIndent: '4mm' }, place: { twopage: G_TR, running: G_RUN } },  // a normal reading line, unindented; wrapped lines hang
   // ── Covers & matter (shown under every format) ──
   { role: 'title_tib', label: 'Title page — Tibetan', selector: '.bk-title-tib',
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '24pt', align: 'center', lineHeight: '1.4' }, place: { twopage: G_MATTER, running: G_MATTER } },  // ཁ་བྱང 24, centred
@@ -109,6 +119,10 @@ const RAW_ROLE_DEFS: RoleDef[] = [
     def: { fontFamily: 'var(--font-title)', fontSize: '18pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Title Libertinus Serif Semibold 18, centred
   { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub',
     def: { fontFamily: 'Calibri', fontSize: '12pt', italic: true, align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Subtitle Calibri 12 italic
+  { role: 'title_origin', label: 'Title page — origin', selector: '.bk-title-origin',
+    def: { fontFamily: 'var(--font-title)', fontSize: '11pt', italic: true, align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // the source cycle
+  { role: 'title_author', label: 'Title page — author', selector: '.bk-title-author',
+    def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // author / translator credit
   { role: 'copyright', label: 'Copyright', selector: '.bk-copyright',
     def: { fontFamily: 'var(--font-translation)', fontSize: '11pt' }, place: { twopage: G_MATTER, running: G_MATTER } },  // no docx style — Normal-ish
   { role: 'toc', label: 'Table of contents', selector: '.bk-toc',
@@ -170,10 +184,13 @@ export const ORG_BASE: Record<string, StyleProps> = {
   translation: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '15mm', lineHeight: '1.2' },
   mantra: { fontFamily: 'Gentium Basic', fontSize: '12pt', fontWeight: 700, italic: false, color: INK, align: 'left', indent: '10mm', lineHeight: '1.25' },
   small: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
-  intro: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.25' },
+  small_verses: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2', hangingIndent: '4mm' },
+  intro: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.25', hangingIndent: '4mm' },
   title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
   title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   title_sub: { fontFamily: 'Calibri', fontSize: '12pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_origin: { fontFamily: 'Libertinus Serif', fontSize: '11pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_author: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   copyright: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.5' },
   toc: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.5' },
   folio: { fontFamily: 'Georgia', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'right', indent: '0', lineHeight: '1' },
@@ -206,6 +223,15 @@ function ruleFor(selector: string, p: StyleProps): string {
   if (p.lineHeight) decls.push(`line-height: ${p.lineHeight}`);
   if (p.align) decls.push(`text-align: ${p.align}`);
   if (p.indent) decls.push(`margin-left: ${p.indent}`);
+  // Hanging indent: only WRAPPED lines move in; the first line — and the first line after
+  // every intentional break the translator typed (`<br>`) — stays flush. `each-line` is
+  // what draws that distinction: it re-applies the negative text-indent at each forced
+  // break, so a translator's own newlines read as flush lines and only the soft wrap hangs.
+  // Padding, not margin, so it stacks with `indent` above instead of fighting it.
+  if (p.hangingIndent && p.hangingIndent !== '0') {
+    decls.push(`padding-left: ${p.hangingIndent}`);
+    decls.push(`text-indent: -${p.hangingIndent} each-line`);
+  }
   if (!decls.length) return '';
   // Scope under .booklet-root so these win over booklet.css's unscoped role rules.
   return `.booklet-root ${selector} { ${decls.join('; ')}; }`;

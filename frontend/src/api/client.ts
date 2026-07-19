@@ -86,6 +86,9 @@ export interface TranslationChunk {
   /** Title level for heading chunks (sapche/title), null = not a heading.
    *  Language-independent — feeds TOC + PDF heading styles. */
   level: number | null;
+  /** How the heading renders in the booklet: null/'title' = a section heading,
+   *  'small_intro' = a small-face gloss (the small family's intro kind). */
+  render_as: string | null;
   /** The chunk's FULL Tibetan text from its origin — shown whole even when the
    *  booklet includes it only partially. */
   text: string;
@@ -161,6 +164,8 @@ export interface ChunkLayout {
   /** Move only: null = shared across all editions (the inherited default); a language code =
    *  that edition only, overriding the shared move on the same source range for that language. */
   lang: string | null;
+  /** Title only: null/'title' = a section heading, 'small_intro' = a small-face gloss. */
+  render_as: string | null;
   disabled: boolean;
   position: number;
   titles: Record<string, string>;
@@ -208,6 +213,7 @@ export const createLayout = (body: {
     { method: 'POST', headers: J, body: JSON.stringify(body) });
 export const patchLayout = (id: number, body: {
   anchor_syl_id?: string; level?: number; disabled?: boolean; clear_anchor?: boolean;
+  render_as?: string | null;
 }) =>
   jfetch<ChunkLayout>(`${API_BASE}/chunk-layouts/${id}`,
     { method: 'PATCH', headers: J, body: JSON.stringify(body) });
@@ -224,6 +230,21 @@ export async function setChunkLevel(body: {
   level: number | null;
 }): Promise<TranslationChunk> {
   const res = await apiFetch(`${API_BASE}/translation-chunks/level`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function setChunkRenderAs(body: {
+  context_text_id: number;
+  start_syl_id: string;
+  end_syl_id: string;
+  render_as: string | null;   // 'small_intro' | 'title' | null
+}): Promise<TranslationChunk> {
+  const res = await apiFetch(`${API_BASE}/translation-chunks/render-as`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -484,6 +505,65 @@ export const setDocumentLanguages = (id: number, langs: string[]) =>
     { method: 'PUT', headers: J, body: JSON.stringify({ langs }) });
 export const getDocumentToc = (id: number) => jfetch<TocEntry[]>(`${API_BASE}/documents/${id}/toc`);
 
+// ── Versioning: frozen per-edition PDFs everywhere + tip-of-major data snapshots ──
+
+export interface DocumentVersion {
+  id: number;
+  document_id: number;
+  major: number;
+  minor: number;
+  semver: string;
+  bump: 'major' | 'minor';
+  note: string | null;
+  status: 'rendering' | 'ready' | 'failed';
+  error: string | null;
+  langs: string[];
+  has_snapshot: boolean;
+  created_at: string;
+}
+
+export const getVersions = (id: number) =>
+  jfetch<DocumentVersion[]>(`${API_BASE}/documents/${id}/versions`);
+export const createVersion = (id: number, bump: 'major' | 'minor', note?: string) =>
+  jfetch<DocumentVersion>(`${API_BASE}/documents/${id}/versions`,
+    { method: 'POST', headers: J, body: JSON.stringify({ bump, note: note ?? null }) });
+export const retryVersion = (id: number, versionId: number) =>
+  jfetch<DocumentVersion>(`${API_BASE}/documents/${id}/versions/${versionId}/retry`,
+    { method: 'POST' });
+export const deleteVersion = (id: number, versionId: number) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/versions/${versionId}`,
+    { method: 'DELETE' });
+/** The frozen PDF for one edition of a version — a plain URL (opened in a tab / downloaded),
+ *  like `itemImageUrl`. `download` flips the Content-Disposition to an attachment. */
+export const versionPdfUrl = (id: number, versionId: number, lang: string, download = false) =>
+  `${API_BASE}/documents/${id}/versions/${versionId}/pdf?lang=${encodeURIComponent(lang)}${download ? '&download=1' : ''}`;
+/** The gunzipped snapshot JSON (tip-of-major versions only) for the read-only viewer. */
+export const getVersionSnapshot = (id: number, versionId: number) =>
+  jfetch<VersionSnapshot>(`${API_BASE}/documents/${id}/versions/${versionId}/snapshot`);
+
+/** The captured compile inputs — raw table rows, keyed by table. The viewer reads the
+ *  translation/phonetics/heading parts; the rest is kept for future re-render/restore. */
+export interface VersionSnapshot {
+  schema: number;
+  document_id: number;
+  text_ids: number[];
+  document: any[];
+  document_items: any[];
+  document_languages: any[];
+  title_page_field: any[];
+  translations: Array<{ id: number; chunk_id: number; lang: string; body: string; status: string }>;
+  texts: Record<string, VersionSnapshotText>;
+  [k: string]: any;
+}
+export interface VersionSnapshotText {
+  text: Array<{ id: number; title: string | null; [k: string]: any }>;
+  syllables: Array<{ id: string; idx: number; text: string; [k: string]: any }>;
+  translation_chunks: Array<{ id: number; start_syl_id: string; end_syl_id: string; kind: string; level: number | null; render_as: string | null; [k: string]: any }>;
+  phonetics: Array<{ id: number; start_syl_id: string; end_syl_id: string; kind: string; lang: string; body: string; [k: string]: any }>;
+  tree_nodes: any[];
+  [k: string]: any;
+}
+
 // ── D2 pagination layout: shared page breaks + per-line balancing, on the document ──
 
 /** `width_*` = a signed per-line-block width delta in mm (see `WidthTarget` in
@@ -566,6 +646,21 @@ export const getFurniture = (id: number) =>
   jfetch<DocumentFurnitureRow[]>(`${API_BASE}/documents/${id}/furniture`);
 export const putFurniture = (id: number, body: { item_id: number; lang: string; body: string }) =>
   jfetch<DocumentFurnitureRow>(`${API_BASE}/documents/${id}/furniture`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
+/** A title page's per-field content (origin/author, per lang) and placement (shift_mm,
+ *  shared, lang=''). One of the six fields: image|tibetan|title|subtitle|origin|author. */
+export interface TitlePageField {
+  item_id: number; field: string; lang: string;
+  body: string | null; shift_mm: number | null;
+}
+export const getTitleFields = (id: number) =>
+  jfetch<TitlePageField[]>(`${API_BASE}/documents/${id}/title-fields`);
+export const putTitleField = (id: number, body: { item_id: number; field: string; lang: string; body: string }) =>
+  jfetch<TitlePageField>(`${API_BASE}/documents/${id}/title-field`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+export const putTitleShift = (id: number, body: { item_id: number; field: string; shift_mm: number }) =>
+  jfetch<TitlePageField>(`${API_BASE}/documents/${id}/title-shift`,
     { method: 'PUT', headers: J, body: JSON.stringify(body) });
 
 export async function deleteText(id: number) {

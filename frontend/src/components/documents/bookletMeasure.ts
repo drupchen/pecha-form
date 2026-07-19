@@ -69,19 +69,12 @@ export function streamSignature(lines: SigLine[]): string {
 export function toSigLines(lines: readonly {
   itemId: number; startSylId: string; role: string; level?: number | null;
   tokens: readonly { small?: boolean }[]; phonetics: string; translation: string | null;
-  emptyAfter: boolean; smallTrails?: readonly { html: string; gapBefore: boolean }[];
+  emptyAfter: boolean;
 }[]): SigLine[] {
   return lines.map((l) => ({
     itemId: l.itemId, startSylId: l.startSylId, role: l.role, level: l.level ?? null,
     tokenCount: l.tokens.length, phonetics: l.phonetics,
-    // The merged-instruction trail blocks (and their blank lines) move the line's height,
-    // so they hash WITH the translation. Folded in behind escaped control bytes (which
-    // cannot occur in the content) rather than adding a field: a line without trails
-    // keeps its exact historical hash, so no booklet is told its whole stream changed.
-    translation: l.smallTrails?.length
-      ? `${l.translation ?? ''}\u0001${l.smallTrails
-          .map((t) => `${t.gapBefore ? 1 : 0}${t.html}`).join('\u0001')}`
-      : l.translation,
+    translation: l.translation,
     emptyAfter: l.emptyAfter,
     smallMask: l.tokens.some((t) => t.small)
       ? l.tokens.map((t) => (t.small ? '1' : '0')).join('') : '',

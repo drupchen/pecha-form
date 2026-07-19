@@ -359,6 +359,13 @@ export function deriveChunks(
   // Phonetics bench: flush on EVERY automatic break (single line breaks included),
   // yielding one unit per printed line instead of per empty-line-delimited stretch.
   lineLevel = false,
+  // Booklet only: a small-INSTRUCTIONS run is always its own translation unit — it never
+  // rides inline into a verse/prose/sapche neighbour the way the inline-minor rule otherwise
+  // absorbs a break-inhibited small run. The booklet appends the instruction's TIBETAN to
+  // the preceding run at render (the continuation rule in `compileTextItem`); its TRANSLATION
+  // must stay a distinct unit so it renders as its own recto line, never merged into the
+  // neighbour's translation. The benches leave this off and keep their inline picture.
+  splitInstructions = false,
 ): DerivedChunk[] {
   const regular = spans.filter(s => s.tag.tag_kind === 'regular');
   const sylSpace = new Map<string, number | 'host'>();
@@ -495,6 +502,15 @@ export function deriveChunks(
           const smallId = ty.name === 'small' ? t.id : curType.name === 'small' ? curAnchorId : null;
           const otherIsMantra = ty.name === 'mantra' || curType.name === 'mantra';
           if (smallId && otherIsMantra && !abbrevSmall.has(smallId)) minorInline = false;
+          // Booklet only (`splitInstructions`): a small-INSTRUCTIONS run beside a NON-mantra
+          // run is never absorbed — it is its own translation unit (its Tibetan is appended
+          // at render). It may still fuse into a mantra as an abbreviation particle (resolved
+          // just above), so the mantra case is left alone here.
+          if (minorInline && splitInstructions && !otherIsMantra
+              && ((ty.name === 'small' && ty.smallKind === 'instructions')
+                  || (curType.name === 'small' && curType.smallKind === 'instructions'))) {
+            minorInline = false;
+          }
         }
         if (!minorInline) flush();
         else if (MINOR.has(curType.name) && !MINOR.has(ty.name)) curType = ty; // real type wins

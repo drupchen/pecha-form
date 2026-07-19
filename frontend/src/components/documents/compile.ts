@@ -49,18 +49,10 @@ export interface DocLine {
   level: number | null;
   /** `small` lines only: which member of the small tag family tagged this line —
    *  'instructions' | 'verses' | 'colophon' | 'intro'. The continuation rule keys on it:
-   *  an INSTRUCTIONS line after verse/prose is merged onto that line (see the merge pass
-   *  in `compileTextItem`); the other kinds stand alone. */
+   *  an INSTRUCTIONS line after verse/prose has its TIBETAN merged onto that line (see the
+   *  merge pass in `compileTextItem`); the other kinds stand alone. The instruction keeps
+   *  its own line for its TRANSLATION — the merge is Tibetan-side only. */
   smallKind?: string;
-  /** The TRANSLATIONS of instruction line(s) merged onto this line by the (Tibetan-side)
-   *  continuation rule. The verso concatenates the Tibetan; the recto renders each entry
-   *  as its OWN small block (`.bk-smalltrail`) with `gapBefore` reproducing the blank line
-   *  that stood before it — so the translation side reads exactly as it did when the
-   *  instruction was its own line. One entry per merged instruction (chains stay separate
-   *  paragraphs). A separate field, not spliced into `translation`, so the mid-line cut
-   *  machinery keeps operating on the pure translation. On a mid-line split the trails
-   *  follow the TAIL (the end of the line). */
-  smallTrails?: { html: string; gapBefore: boolean }[];
   /** Set on the head/tail of a mid-line split — the original line's anchor syllable, so
    *  the split can be cleared from either half. */
   splitAnchor?: string;
@@ -129,6 +121,10 @@ export async function compileTextItem(
   // navigation nests by it where the tree does not supply a depth.
   const levelBySyl = new Map<string, number>();
   for (const c of translations) if (c.level != null) levelBySyl.set(c.start_syl_id, c.level);
+  // A per-heading render override: 'small_intro' turns a sapche/title heading into a
+  // small-face gloss (a commentary, not a Western title) — set in the Translate bench.
+  const renderAsBySyl = new Map<string, string>();
+  for (const c of translations) if (c.render_as) renderAsBySyl.set(c.start_syl_id, c.render_as);
 
   const breakOverrides = new Map<string, number>(breaks.map((b: any) => [b.syl_id, b.count]));
   const markerOffsets = new Set<number>(markers.map((m: any) => m.position));
@@ -138,9 +134,12 @@ export async function compileTextItem(
   // in — the same insert the translate bench does. Without it the titles reached the navigation
   // outline (below) but never the printed pages. `layouts` is shared across editions, so every
   // edition gets the same entries at the same indices and the shared pagination stays aligned.
+  // `splitInstructions` (last arg): keep small-INSTRUCTIONS runs as their own units so their
+  // translation never rides inline into a neighbour — the continuation rule below appends only
+  // their Tibetan. Passed to BOTH derives so the line stream and the chunk stream agree.
   const lines = insertTitleChunks(
-    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true), layouts);
-  const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups);
+    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true), layouts);
+  const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, false, true);
 
   // Where each syllable sits in the stream — so rows matched to a line come back in the
   // order they are read, whatever order the API listed them in.
@@ -210,20 +209,32 @@ export async function compileTextItem(
     return hits.join('');
   };
 
-  // Which chunk each line belongs to (by first-syllable membership), so the chunk's
-  // translation attaches to the chunk's first line and blank-line gaps land on the last.
-  const chunkKeyOfSyl = new Map<string, string>();
+  // Which chunk each line belongs to — by STREAM OFFSET, not syllable id. A composed
+  // stream repeats syllable uuids (the same source transcluded N times, told apart only
+  // by the emitting op), so an id-keyed map collapsed every occurrence onto the LAST
+  // occurrence's chunk: the paragraph split below then dealt the translation to the first
+  // occurrence's lines and starved the rest — a section transcluded four times printed
+  // its heading and translation once and bare Tibetan the other three. Offsets are
+  // cumulative over the composed stream, unique per occurrence; both `lines` and `chunks`
+  // walk the same tokens in order, so a line belongs to the last chunk at or before it.
   const chunkByKey = new Map<string, typeof chunks[number]>();
-  for (const ch of chunks) {
-    chunkByKey.set(ch.key, ch);
-    for (const id of ch.sylIds) chunkKeyOfSyl.set(id, ch.key);
-  }
+  for (const ch of chunks) chunkByKey.set(ch.key, ch);
+  const chunkStarts = chunks.map((ch) => ch.startOffset);
+  const chunkAt = (off: number): string | null => {
+    let lo = 0, hi = chunkStarts.length - 1, at = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (chunkStarts[mid] <= off) { at = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return at >= 0 ? chunks[at].key : null;
+  };
 
   // INTERLINEAR pairs: a chunk's translation body is one <p> per line, 1:1 with the
   // chunk's phonetics lines. Split it and give each line its OWN translation line
   // (extra <p>s append to the last line; missing → none), so the recto renders each
   // phonetics line immediately followed by its translation.
-  const lineChunkKeys = lines.map((l) => chunkKeyOfSyl.get(l.startSylId) ?? null);
+  // Spliced title layouts (`startSylId: ''`, offset -1) belong to no chunk, as before.
+  const lineChunkKeys = lines.map((l) => l.startSylId ? chunkAt(l.startOffset) : null);
   const linesByChunk = new Map<string, number[]>();
   lineChunkKeys.forEach((ck, i) => {
     if (ck == null) return;
@@ -258,11 +269,15 @@ export async function compileTextItem(
       const ly = l.titleLayout;
       const body = (ly.titles[lang] ?? '').trim();
       const paras = splitParagraphs(body);
+      // 'small_intro' renders this title as a small-face gloss, not a section heading:
+      // no level (no TOC entry), and the small/intro role + kind carry the small face.
+      const gloss = ly.render_as === 'small_intro';
       out.push({
-        itemId: item.id, textId, key: `${item.id}:${l.key}`, role: 'title',
+        itemId: item.id, textId, key: `${item.id}:${l.key}`, role: gloss ? 'small' : 'title',
         startSylId: '', endSylId: '', opId: null, tokens: [],
         phonetics: '', translation: body || null, emptyAfter: false,
-        level: Math.max(0, (ly.level ?? 1) - 1),
+        level: gloss ? null : Math.max(0, (ly.level ?? 1) - 1),
+        ...(gloss ? { smallKind: 'intro' } : {}),
         ...(paras.length ? { paragraphs: paras } : {}),
         ...(body ? {} : { missingTitle: true }),
       });
@@ -274,11 +289,16 @@ export async function compileTextItem(
     // vs subtitle) — the per-line translation join above flattens it.
     const paragraphs = l.tagType === 'title' && ck != null
       ? splitParagraphs(transFor(chunkByKey.get(ck)!)) : undefined;
+    // A heading (sapche/title) the editor set to render as a small-face gloss: it becomes a
+    // small/intro line — small on BOTH sides, no heading level, no TOC entry — instead of a
+    // section title. (A sapche that reads as commentary, not a Western-style heading.)
+    const gloss = (l.tagType === 'sapche' || l.tagType === 'title')
+      && renderAsBySyl.get(l.startSylId) === 'small_intro';
     out.push({
       itemId: item.id,
       textId,
       key: `${item.id}:${l.key}`,
-      role: l.tagType,
+      role: gloss ? 'small' : l.tagType,
       startSylId: l.startSylId,
       endSylId: l.endSylId,
       // The op of the token the line ANCHORS on — its first substantial one — not of
@@ -288,34 +308,34 @@ export async function compileTextItem(
       phonetics: phonFor(l),
       translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
-      level: depthBySyl.get(l.startSylId) ?? null,
-      ...(l.smallKind ? { smallKind: l.smallKind } : {}),
+      level: gloss ? null : (depthBySyl.get(l.startSylId) ?? null),
+      ...(gloss ? { smallKind: 'intro' } : (l.smallKind ? { smallKind: l.smallKind } : {})),
       ...(paragraphs && paragraphs.length ? { paragraphs } : {}),
     });
   });
-  // ── The continuation rule ──
-  // A small-INSTRUCTIONS line never stands on its own line: it is concatenated onto
-  // WHATEVER line precedes it — verse, prose, mantra, a section heading, another small —
-  // "the rule overrides everything that precedes it" (the user's words), including the
-  // empty lines the translate pane needs for its chunking. Its Tibetan is appended in
-  // small letters; its translation rides along as the line's `smallTrail`, rendered
-  // inline in the small face at the end of the line's LAST text block. Only a text's
-  // very first line has nothing to continue and stays standalone. Chains concatenate
-  // (the merged line keeps its own role, so the next instruction merges too).
+  // ── The continuation rule (TIBETAN side only) ──
+  // A small-INSTRUCTIONS line's TIBETAN never stands on its own line: it is concatenated
+  // onto WHATEVER real-token line precedes it — verse, prose, mantra, a section heading,
+  // another instruction's host — "the rule overrides everything that precedes it" (the
+  // user's words), including the empty lines the translate pane needs for its chunking.
+  // But the merge is TIBETAN-ONLY: the instruction keeps its OWN line for its TRANSLATION,
+  // which renders as an ordinary standalone small recto line — never appended to the host's
+  // translation. To keep the shared verso/recto line stream aligned, the instruction stays
+  // a DocLine but with its tokens MOVED to the host (so its verso is empty) and its
+  // phonetics cleared (instructions are not recited). `host` tracks the last real-token
+  // line, so a chain of instructions all append onto the same verse/prose/mantra rather
+  // than onto a prior (now token-empty) instruction. Only a text's very first line has
+  // nothing to continue; a text-first instruction keeps its tokens and becomes a host.
   //
   // HERE, in the booklet compile, and nowhere upstream: the translate bench, workspace
   // and phonetics keep their own line pictures, and the print page inherits the rule
   // through this shared compile. The decision reads only roles/smallKind, which derive
   // from the SHARED spans — every edition merges the same lines, so the streams stay
   // index-aligned and the shared break set keeps working.
-  //
-  // A stray phonetics row anchored on an instruction is DROPPED by the merge (none exist
-  // today; instructions are not recited): the rule overrides, and a silently skipped
-  // merge is the bug this passage replaced.
   const mergedOut: DocLine[] = [];
+  let host: DocLine | null = null;   // last line carrying real tokens — the merge target
   for (const l of out) {
-    const prev = mergedOut[mergedOut.length - 1];
-    if (l.role === 'small' && l.smallKind === 'instructions' && prev) {
+    if (l.role === 'small' && l.smallKind === 'instructions' && host) {
       // Every line-level chunk's last token carries a trailing `\n` (the display break
       // deriveChunks appends at `count>=1`), and `.bk-tibetan` is `white-space: pre-wrap` —
       // so appended as-is that `\n` would force the small run onto a NEW visual line. Strip
@@ -324,24 +344,22 @@ export async function compileTextItem(
       // space. The tokens are appended UNMODIFIED, reproducing the editor's text exactly.
       // The clone never mutates the shared token; chains strip each prior run's `\n` at
       // their own join.
-      const last = prev.tokens[prev.tokens.length - 1];
-      prev.tokens = [
-        ...prev.tokens.slice(0, -1),
+      const last = host.tokens[host.tokens.length - 1];
+      host.tokens = [
+        ...host.tokens.slice(0, -1),
         ...(last ? [{ ...last, render: last.render.replace(/\n+$/u, '') }] : []),
         ...l.tokens.map((t) => ({ ...t, small: true })),
       ];
-      prev.endSylId = l.endSylId;
-      if (l.translation) {
-        // `gapBefore` = the blank line that stood between this instruction and what it
-        // follows — consumed on the VERSO (one concatenated line), reproduced on the
-        // RECTO so its spacing stays exactly what it was.
-        prev.smallTrails = [...(prev.smallTrails ?? []),
-                            { html: l.translation, gapBefore: prev.emptyAfter }];
-      }
-      prev.emptyAfter = l.emptyAfter;   // the gap follows the merged unit
+      host.endSylId = l.endSylId;
+      // Keep the instruction as its OWN line for the recto: tokens moved to the host (empty
+      // verso), phonetics dropped. Its own `emptyAfter` (the gap after it) and the host's
+      // own `emptyAfter` (the gap before it) both stay untouched — reproducing the original
+      // spacing on the recto. `host` is NOT advanced: a token-empty line is never a target.
+      mergedOut.push({ ...l, tokens: [], phonetics: '' });
       continue;
     }
     mergedOut.push(l);
+    host = l;
   }
   out.length = 0;
   out.push(...mergedOut);
@@ -380,6 +398,8 @@ export async function compileTextItem(
   });
   for (const ly of layouts) {
     if (ly.kind !== 'title' || ly.disabled) continue;
+    // A title rendered as a gloss is body commentary, not a heading — no bookmark.
+    if (ly.render_as === 'small_intro') continue;
     // This edition's title text only — a title untranslated here has no bookmark here either.
     const body = (ly.titles[lang] ?? '').trim();
     if (!body) continue;

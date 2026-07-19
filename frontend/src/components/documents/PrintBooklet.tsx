@@ -1,15 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getDocument, getDocumentLayout, getFurniture, getOrgSeal,
+  getDocument, getDocumentLayout, getFurniture, getTitleFields, getOrgSeal,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow, type OrgSeal,
+  type DocumentFurnitureRow, type TitlePageField, type OrgSeal,
 } from '../../api/client';
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
   deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG, versoGapSuppressed,
   gapFillLang,
-  type LineAdj, type WidthTarget, type BlockWidthOf, type PageSide,
+  type LineAdj, type WidthTarget, type BlockWidthOf, type PageSide, type TitleField,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
 import '../../styles/booklet.css';
@@ -27,6 +27,7 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   const [config, setConfig] = useState<LayoutConfig | null>(null);
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
+  const [titleFields, setTitleFields] = useState<TitlePageField[]>([]);
   const [lines, setLines] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
@@ -37,14 +38,15 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [d, lay, furn, css, seal] = await Promise.all([
+      const [d, lay, furn, tf, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        getTitleFields(documentId), loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       if (!alive) return;
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       const compiled = await compileDocument(d.items, edition);
       if (!alive) return;
-      setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn); setStyleCss(css);
+      setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn);
+      setTitleFields(tf); setStyleCss(css);
       setOrgSeal(seal);
       setLines(compiled.lines); setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -143,6 +145,11 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
     return { valueMm: r?.value ?? 0, min: 0, max: 0 };
   };
 
+  const titleContentOf = (itemId: number, field: string): string | null =>
+    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === lang)?.body ?? null;
+  const titleShiftOf = (itemId: number) => (field: TitleField): number =>
+    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === '')?.shift_mm ?? 0;
+
   // A single physical page (front/back matter furniture item).
   const FurniturePageSheet: React.FC<{ item: DocumentItem }> = ({ item }) => (
     <div className="booklet-page furniture print-page">
@@ -154,7 +161,10 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           toc={item.kind === 'toc' ? tocRows : []}
           orgSeal={orgSeal}
           widthOf={furnitureWidthOf(item)}
-          tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)} />
+          tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
+          origin={item.kind === 'cover' ? titleContentOf(item.id, 'origin') : null}
+          author={item.kind === 'cover' ? titleContentOf(item.id, 'author') : null}
+          shiftOf={item.kind === 'cover' ? titleShiftOf(item.id) : undefined} />
       </div>
     </div>
   );
@@ -181,7 +191,10 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
             <div key={`u${i}`} className="booklet-page furniture print-page">
               <div className="booklet-content">
                 <TitleContent titleLines={u.titleLines} widthOf={furnitureWidthOf(u.item)}
-                              tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)} />
+                              tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)}
+                              origin={titleContentOf(u.item.id, 'origin')}
+                              author={titleContentOf(u.item.id, 'author')}
+                              shiftOf={titleShiftOf(u.item.id)} />
               </div>
             </div>
           );

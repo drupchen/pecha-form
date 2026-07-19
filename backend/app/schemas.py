@@ -594,6 +594,25 @@ class DocumentOut(BaseModel):
 class DocumentDetailOut(DocumentOut):
     items: List[DocumentItemOut] = []
 
+class DocumentVersionCreate(BaseModel):
+    bump: str                          # 'major' | 'minor'
+    note: Optional[str] = None
+
+class DocumentVersionOut(BaseModel):
+    id: int
+    document_id: int
+    major: int
+    minor: int
+    semver: str
+    bump: str
+    note: Optional[str] = None
+    status: str                        # 'rendering' | 'ready' | 'failed'
+    error: Optional[str] = None
+    langs: List[str] = []
+    has_snapshot: bool = False
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
 class DocumentReorderIn(BaseModel):
     ordered_ids: List[int]
 
@@ -704,3 +723,22 @@ class DocumentFurnitureIn(BaseModel):
     item_id: int
     lang: str
     body: str
+
+
+class TitlePageFieldRow(BaseModel):
+    item_id: int
+    field: str
+    lang: str
+    body: Optional[str] = None
+    shift_mm: Optional[float] = None
+
+class TitleFieldIn(BaseModel):
+    item_id: int
+    field: str          # 'origin' | 'author'
+    lang: str
+    body: str
+
+class TitleShiftIn(BaseModel):
+    item_id: int
+    field: str          # image|tibetan|title|subtitle|origin|author
+    shift_mm: float

@@ -192,3 +192,7 @@ orca.yaml
 
 # Bundled booklet fonts (kept local — licensing/size; placed in public/fonts)
 frontend/public/fonts/
+
+# Claude Code local settings + session scratch/backup artifacts (machine-local).
+.claude/
+scratch/

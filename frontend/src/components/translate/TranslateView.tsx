@@ -79,6 +79,29 @@ const LevelStepper: React.FC<{
   );
 };
 
+/** A segmented [ Title | Gloss ] pill: how a heading renders in the BOOKLET — a full section
+ *  Title (the default, muted), or a small-face Gloss/commentary (`small_intro`). Gloss takes
+ *  the vermilion exception accent so a heading demoted to commentary is scannable at a glance. */
+const RenderAsPill: React.FC<{
+  value: string | null;                       // null/'title' = title, 'small_intro' = gloss
+  onSet: (v: string) => void;
+  miniStyle: React.CSSProperties;
+}> = ({ value, onSet, miniStyle }) => {
+  const gloss = value === 'small_intro';
+  const cell = (active: boolean, accent: boolean) =>
+    `px-1.5 rounded-full transition-colors ${active
+      ? (accent ? 'bg-vermilion text-cream-hi' : 'bg-cream text-ink')
+      : 'text-ink-soft/60 hover:text-ink'}`;
+  return (
+    <span className="flex items-center rounded-full overflow-hidden" style={miniStyle}>
+      <button type="button" onClick={() => onSet('title')} className={cell(!gloss, false)}
+              title="Renders as a full section heading in the booklet.">Title</button>
+      <button type="button" onClick={() => onSet('small_intro')} className={cell(gloss, true)}
+              title="Renders as small commentary text (9pt) in the booklet, not a section heading.">Gloss</button>
+    </span>
+  );
+};
+
 /**
  * Translator bench. Phase T1: chunked Tibetan + canonical per-chunk translations
  * (ripple everywhere). Phase T2: booklet-local overrides with staleness tracking,
@@ -120,6 +143,7 @@ export const TranslateView: React.FC = () => {
   const fetchCollab = useTranslationStore(s => s.fetchCollab);
   const save = useTranslationStore(s => s.save);
   const setLevel = useTranslationStore(s => s.setLevel);
+  const setRenderAs = useTranslationStore(s => s.setRenderAs);
   const saveOverride = useTranslationStore(s => s.saveOverride);
   const revertOverride = useTranslationStore(s => s.revertOverride);
   const acknowledgeBase = useTranslationStore(s => s.acknowledgeBase);
@@ -130,6 +154,7 @@ export const TranslateView: React.FC = () => {
   const addTitle = useTranslationStore(s => s.addTitle);
   const setTitleBody = useTranslationStore(s => s.setTitleBody);
   const setTitleLevel = useTranslationStore(s => s.setTitleLevel);
+  const setTitleRenderAs = useTranslationStore(s => s.setTitleRenderAs);
   const removeLayout = useTranslationStore(s => s.removeLayout);
 
   const [targetLang, setTargetLang] = useState('en');
@@ -189,31 +214,28 @@ export const TranslateView: React.FC = () => {
   }, [treeNodes, tokens]);
   const spyNodeId = useRef<number | null>(null);
   const spyRaf = useRef<number | null>(null);
-  // Which rows currently intersect the list, maintained by an IntersectionObserver
-  // (registered below, after displayRows) so the spy never reads geometry on scroll —
-  // the old walk forced a reflow per row from the top of the list on every frame.
-  const rowEls = useRef<HTMLElement[]>([]);
-  const rowVisible = useRef<Set<Element>>(new Set());
+  // The top-most row still crossing the list's top edge owns the viewport. Measured by
+  // geometry on scroll (rAF-throttled). An IntersectionObserver was tried here but silently
+  // never populated — rows read as never-intersecting — so the sidebar never followed.
   const onListScroll = () => {
     if (spyRaf.current != null) return;
     spyRaf.current = requestAnimationFrame(() => {
       spyRaf.current = null;
-      if (linkedNodes.length === 0) return;
-      // The top-most row still intersecting the viewport is the row the old
-      // geometry walk resolved to (a row straddling the top edge still intersects).
+      const list = listRef.current;
+      if (!list || linkedNodes.length === 0) return;
+      const lr = list.getBoundingClientRect();
       let curOffset: number | null = null;
-      for (const el of rowEls.current) {
-        if (rowVisible.current.has(el)) { curOffset = Number(el.dataset.linkKey); break; }
+      for (const el of list.querySelectorAll<HTMLElement>('[data-link-key]')) {
+        if (el.getBoundingClientRect().bottom > lr.top + 1) { curOffset = Number(el.dataset.linkKey); break; }
       }
-      if (curOffset == null && rowEls.current.length) curOffset = Number(rowEls.current[0].dataset.linkKey);
       if (curOffset == null) return;
       let node = null as (typeof linkedNodes)[number] | null;
       for (const n of linkedNodes) { if (n.segment_start! <= curOffset) node = n; else break; }
       if (!node || node.id === spyNodeId.current) return;
       spyNodeId.current = node.id;
+      // Only set the selection; TreePane owns "follow into view" (scoped to its own
+      // container). A bare scrollIntoView here also scrolled ancestors and fought the list.
       setSelectedTreeNodeId(node.id);
-      document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)
-        ?.scrollIntoView({ block: 'nearest' });
     });
   };
 
@@ -352,23 +374,6 @@ export const TranslateView: React.FC = () => {
       return { key: u.key, u, match: exact, cover };
     });
   }, [chunks, serverChunks, streamIds]);
-
-  // Register the scroll-spy's IntersectionObserver over the rendered rows. Re-runs
-  // when the row list changes so freshly mounted rows are observed.
-  useEffect(() => {
-    const list = listRef.current;
-    if (!list) return;
-    const io = new IntersectionObserver(entries => {
-      for (const e of entries) {
-        if (e.isIntersecting) rowVisible.current.add(e.target);
-        else rowVisible.current.delete(e.target);
-      }
-    }, { root: list });
-    const els = Array.from(list.querySelectorAll<HTMLElement>('[data-link-key]'));
-    rowEls.current = els;
-    els.forEach(el => io.observe(el));
-    return () => { io.disconnect(); rowVisible.current.clear(); rowEls.current = []; };
-  }, [displayRows]);
 
   // A passage block can emit several rows (one per same-type unit-group), all sharing the
   // group's STARTER (`u.passage`). The "link to TOC node" affordance belongs on the first
@@ -1008,13 +1013,24 @@ export const TranslateView: React.FC = () => {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 mb-1.5 text-[10px] text-ink-soft">
                           <span className="px-1.5 rounded-full font-medium bg-cream">title · translation-only</span>
-                          <LevelStepper
-                            level={l.level}
-                            onSet={(lv) => void setTitleLevel(l.id, lv ?? 1)
-                              .catch((e: any) => setSaveError(e.message))}
+                          <RenderAsPill
+                            value={l.render_as}
+                            onSet={(v) => void setTitleRenderAs(l.id, v)
+                              .catch((e: any) => setSaveError(e.message || 'Render mode save failed'))}
                             miniStyle={miniStyle}
-                            title="Heading level"
                           />
+                          <span
+                            className={l.render_as === 'small_intro' ? 'opacity-40 pointer-events-none' : ''}
+                            title={l.render_as === 'small_intro' ? 'A gloss has no section level' : undefined}
+                          >
+                            <LevelStepper
+                              level={l.level}
+                              onSet={(lv) => void setTitleLevel(l.id, lv ?? 1)
+                                .catch((e: any) => setSaveError(e.message))}
+                              miniStyle={miniStyle}
+                              title="Heading level"
+                            />
+                          </span>
                           {l.text_id != null && <span className="px-1.5 rounded-full bg-cream">this booklet only</span>}
                           <button
                             type="button"
@@ -1040,6 +1056,23 @@ export const TranslateView: React.FC = () => {
                               .catch((e: any) => setSaveError(e.message || 'Title save failed'));
                           }}
                         />
+                        {/* The ticked extra languages' titles, so a translator can see the
+                            other editions of a translation-only title (— when absent). */}
+                        {extraLangs.size > 0 && (
+                          <div className="mt-2 flex flex-col gap-1.5">
+                            {[...extraLangs].map(code => {
+                              const b = l.titles[code];
+                              return (
+                                <div key={code} className="text-xs">
+                                  <span className="font-mono text-ink-soft mr-1.5">{code}</span>
+                                  {b
+                                    ? <TranslationBody body={b} className="inline-block whitespace-pre-wrap text-xs" />
+                                    : <span className="italic text-ink-soft/60">—</span>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </React.Fragment>
@@ -1173,10 +1206,12 @@ export const TranslateView: React.FC = () => {
                           {u.tagType}
                         </span>
                         {(u.tagType === 'sapche' || u.tagType === 'title') && (() => {
-                          // Anchored in the Tibetan sapche outline → level is inherited
-                          // (read-only). Otherwise it stays manually definable.
+                          // Render mode (title vs gloss) is per-heading and always editable —
+                          // it has no upstream source to inherit. A gloss has no section level,
+                          // so the level control greys out (kept, not removed → no reflow).
+                          const gloss = match?.render_as === 'small_intro';
                           const inherited = sapcheDepthBySyl.get(u.startSylId);
-                          if (inherited != null) return (
+                          const levelCtl = inherited != null ? (
                             <span
                               className="px-1 rounded font-mono bg-cream text-ink-soft"
                               style={miniStyle}
@@ -1184,8 +1219,7 @@ export const TranslateView: React.FC = () => {
                             >
                               H{inherited + 1} · sapche
                             </span>
-                          );
-                          return (
+                          ) : (
                             <LevelStepper
                               level={match?.level ?? null}
                               onSet={(lv) => void setLevel({
@@ -1198,6 +1232,26 @@ export const TranslateView: React.FC = () => {
                               allowClear
                               title="Title level (whole chunk)"
                             />
+                          );
+                          return (
+                            <>
+                              <RenderAsPill
+                                value={match?.render_as ?? null}
+                                onSet={(v) => void setRenderAs({
+                                  contextTextId: currentText.id,
+                                  startSylId: canonSyl.start,
+                                  endSylId: canonSyl.end,
+                                  renderAs: v,
+                                }).catch((e: any) => setSaveError(e.message || 'Render mode save failed'))}
+                                miniStyle={miniStyle}
+                              />
+                              <span
+                                className={gloss ? 'opacity-40 pointer-events-none' : ''}
+                                title={gloss ? 'A gloss has no section level' : undefined}
+                              >
+                                {levelCtl}
+                              </span>
+                            </>
                           );
                         })()}
                         {u.movedLayoutId != null && (

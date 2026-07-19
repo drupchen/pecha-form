@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Focus, ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTreeNodeStore, buildNestedTree, type NestedTreeNode } from '../../store/useTreeNodeStore';
@@ -21,14 +21,39 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
   const expandAllTreeNodes = useUIStore(s => s.expandAllTreeNodes);
   const fullscreen = useUIStore(s => s.workspaceFullscreen);
 
+  // Bring a node into view WITHIN this sidebar's own scroll container — never a bare
+  // `element.scrollIntoView`, which also scrolls every ancestor (it was jumping the whole
+  // view, so the sidebar never appeared to "follow" the content). `force` centres even a
+  // visible node (the Focus button); the scroll-spy passes false so it doesn't fight a manual
+  // scroll or jitter when the section is already on screen.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollNodeIntoSidebar = (nodeId: number, force: boolean) => {
+    const c = scrollRef.current;
+    if (!c) return;
+    const el = c.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+    if (!el) return;
+    const cr = c.getBoundingClientRect(), er = el.getBoundingClientRect();
+    const top = er.top - cr.top;
+    if (!force && top >= 0 && er.bottom - cr.top <= c.clientHeight) return;   // already visible
+    // Manual Focus glides (smooth); the scroll-spy tracks instantly so the band doesn't lag a
+    // frame behind the content or fight a smooth animation that restarts on every scroll tick.
+    c.scrollTo({ top: c.scrollTop + top - c.clientHeight / 2 + er.height / 2, behavior: force ? 'smooth' : 'auto' });
+  };
   const scrollToSelected = () => {
     if (selectedTreeNodeId == null) return;
     // Snap the band back to the selected anchor too, so the user lands on
     // a card that's clearly the one they had picked.
     setLastHoveredTreeNodeId(selectedTreeNodeId);
-    const el = document.querySelector<HTMLElement>(`[data-node-id="${selectedTreeNodeId}"]`);
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    scrollNodeIntoSidebar(selectedTreeNodeId, true);
   };
+  // Follow the content: whenever the scroll-spy (or a click) moves the selected section, keep
+  // it visible in the sidebar. Centralised here so every place that mounts the tree —
+  // translate, phonetics, workspace — follows the scroll the same way.
+  useEffect(() => {
+    if (selectedTreeNodeId == null) return;
+    scrollNodeIntoSidebar(selectedTreeNodeId, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTreeNodeId]);
 
   // Toggle: if anything is currently collapsed, expand everything. Otherwise
   // collapse every node that has at least one child (no point collapsing leaves).
@@ -98,7 +123,7 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
             <Focus size={16} />
           </button>
         </div>
-        <div className="absolute inset-0 overflow-y-auto overflow-x-auto pt-3 pr-3 pb-3 pl-12 text-sm">
+        <div ref={scrollRef} className="absolute inset-0 overflow-y-auto overflow-x-auto pt-3 pr-3 pb-3 pl-12 text-sm">
         {loading && nodes.length === 0 ? (
           <p className="text-ink-soft italic">Loading…</p>
         ) : (

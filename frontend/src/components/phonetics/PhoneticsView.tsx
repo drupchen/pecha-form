@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Volume2, Zap, Check, ChevronUp, ChevronDown } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
@@ -9,7 +9,8 @@ import { useUIStore } from '../../store/useUIStore';
 import { usePhoneticsStore, phonKey } from '../../store/usePhoneticsStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
-import { deriveChunks } from '../translate/chunks';
+import { deriveChunks, insertTitleChunks } from '../translate/chunks';
+import { TreePane } from '../workspace/TreePane';
 import { deriveLines, kindOf, type PhoneticLine } from './lines';
 import { useCan } from '../../store/usePermissions';
 import { generateBo, generateSkt, STYLE_LANGS, type BoStyle, type BoLang } from './generate';
@@ -17,6 +18,37 @@ import type { SktLang } from './sanskrit';
 import type { Phonetic } from '../../api/client';
 
 const BO_STYLES: BoStyle[] = ['padmakara', 'thl', 'lotsawahouse', 'rigpa', 'lhasey'];
+
+/** A textarea that grows to fit its content so wrapped phonetics never clip. */
+const AutoGrowTextarea: React.FC<React.TextareaHTMLAttributes<HTMLTextAreaElement>> = (props) => {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';               // shrink first so removals also reflow
+    // border-box: scrollHeight is content+padding, so add the border (offset − client) back
+    // or the last line clips by the border's width.
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  };
+  // Re-fit whenever the value changes — typing, generation, or language switch all reflow it.
+  useLayoutEffect(fit, [props.value]);
+  // The first fit can land before webfonts finish loading (the Tibetan/Latin faces swap in and
+  // re-wrap the text) or before the flex column reaches its final width — either leaves a line
+  // clipped. Re-fit once fonts are ready and on any width change of the box (pane/window resize).
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let alive = true;
+    document.fonts?.ready.then(() => { if (alive) fit(); });
+    let lastW = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== lastW) { lastW = el.clientWidth; fit(); }  // width guard: our own
+    });                                                                  // height writes can't loop
+    ro.observe(el);
+    return () => { alive = false; ro.disconnect(); };
+  }, []);
+  return <textarea ref={ref} {...props} />;
+};
 
 /** The booklet languages phonetics are authored in (matches the languages table). */
 type DocLang = 'en' | 'fr' | 'de' | 'pt';
@@ -60,9 +92,11 @@ export const PhoneticsView: React.FC = () => {
   // navigation outline uses: the translation chunks (their per-language label) and the sapche
   // tree (nesting depth).
   const trChunks = useTranslationStore(s => s.chunks);
+  const layouts = useTranslationStore(s => s.layouts);
   const fetchChunks = useTranslationStore(s => s.fetchChunks);
   const treeNodes = useTreeNodeStore(s => s.nodes);
   const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
+  const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
 
   const [tab, setTab] = useState<'bo' | 'skt'>('bo');
   const [docLang, setDocLang] = useState<DocLang>('en');
@@ -166,31 +200,45 @@ export const PhoneticsView: React.FC = () => {
   // same full unit stream `deriveLines` walks, but keeping the heading units (not just the
   // recited lines) so an editor can see where they are. Headings are read-only landmarks; each
   // recited line keeps a 1-based number of its own (`n`).
+  // `offset` = the row's raw start offset (its first token's), so the shared sapche machinery
+  // (scroll-spy + click-to-jump, keyed on `[data-link-key]`) can locate it. Translation-only
+  // title headings have no token/offset, so they don't participate in the spy (null).
   type Row =
-    | { kind: 'heading'; key: string; label: string; depth: number }
-    | { kind: 'line'; line: PhoneticLine; n: number };
+    | { kind: 'heading'; key: string; label: string; depth: number; offset: number | null }
+    | { kind: 'line'; line: PhoneticLine; n: number; offset: number };
   const rendered = useMemo<Row[]>(() => {
     if (!tokens.length) return [];
     const markerOffsets = new Set(markers.map(m => m.position));
-    const units = deriveChunks(tokens, markerOffsets, spans, breakOverrides,
-      { verse: true, sapche: true, mantra: true }, undefined, /* lineLevel */ true);
+    // With the translation-only title layouts spliced in (same as the booklet compile), so they
+    // show inline among the sapche headings — in the current edit language.
+    const units = insertTitleChunks(
+      deriveChunks(tokens, markerOffsets, spans, breakOverrides,
+        { verse: true, sapche: true, mantra: true }, undefined, /* lineLevel */ true),
+      layouts);
     const out: Row[] = [];
     let n = 0;
     for (const u of units) {
-      if (u.tagType === 'sapche' || u.tagType === 'title') {
+      if (u.titleLayout) {
+        // Translation-only title — docLang label only (no Tibetan to fall back to); skip when
+        // this edition hasn't translated it, to keep the working view uncluttered.
+        const raw = u.titleLayout.titles[docLang];
+        const label = raw ? stripHtml(raw) : '';
+        if (!label) continue;
+        out.push({ kind: 'heading', key: u.key, label, depth: Math.max(0, (u.titleLayout.level ?? 1) - 1), offset: null });
+      } else if (u.tagType === 'sapche' || u.tagType === 'title') {
         const raw = transByRange.get(`${u.startSylId}-${u.endSylId}`);
         const label = (raw ? stripHtml(raw) : '') || u.text.trim();
         const depth = depthBySyl.get(u.startSylId)
           ?? (levelBySyl.has(u.startSylId) ? levelBySyl.get(u.startSylId)! - 1 : 0);
-        out.push({ kind: 'heading', key: u.key, label, depth: Math.max(0, depth) });
+        out.push({ kind: 'heading', key: u.key, label, depth: Math.max(0, depth), offset: u.startOffset });
       } else {
         const k = kindOf(u.tagType);
-        if (k === tab && u.startSylId) out.push({ kind: 'line', line: { ...u, kind: k }, n: ++n });
+        if (k === tab && u.startSylId) out.push({ kind: 'line', line: { ...u, kind: k }, n: ++n, offset: u.startOffset });
       }
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tokens, markers, spans, breakOverrides, tab, transByRange, depthBySyl, levelBySyl]);
+  }, [tokens, markers, spans, breakOverrides, tab, transByRange, depthBySyl, levelBySyl, layouts, docLang]);
 
   const shown = useMemo(
     () => rendered.filter((r): r is Extract<Row, { kind: 'line' }> => r.kind === 'line').map(r => r.line),
@@ -229,6 +277,39 @@ export const PhoneticsView: React.FC = () => {
     els.forEach(el => el.classList.remove('link-pulse'));
     target.classList.add('link-pulse');
     nav.pulse = window.setTimeout(() => target.classList.remove('link-pulse'), 1300);
+  };
+
+  // ── Sapche scroll-spy (the sidebar follows the list) ──
+  // Same mechanism as the translate bench: an IntersectionObserver tracks which rows are in
+  // view; on scroll, the top-most one resolves to its owning sapche section and selects it.
+  // `TreePane` owns bringing that section into view (see its follow effect).
+  const linkedNodes = useMemo(
+    () => treeNodes.filter(n => n.segment_start != null)
+      .sort((a, b) => a.segment_start! - b.segment_start!),
+    [treeNodes]);
+  const spyNodeId = useRef<number | null>(null);
+  const spyRaf = useRef<number | null>(null);
+  // Geometry, not an IntersectionObserver: the topmost row still crossing the list's top edge
+  // owns the viewport. (An IO here silently never populated — rows read as never-intersecting —
+  // so the sidebar never followed. Measuring rects on scroll is simpler and actually fires.)
+  const onListScroll = () => {
+    if (spyRaf.current != null) return;
+    spyRaf.current = requestAnimationFrame(() => {
+      spyRaf.current = null;
+      const list = listRef.current;
+      if (!list || linkedNodes.length === 0) return;
+      const lr = list.getBoundingClientRect();
+      let curOffset: number | null = null;
+      for (const el of list.querySelectorAll<HTMLElement>('[data-link-key]')) {
+        if (el.getBoundingClientRect().bottom > lr.top + 1) { curOffset = Number(el.dataset.linkKey); break; }
+      }
+      if (curOffset == null) return;
+      let node: (typeof linkedNodes)[number] | null = null;
+      for (const nd of linkedNodes) { if (nd.segment_start! <= curOffset) node = nd; else break; }
+      if (!node || node.id === spyNodeId.current) return;
+      spyNodeId.current = node.id;
+      setSelectedTreeNodeId(node.id);
+    });
   };
 
   // Effective generation dialects: bo style may not cover docLang (Padmakara has no
@@ -422,8 +503,13 @@ export const PhoneticsView: React.FC = () => {
         <span className="text-ink-soft">{shown.length} lines · {docLang}</span>
       </div>
 
-      {/* Rows */}
-      <div ref={listRef} className="flex-1 overflow-auto px-5 py-3">
+      {/* Body: sapche sidebar (orientation + click-to-jump) + the phonetics rows */}
+      <div className="flex-1 flex overflow-hidden">
+        <div className="w-80 shrink-0 h-full overflow-hidden"
+             style={{ borderRight: '1px solid var(--cline)' }}>
+          <TreePane forceConsult />
+        </div>
+        <div ref={listRef} onScroll={onListScroll} className="flex-1 overflow-auto px-5 py-3">
         {shown.length === 0 ? (
           <div className="text-ink-soft text-sm py-8 text-center">
             No {tab === 'bo' ? 'Tibetan verse/prose' : 'Sanskrit mantra'} lines in this document.
@@ -437,6 +523,7 @@ export const PhoneticsView: React.FC = () => {
               if (item.kind === 'heading') {
                 return (
                   <div key={item.key} className="py-1.5 select-none"
+                       data-link-key={item.offset ?? undefined}
                        style={{ paddingLeft: `${item.depth * 1.5}rem` }}>
                     <div className="text-sm font-semibold text-lapis/80 tracking-wide"
                          title="Sapche section (edit the title in the Translate bench)">
@@ -452,6 +539,7 @@ export const PhoneticsView: React.FC = () => {
               const dirty = drafts.has(l.key);
               return (
                 <div key={l.key} className="py-2.5 flex items-start gap-4"
+                     data-link-key={item.offset}
                      data-empty={!body.trim() ? '' : undefined}>
                   {/* Tibetan line */}
                   <div className="w-2/5 shrink-0 tibetan-text whitespace-pre-wrap leading-relaxed">
@@ -469,14 +557,14 @@ export const PhoneticsView: React.FC = () => {
                           style={{ width: '1.6em', color: '#A28348', opacity: 0.5, fontSize: '0.7rem' }}>
                       {item.n}
                     </span>
-                    <textarea
+                    <AutoGrowTextarea
                       value={body}
                       readOnly={!canEditPhonetics}
                       onChange={e => canEditPhonetics && setDraft(l.key, e.target.value)}
                       onBlur={() => canEditPhonetics && handleBlur(l, m)}
                       rows={1}
                       placeholder={l.kind === 'bo' ? 'phonetics…' : 'romanization…'}
-                      className="flex-1 px-2 py-1 rounded-md bg-white text-sm resize-y min-h-[2rem]"
+                      className="flex-1 px-2 py-1 rounded-md bg-white text-sm resize-none overflow-hidden min-h-[2rem]"
                       style={{ border: '1px solid var(--cline)' }}
                     />
                     {canEditPhonetics && (
@@ -518,6 +606,7 @@ export const PhoneticsView: React.FC = () => {
             })}
           </div>
         )}
+        </div>
       </div>
     </div>
   );
