@@ -9,20 +9,116 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout,
-  getTitleFields, putTitleField, getVersions,
+  getVersions,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize,
-  type Language, type DocumentItemKind, type DocumentFurnitureRow, type TitlePageField,
+  type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
 import { VersionsPanel } from './Versions';
 import { useCan } from '../../store/usePermissions';
 import { compileDocument } from './compile';
-import { deriveBooklet, TIBETAN_LANG, type NavNode } from './bookletRender';
+import {
+  deriveBooklet, TIBETAN_LANG, TITLE_BLOCKS, TITLE_BLOCK_META,
+  type NavNode, type TitleBlock,
+} from './bookletRender';
+import { cleanSpecimenHtml, stripAttrs } from './StyleStudio';
 
-/** Furniture kinds that carry per-language authored text and/or an image. */
+/** Furniture kinds with an editor: per-language authored text and an uploaded, resizable
+ *  image. These were two identically-populated constants — two names for one concept, which
+ *  implied a distinction the code never made. */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
-/** Furniture kinds that can hold an uploaded (resizable) image. */
-const IMAGE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
+
+/**
+ * One title slot's text, edited as it will PRINT rather than as the markup behind it.
+ *
+ * A title page's slots carry emphasis (a work's name inside "From …") and deliberate line
+ * breaks. Typed as source those are `<em>` and `<br>` — which is asking someone setting a
+ * title page to read HTML, and to spot the difference between the two when the whole point
+ * of the field is how the line looks.
+ *
+ * Uncontrolled: `innerHTML` is written once, or the caret jumps to the front on every
+ * keystroke. The parent re-`key`s the element when the override appears or goes, which is
+ * what re-seeds it.
+ *
+ * `cleanSpecimenHtml` is the Style Studio's sanitizer, reused deliberately rather than
+ * copied: it keeps exactly `<strong>`/`<em>`/`<br>` and unwraps everything else — including
+ * the inline `style` contentEditable freezes the computed font into, which would otherwise
+ * outrank the block's role and pin this line's size forever.
+ */
+const RichLine: React.FC<{
+  html: string; placeholder?: string; onCommit: (html: string) => void;
+}> = ({ html, placeholder, onCommit }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (ref.current) ref.current.innerHTML = html; }, []); // eslint-disable-line
+
+  /**
+   * Commit while typing, not only on the way out.
+   *
+   * Blur alone is not enough to be safe: collapsing the panel unmounts the field, and an
+   * unmount is not a blur — the edit would simply be gone, with nothing to say so. The
+   * debounce keeps that from being a write per keystroke, and `commit` is idempotent
+   * (`saveFurniture` returns early when the value has not moved), so the blur and the unmount
+   * below can both call it without writing twice.
+   */
+  const timer = useRef<number>(0);
+  const commit = () => {
+    if (!ref.current) return;
+    onCommit(cleanSpecimenHtml(ref.current.innerHTML));
+  };
+  const commitSoon = () => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(commit, 600);
+  };
+  // Flush on the way out — the debounce may still be pending when the panel closes.
+  useEffect(() => () => { window.clearTimeout(timer.current); commit(); }, []); // eslint-disable-line
+
+  const exec = (cmd: 'bold' | 'italic') => {
+    ref.current?.focus();
+    document.execCommand(cmd);
+    stripAttrs(ref.current!);
+    commitSoon();
+  };
+  return (
+    <span className="flex-1 flex items-start gap-1">
+      <div
+        ref={ref}
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder={placeholder}
+        className="flex-1 px-2 py-1 rounded-md bg-white text-xs bk-richline"
+        style={{ border: '1px solid var(--cline)', minHeight: '1.75rem' }}
+        onFocus={() => setFocused(true)}
+        onInput={() => { stripAttrs(ref.current!); commitSoon(); }}
+        onKeyDown={e => {
+          // Enter is a LINE BREAK here, never a new paragraph: a slot is one block, and its
+          // breaks are where the type turns, not where a new block starts.
+          if (e.key === 'Enter') { e.preventDefault(); document.execCommand('insertLineBreak'); }
+        }}
+        onBlur={() => { setFocused(false); window.clearTimeout(timer.current); commit(); }}
+      />
+      {/* Shown only while the field has focus — six slots times four languages would be a
+          wall of buttons otherwise. `onMouseDown` preventDefault keeps the caret (and the
+          selection the command applies to) instead of blurring the field. */}
+      {focused && (
+        <span className="flex gap-0.5 shrink-0 pt-0.5">
+          {(['bold', 'italic'] as const).map(cmd => (
+            <button key={cmd} type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => exec(cmd)}
+                    title={cmd === 'bold' ? 'Bold (Ctrl+B)' : 'Italic (Ctrl+I)'}
+                    className="w-5 h-5 rounded text-[11px] text-ink-soft hover:text-lapis hover:bg-cream"
+                    style={{ border: '1px solid var(--cline)',
+                             fontWeight: cmd === 'bold' ? 700 : 400,
+                             fontStyle: cmd === 'italic' ? 'italic' : 'normal' }}>
+              {cmd === 'bold' ? 'B' : 'I'}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+};
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -89,7 +185,6 @@ export const DocumentsView: React.FC = () => {
   const [pickingText, setPickingText] = useState(false);
   const [paginating, setPaginating] = useState(false);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
-  const [titleFields, setTitleFields] = useState<TitlePageField[]>([]);
   const [editingItem, setEditingItem] = useState<number | null>(null);
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
@@ -97,6 +192,17 @@ export const DocumentsView: React.FC = () => {
   // Per cover item: the Tibetan its text supplies. What the cover shows when the booklet has
   // no Tibetan of its own, and what the editor's field is seeded from.
   const [sourceTibetan, setSourceTibetan] = useState<Map<number, string>>(new Map());
+  /**
+   * Per language: the paragraphs of the text's title translation, which are what the title
+   * page's slots follow when the booklet has not overridden them — `[0]` the main title,
+   * `[1]` the sub-title, `[2]` the origin, `[3]` the author.
+   *
+   * Compiled only while a title-bearing panel is OPEN, and once per language. The nav
+   * preview above compiles the selected edition only; seeding every field needs them all,
+   * which is too much work to do on merely opening the document.
+   */
+  const [sourceSlots, setSourceSlots] = useState<Map<string, string[]>>(new Map());
+  const [slotsFor, setSlotsFor] = useState<number | null>(null);   // which item they describe
   const [navLang, setNavLang] = useState<string>('');
   const [navLoading, setNavLoading] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
@@ -113,8 +219,7 @@ export const DocumentsView: React.FC = () => {
   useEffect(() => {
     if (current) {
       getFurniture(current.id).then(setFurniture).catch(() => setFurniture([]));
-      getTitleFields(current.id).then(setTitleFields).catch(() => setTitleFields([]));
-    } else { setFurniture([]); setTitleFields([]); }
+    } else { setFurniture([]); }
     setEditingItem(null);
     setShowVersions(false);
   }, [current?.id]);
@@ -170,20 +275,44 @@ export const DocumentsView: React.FC = () => {
     // curating either re-derives the preview without a reload.
   }, [current?.id, current?.items, navLang, treeVersion, trVersion]);
 
-  const furnitureBody = (itemId: number, langCode: string) =>
-    furniture.find(f => f.item_id === itemId && f.lang === langCode)?.body ?? '';
+  /**
+   * Seed the title slots for the panel that is open, one compile per language.
+   *
+   * Gated on the panel rather than the document because it is N compiles, and nobody pays
+   * for them until they actually open a cover. `slotsFor` records which item the map
+   * describes, so a stale map cannot seed the wrong page's fields.
+   */
+  useEffect(() => {
+    const it = current?.items.find(i => i.id === editingItem);
+    if (!current || !it || it.kind !== 'cover') { setSourceSlots(new Map()); setSlotsFor(null); return; }
+    let alive = true;
+    (async () => {
+      const next = new Map<string, string[]>();
+      for (const lg of current.languages) {
+        try {
+          const c = await compileDocument(current.items, lg);
+          if (!alive) return;
+          // The same paragraphs the page reads: the title chunk's `<p>` structure, carried
+          // on whichever title line has it.
+          const tl = [...c.titleByItem.values()][0] ?? [];
+          next.set(lg, tl.find(t => t.paragraphs?.length)?.paragraphs
+                    ?? tl.map(t => t.translation).filter((x): x is string => !!x));
+        } catch { /* a language that will not compile simply seeds nothing */ }
+      }
+      if (alive) { setSourceSlots(next); setSlotsFor(it.id); }
+    })();
+    return () => { alive = false; };
+  }, [current?.id, editingItem, current?.items, current?.languages, trVersion]);
 
-  // The cover's dedicated title-page fields (origin, author), per language.
-  const titleFieldBody = (itemId: number, field: string, langCode: string) =>
-    titleFields.find(f => f.item_id === itemId && f.field === field && f.lang === langCode)?.body ?? '';
-  const saveTitleField = async (itemId: number, field: string, langCode: string, body: string) => {
-    if (!current) return;
-    if (body === titleFieldBody(itemId, field, langCode)) return;
-    try {
-      await putTitleField(current.id, { item_id: itemId, field, lang: langCode, body });
-      setTitleFields(await getTitleFields(current.id));
-    } catch { /* surfaced by the general error path */ }
-  };
+  /** What the text supplies for one slot in one edition — the seed, and the "following the
+   *  text" value the field is compared against. */
+  const slotSeed = (itemId: number, langCode: string, block: TitleBlock) =>
+    (slotsFor === itemId ? sourceSlots.get(langCode)?.[TITLE_BLOCK_META[block].seed] : '') ?? '';
+
+  const furnitureBody = (itemId: number, langCode: string, block = '') =>
+    furniture.find(f => f.item_id === itemId && f.lang === langCode
+                     && (f.block ?? '') === block)?.body ?? '';
+
 
   /**
    * The cover's Tibetan, when this booklet has been given its own.
@@ -197,13 +326,31 @@ export const DocumentsView: React.FC = () => {
     const next = body.trim();
     await saveFurniture(itemId, TIBETAN_LANG, next === source ? '' : next);
   };
-  const saveFurniture = async (itemId: number, langCode: string, body: string) => {
+  /**
+   * One title slot, on the same terms as the Tibetan above: left equal to what the text
+   * supplies, nothing is stored and the slot goes on FOLLOWING the text. So blurring an
+   * untouched field cannot quietly freeze a copy of it, and emptying the box hands the slot
+   * back to the text rather than blanking the page.
+   */
+  const saveSlot = async (itemId: number, langCode: string, block: TitleBlock, html: string) => {
+    // Both sides are the stored HTML — the field edits marks and breaks, not their markup,
+    // and hands back the same shape it was given. An untouched field therefore equals its
+    // seed exactly and does not read as an override. The seed goes through the same
+    // sanitizer so a difference can only ever be one the user actually made.
+    const seed = cleanSpecimenHtml(slotSeed(itemId, langCode, block)).trim();
+    const next = html.trim();
+    await saveFurniture(itemId, langCode, next === seed ? '' : next, block);
+  };
+  const saveFurniture = async (
+    itemId: number, langCode: string, body: string, block = '',
+  ) => {
     if (!current) return;
-    if (body === furnitureBody(itemId, langCode)) return;
+    if (body === furnitureBody(itemId, langCode, block)) return;
     try {
-      const row = await putFurniture(current.id, { item_id: itemId, lang: langCode, body });
+      const row = await putFurniture(current.id, { item_id: itemId, lang: langCode, block, body });
       setFurniture(prev => [
-        ...prev.filter(f => !(f.item_id === itemId && f.lang === langCode)), row,
+        ...prev.filter(f => !(f.item_id === itemId && f.lang === langCode
+                           && (f.block ?? '') === block)), row,
       ]);
     } catch { /* surfaced by store elsewhere */ }
   };
@@ -229,11 +376,27 @@ export const DocumentsView: React.FC = () => {
     finally { setImgBusy(false); }
   };
   const sizeTimer = useRef<number>(0);
-  const onResizeImage = (itemId: number, widthMm: number | null, heightMm: number | null) => {
+  /**
+   * The size being typed, held until the debounce fires.
+   *
+   * Both inputs share one timer, so typing a width and then a height inside the window
+   * cancels the width's call — and each input used to read the OTHER dimension off the
+   * item prop, which the cancelled call had not yet updated. The second call therefore
+   * resubmitted the pre-edit width and the width edit was silently lost. Accumulating both
+   * dimensions here means whichever call lands carries the latest of each.
+   */
+  const pendingSize = useRef<{ itemId: number; w: number | null; h: number | null } | null>(null);
+  const onResizeImage = (itemId: number, dim: 'w' | 'h', value: number | null, it: DocumentItem) => {
     if (!current) return;
+    const base = pendingSize.current?.itemId === itemId
+      ? pendingSize.current
+      : { itemId, w: it.image_width_mm ?? null, h: it.image_height_mm ?? null };
+    const next = { ...base, itemId, [dim]: value };
+    pendingSize.current = next;
     window.clearTimeout(sizeTimer.current);
     sizeTimer.current = window.setTimeout(async () => {
-      try { await setItemImageSize(itemId, widthMm, heightMm); await open(current.id); }
+      pendingSize.current = null;
+      try { await setItemImageSize(itemId, next.w, next.h); await open(current.id); }
       catch { /* ignore */ }
     }, 400);
   };
@@ -459,7 +622,7 @@ export const DocumentsView: React.FC = () => {
                     {editable && canEditDocs && editingItem === it.id && (
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
-                        {IMAGE_FURNITURE.includes(it.kind) && (
+                        {EDITABLE_FURNITURE.includes(it.kind) && (
                           <div className="flex items-center gap-3 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {it.has_image ? (
@@ -488,17 +651,17 @@ export const DocumentsView: React.FC = () => {
                               )}
                               {it.has_image && (
                                 <div className="flex items-center gap-1 text-[10px] text-ink-soft mt-0.5"
-                                     title="Display size in mm; leave height blank to keep the aspect ratio">
+                                     title="Display size in mm. Set one and leave the other blank to keep the aspect ratio. Shared by every edition.">
                                   <span>size</span>
                                   <input type="number" min={0} step={1} defaultValue={it.image_width_mm ?? ''}
                                          placeholder="w" className="w-11 px-1 py-0.5 rounded bg-white"
                                          style={{ border: '1px solid var(--cline)' }}
-                                         onChange={e => onResizeImage(it.id, e.target.value === '' ? null : Number(e.target.value), it.image_height_mm ?? null)} />
+                                         onChange={e => onResizeImage(it.id, 'w', e.target.value === '' ? null : Number(e.target.value), it)} />
                                   <span>×</span>
                                   <input type="number" min={0} step={1} defaultValue={it.image_height_mm ?? ''}
                                          placeholder="h" className="w-11 px-1 py-0.5 rounded bg-white"
                                          style={{ border: '1px solid var(--cline)' }}
-                                         onChange={e => onResizeImage(it.id, it.image_width_mm ?? null, e.target.value === '' ? null : Number(e.target.value))} />
+                                         onChange={e => onResizeImage(it.id, 'h', e.target.value === '' ? null : Number(e.target.value), it)} />
                                   <span>mm</span>
                                 </div>
                               )}
@@ -534,33 +697,55 @@ export const DocumentsView: React.FC = () => {
                               className="flex-1 px-2 py-1 rounded bg-white text-sm resize-y"
                               style={{ border: '1px solid var(--cline)',
                                        fontFamily: "'Chogyal', 'Jomolhari', serif", lineHeight: 1.6 }} />
-                            {/* Dedicated cover fields (title + sub-title come from the text). Each
-                                gets its own style and can be placed on the title page in the bench. */}
-                            {(['origin', 'author'] as const).map(field => (
-                              <div key={field} className="flex flex-col gap-1 mt-1">
-                                <span className="text-[11px] text-ink-soft">
-                                  {field === 'origin'
-                                    ? 'Origin — the source cycle (per language)'
-                                    : 'Author / translator credit (per language)'}
-                                </span>
-                                {current.languages.map(code => (
-                                  <label key={code} className="flex items-start gap-2">
-                                    <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
-                                    <textarea
-                                      defaultValue={titleFieldBody(it.id, field, code)}
-                                      onBlur={e => void saveTitleField(it.id, field, code, e.target.value)}
-                                      rows={1}
-                                      placeholder={field === 'origin'
-                                        ? 'e.g. From The Heart Essence of the Spontaneously Arisen Padma'
-                                        : 'e.g. Translated by …'}
-                                      className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
-                                      style={{ border: '1px solid var(--cline)' }} />
-                                  </label>
-                                ))}
+                          </div>
+                        )}
+                        {/* The cover's translated slots, in the order the page prints them.
+                            Each follows the text until it is overridden, exactly as the
+                            Tibetan above does — so this panel now mirrors the page instead of
+                            offering one field that did nothing. */}
+                        {it.kind === 'cover' && current.languages.length > 0 && (
+                          <div className="flex flex-col gap-2 pb-1.5 mb-0.5"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            {TITLE_BLOCKS.map(block => (
+                              <div key={block} className="flex flex-col gap-1">
+                                <div className="text-[11px] text-ink-soft">
+                                  {TITLE_BLOCK_META[block].label} — per language
+                                </div>
+                                {current.languages.map(code => {
+                                  const own = furnitureBody(it.id, code, block);
+                                  const seed = slotSeed(it.id, code, block);
+                                  return (
+                                    <div key={code} className="flex items-start gap-2">
+                                      <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
+                                      <RichLine
+                                        // Re-seed when the override appears or goes: the box
+                                        // is uncontrolled, so "reset" would otherwise leave
+                                        // the old text sitting in it, contradicting the page.
+                                        key={`${block}-${code}-${own ? 'own' : 'src'}-${seed}`}
+                                        html={own || seed}
+                                        placeholder={slotsFor === it.id ? 'follows the text' : 'loading…'}
+                                        onCommit={h => void saveSlot(it.id, code, block, h)} />
+                                      {own ? (
+                                        <button type="button"
+                                                onClick={() => void saveFurniture(it.id, code, '', block)}
+                                                className="text-[10px] text-lapis hover:underline shrink-0"
+                                                title="Discard this booklet's own text and follow the text again">
+                                          reset
+                                        </button>
+                                      ) : (
+                                        <span className="text-[10px] text-jade shrink-0">following</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
                             ))}
                           </div>
                         )}
+                        {/* The free-form body. The cover has none: every one of its elements
+                            is a named slot above, and the generic box it used to show was
+                            never rendered on the page at all. */}
+                        {it.kind !== 'cover' && (
                         <div className="text-[11px] text-ink-soft">
                           {isTextItem
                             ? 'Table-of-contents title — per language (blank = the text’s own title)'
@@ -570,10 +755,11 @@ export const DocumentsView: React.FC = () => {
                                 ? 'Back-cover text — per language (optional; HTML: <p>, <em>, <strong>)'
                                 : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
                         </div>
+                        )}
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
                         )}
-                        {current.languages.map(code => (
+                        {it.kind !== 'cover' && current.languages.map(code => (
                           <label key={code} className="flex items-start gap-2">
                             <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
                             <textarea

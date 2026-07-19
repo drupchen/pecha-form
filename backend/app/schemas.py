@@ -655,6 +655,16 @@ class TocEntry(BaseModel):
 # spacing and the page still is not right. `value` is signed, so 0 — not "<= 0" — is what
 # clears one. It may legitimately place ink BETWEEN the text block's foot and the sheet's
 # edge: that is the point of it, and the page's own clip is what still bounds the ink.
+# `shift_furniture`: the same signed mm, for one BLOCK of a special page — the vertical twin
+# of `width_furniture`, keyed identically (the block's address, per edition, except the
+# booklet's own Tibetan which is shared). A special page is not one block that moves
+# together: a title page is a seal, a Tibetan title, a main title, a sub-title, an origin and
+# an author, each with its own size and its own air, so the unit that moves is the block.
+# The body kinds above keep their syllable anchoring untouched.
+# `space_furniture`: signed mm on ONE Tibetan title line's `word-spacing` — the U+0020 gaps
+# after each shad, which the face sets wider than a title page usually wants. It reaches only
+# those spaces: the tsheg between syllables is U+0F0B, a different character. Shared across
+# editions (lang '') because the Tibetan title is one string printed in every booklet.
 # `gap_fill_verso` / `gap_fill_recto`: extra height added to EVERY empty-line gap on ONE
 # page, in mm — the leftover a shared break left behind, spent on balancing that page.
 # Anchored on the page's first line. Two kinds because the two facing pages have nothing to
@@ -666,7 +676,7 @@ DocumentLayoutKind = Literal[
     'page_break', 'line_space', 'line_nospace', 'hairline', 'recto_cut',
     'width_tibetan', 'width_phonetics', 'width_translation', 'width_section',
     'gap_fill_verso', 'gap_fill_recto', 'width_furniture',
-    'page_shift_verso', 'page_shift_recto',
+    'page_shift_verso', 'page_shift_recto', 'shift_furniture', 'space_furniture',
     'no_split', 'no_break',
 ]
 
@@ -714,14 +724,19 @@ class PaginationStampIn(BaseModel):
     pagination_fp: str
 
 # Per-language furniture content (copyright text, cover/title overrides, captions).
+# `block` names the page element: '' is the item's free-form body (and, at lang '', the
+# shared Tibetan title); a title page's slots are 'title_main' / 'title_sub' /
+# 'title_origin' / 'title_author'. A slot with no row follows the text.
 class DocumentFurnitureRow(BaseModel):
     item_id: int
     lang: str
+    block: str = ''
     body: str
 
 class DocumentFurnitureIn(BaseModel):
     item_id: int
     lang: str
+    block: str = ''
     body: str
 
 

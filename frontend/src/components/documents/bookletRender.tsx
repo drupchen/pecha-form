@@ -31,6 +31,86 @@ import { forEachWord } from './bookletMeasure';
 
 export const MM_PX = 96 / 25.4;
 
+/**
+ * The factor between a page's ON-SCREEN pixels and its LAYOUT pixels.
+ *
+ * The overview scales the pages with a `transform`, so every `getBoundingClientRect()` inside
+ * one is in SCALED pixels while the layout (and every mm we store) is not. Recovered from the
+ * page's own rect against its exact layout height — right in both views and stable across the
+ * toggle, which a captured `ovScale` is not.
+ *
+ * The denominator is `--page-h` as configured, NOT `clientHeight`: that one rounds to whole
+ * pixels, and the flow packs pages to sub-pixel slack (see `extentOf` in PaginationBench).
+ *
+ * ANY pointer drag that moves ink must divide its travel by this. A slider did not have to —
+ * its thumb rode a track that scaled with the page — which is exactly why dropping the slider
+ * for a 1:1 handle newly exposes this on pages that never needed it.
+ */
+export function pageScaleOf(pageEl: HTMLElement, pageHeightMm?: number): number {
+  const h = pageEl.getBoundingClientRect().height;
+  if (pageHeightMm) return h / (pageHeightMm * MM_PX);
+  return pageEl.clientHeight ? h / pageEl.clientHeight : 1;
+}
+
+/**
+ * The element inside `.booklet-content` whose rect MOVES with `--page-shift`.
+ *
+ * The two page classes carry the shift differently, and every measurement that wants to be
+ * shift-invariant has to ask the same question of both — so it is asked in exactly one place.
+ *
+ *  - a BODY page has the `.bk-shift` wrapper, which is what the var offsets.
+ *  - a FURNITURE page cannot have one: its role element is `height:100%` inside a flex box
+ *    that centres it, and a block in between makes that percentage indefinite and un-centres
+ *    every special page. So the var offsets the ROLE ELEMENT itself, and that is the element
+ *    whose rect moves.
+ *
+ * Falling back to `.booklet-content` for furniture — which is what the measurement used to do
+ * before there was a furniture shift — reports the UNSHIFTED top, so the ink appears to grow
+ * downward out of a fixed box: the page reads as overfull the moment you nudge it, with the
+ * message "taller than the text block however it is placed", which is false.
+ */
+export function shiftHostOf(content: HTMLElement): HTMLElement {
+  const wrapper = content.querySelector<HTMLElement>(':scope > .bk-shift');
+  if (wrapper) return wrapper;
+  if (content.parentElement?.classList.contains('furniture')) {
+    const role = content.firstElementChild as HTMLElement | null;
+    if (role) return role;
+  }
+  return content;
+}
+
+/**
+ * How far one page's ink could travel before it leaves the SHEET, in mm, either way.
+ *
+ * Measured off the INK, not the container: a furniture page centres its block inside a
+ * `height:100%` flex box, so the container's own head room is `--m-top` while the ink starts
+ * far below it — clamping an upward drag to that would stop the block dead at ~15mm when it
+ * could honestly travel most of the page.
+ *
+ * Measured ONCE, at the moment the handle is grabbed, and true for the whole gesture: a shift
+ * moves ink without changing its extent, so the room is shift-invariant. That is also why
+ * this does not belong in the bench's `roomByPage` effect — a drag needs it, a render does
+ * not, and that effect runs on every render behind a field-by-field equality guard.
+ */
+export function groundRoom(pageEl: HTMLElement, pageHeightMm?: number): { up: number; down: number } {
+  const content = pageEl.querySelector<HTMLElement>(':scope > .booklet-content');
+  if (!content) return { up: 0, down: 0 };
+  const kids = Array.from(shiftHostOf(content).children) as HTMLElement[];
+  if (!kids.length) return { up: 0, down: 0 };
+  let top = Infinity, bottom = -Infinity;
+  for (const k of kids) {
+    const r = k.getBoundingClientRect();
+    top = Math.min(top, r.top);
+    bottom = Math.max(bottom, r.bottom);
+  }
+  const pr = pageEl.getBoundingClientRect();
+  const s = pageScaleOf(pageEl, pageHeightMm);
+  return {
+    up: Math.max(0, (top - pr.top) / s / MM_PX),
+    down: Math.max(0, (pr.bottom - bottom) / s / MM_PX),
+  };
+}
+
 /** Map a section heading's outline depth (`DocLine.level`, 0-based from the sapche tree;
  *  null → top) to one of the three section-title style tiers (`.bk-section-l1/-l2/-l3`).
  *  Depth 0 → tier 1, depth 1 → tier 2, depth ≥2 → tier 3. Bump the `3` to add more tiers. */
@@ -84,12 +164,25 @@ const DEFAULT_RANGE: WidthRange = { min: -60, maxVerso: 10, maxRecto: 10 };
 const WIDTH_EPS = 0.3;
 
 /**
- * One width-adjustable text block. The stored `valueMm` is a SIGNED delta applied as
- * `margin-right: -valueMm` — positive pulls the right edge outward (the text overflows
- * toward the page's physical border, which `.booklet-page { overflow: hidden }` clips),
- * negative pushes it inward (the block narrows and its text wraps).
+ * One width-adjustable text block. The stored `valueMm` is a SIGNED delta on the block's
+ * MEASURE — positive widens it toward the page's physical border (which
+ * `.booklet-page { overflow: hidden }` clips), negative narrows it so the text wraps.
  *
- * With `onCommit` it grows a hover-revealed grip on that right edge: dragging slides the
+ * WHERE the measure gives is what `centred` decides, and the two answers are not
+ * interchangeable:
+ *
+ *  - LEFT-ALIGNED text (the body pages) takes it all off the right edge, leaving the left
+ *    pinned to the measure. Pulling that edge out to the binding or outer border is the
+ *    whole point there, and the two borders are different distances away.
+ *  - CENTRED text (a title page, a copyright, a back cover) has to give from BOTH sides, or
+ *    the block stops being centred. `align-items: center` centres a flex item by its MARGIN
+ *    box, so a right-only inset slides the block half the inset to the left — the type drifts
+ *    off the sheet's centre line as you narrow it, which is not what a width control means.
+ *
+ * `valueMm` is the TOTAL either way, so the same stored number means the same measure in both
+ * modes and nothing had to be migrated when centred blocks stopped taking it all on one side.
+ *
+ * With `onCommit` it grows a hover-revealed grip on the right edge: dragging slides the
  * edge, previewing locally (so the text reflows live under the pointer) and persisting
  * once on release. Without it — the print page and the measurement pass — it is a plain
  * wrapper that just applies the stored width, which is what keeps the PDF and the
@@ -101,21 +194,40 @@ export const WidthLine: React.FC<{
   className?: string;
   style?: React.CSSProperties;
   children?: React.ReactNode;
-}> = ({ valueMm, min, max, onCommit, className, style, children }) => {
+  /** Where this block SITS, when the page places its blocks one by one (see `BlockGround`).
+   *  The mm ride `top` — this box is already `position: relative` for the width grip — so
+   *  the offset is purely visual and the surrounding layout is untouched. Carried on the
+   *  print page too, with no handle: it is ink, not chrome. */
+  ground?: { valueMm: number; onCommit?: (mm: number) => void };
+  /** How wide this line's SPACES set (see `BlockSpace`). Same shape as `ground`, and the same
+   *  split: the mm are ink and print, the handle is chrome and does not. */
+  space?: { valueMm: number; onCommit?: (mm: number) => void };
+  pageHeightMm?: number;
+  /** This block's text is CENTRED, so its measure closes in from both sides (see above).
+   *  Also stretches the box to the measure: a shrink-to-fit item gives a width control
+   *  nothing to bite on — the first millimetres would rewrap nothing and only shove the
+   *  block sideways. Same reasoning as `.bk-fbody`'s `align-self: stretch`. */
+  centred?: boolean;
+}> = ({ valueMm, min, max, onCommit, className, style, children, ground, space, pageHeightMm,
+        centred }) => {
   const [preview, setPreview] = React.useState<number | null>(null);
   // The drag's live value lives on the ref, NOT in `preview`. The state is for painting; if
   // the release were to read it, it would read whatever React had last committed — and when
   // the move and the release land in one batch (a very fast drag, coalesced input, a
   // synthetic one) that is still the value from before the drag, so the release looks like a
   // click and the whole drag is silently dropped.
-  const drag = React.useRef<{ x: number; from: number; cur: number } | null>(null);
+  const drag = React.useRef<{ x: number; from: number; cur: number; s: number } | null>(null);
   const cur = preview ?? valueMm;
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!onCommit) return;
     e.preventDefault();
     e.stopPropagation();
-    drag.current = { x: e.clientX, from: valueMm, cur: valueMm };
+    // The page's on-screen scale, recovered at grab time: in the overview the pages are
+    // scaled by a transform, so the pointer's travel is in scaled px while the mm we store
+    // are not. Without this the edge ran ~1/ovScale too fast there.
+    const page = (e.currentTarget as HTMLElement).closest<HTMLElement>('.booklet-page');
+    drag.current = { x: e.clientX, from: valueMm, cur: valueMm, s: page ? pageScaleOf(page) : 1 };
     setPreview(valueMm);
     // Capture keeps the drag alive when the pointer outruns the 6px grip.
     try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* not fatal */ }
@@ -123,8 +235,11 @@ export const WidthLine: React.FC<{
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    // Dragging right widens: the pointer's travel IS the edge's travel.
-    const next = Math.max(min, Math.min(max, d.from + (e.clientX - d.x) / MM_PX));
+    // Dragging right widens: the pointer's travel IS the edge's travel. On a centred block
+    // each side carries half the delta, so the value has to move twice as far for the edge
+    // under the pointer to keep up — the promise is about the EDGE, not the number.
+    const travel = (e.clientX - d.x) / d.s / MM_PX * (centred ? 2 : 1);
+    const next = Math.max(min, Math.min(max, d.from + travel));
     d.cur = next;
     setPreview(next);
   };
@@ -146,8 +261,22 @@ export const WidthLine: React.FC<{
     // was never shown: present in the DOM, invisible on the page. A block is adjustable
     // because it is a WidthLine, so that is what the CSS should ask about.
     <div className={`bk-widthline${className ? ` ${className}` : ''}`}
-         style={{ ...style, marginRight: `${-cur}mm`, position: 'relative' }}>
+         style={{ ...style, position: 'relative',
+                  // Centred: half off each side, and stretched so the measure is the text
+                  // block rather than whatever the longest word happens to need.
+                  ...(centred
+                    ? { marginInline: `${-cur / 2}mm`, alignSelf: 'stretch' }
+                    : { marginRight: `${-cur}mm` }),
+                  ...(ground?.valueMm ? { top: `${ground.valueMm}mm` } : {}),
+                  ...(space?.valueMm ? { wordSpacing: `${space.valueMm}mm` } : {}) }}>
       {children}
+      {ground?.onCommit && (
+        <BlockGround valueMm={ground.valueMm} pageHeightMm={pageHeightMm}
+                     onCommit={ground.onCommit} />
+      )}
+      {space?.onCommit && (
+        <BlockSpace valueMm={space.valueMm} onCommit={space.onCommit} />
+      )}
       {onCommit && (
         <span className="bk-widthgrip"
               title="Drag to overflow the line to the page border, or back to wrap it"
@@ -159,6 +288,340 @@ export const WidthLine: React.FC<{
     </div>
   );
 };
+
+/**
+ * The page's GROUND: grab the rail beside the text block and slide the whole block up or down.
+ *
+ * Replaces the vertical `<input type="range">` this page used to carry. A slider asks you to
+ * aim a 16px thumb at a 0.1mm step, and its track shrinks with the page in the overview —
+ * which is precisely the mode built for comparing placements. A rail you can grab ANYWHERE
+ * has no aiming cost at any scale, and it moves the block 1:1 with the pointer, which is what
+ * the gesture actually is: not "set a parameter", but "put it here".
+ *
+ * The rail spans exactly the TEXT BLOCK — the same rectangle the geometry guide draws — so it
+ * reads as the ground the block stands on rather than as a control with a range.
+ *
+ * The clamps are measured when you GRAB it (`groundRoom`), not held in render state: the room
+ * is shift-invariant, so what was true at pointerdown stays true for the whole drag.
+ *
+ * Both page classes mount this — a body column and a furniture page differ only in which row
+ * the value comes from, which is the caller's business, not the handle's.
+ */
+/**
+ * What a ground rail is dragging, and how far it may go.
+ *
+ * The two rails differ ONLY in this: the page rail moves a whole page's block against the
+ * sheet, the block rail moves one block against the same sheet. The gesture — pointer
+ * capture, the ref-held live value, the overview's scale divided back out, the 0.1mm step,
+ * click-not-drag, the keyboard road — is one implementation, because two copies of it would
+ * drift and only one of them would get the next fix.
+ */
+interface GroundTarget {
+  /** Which way the pointer moves the thing. Placement is vertical; the space width between
+   *  words is horizontal, and dragging it up and down would say nothing about it. */
+  axis?: 'x' | 'y';
+  /** The element whose placement is being changed, from the rail's own node. */
+  host: (rail: HTMLElement) => HTMLElement | null;
+  /** How far it may travel each way from where it stands, in mm. `up` is the negative
+   *  direction (up the page, or tighter), `down` the positive one. */
+  room: (host: HTMLElement, pageHeightMm?: number) => { up: number; down: number };
+  /** Paint the live value, bypassing React — a page of set Tibetan is far too heavy to
+   *  re-render on every pointermove. Returns what to restore if nothing is committed. */
+  apply: (host: HTMLElement, mm: number) => void;
+  restore: (host: HTMLElement, was: string) => void;
+  /** The inline value to put back when the gesture commits nothing. */
+  read: (host: HTMLElement) => string;
+}
+
+const PAGE_TARGET: GroundTarget = {
+  host: (rail) => rail.closest<HTMLElement>('.booklet-page'),
+  room: (page, mm) => groundRoom(page, mm),
+  apply: (page, mm) => page.style.setProperty('--page-shift', `${mm}mm`),
+  restore: (page, was) => was ? page.style.setProperty('--page-shift', was)
+                              : page.style.removeProperty('--page-shift'),
+  read: (page) => page.style.getPropertyValue('--page-shift'),
+};
+
+/** One block on a special page. Its own box is the ink, so its room is measured off that
+ *  box rather than off the page's children, and the offset rides `top` — the block is a
+ *  `WidthLine`, which is already `position: relative`. */
+const BLOCK_TARGET: GroundTarget = {
+  host: (rail) => rail.parentElement,
+  room: (block, mm) => elementRoom(block, mm),
+  apply: (block, mm) => { block.style.top = `${mm}mm`; },
+  restore: (block, was) => { block.style.top = was; },
+  read: (block) => block.style.top,
+};
+
+/**
+ * One block's WORD SPACING — how wide the spaces inside it set.
+ *
+ * A Tibetan title's gaps are U+0020 spaces after each shad; the tsheg between syllables is
+ * U+0F0B, a different character entirely. `word-spacing` therefore reaches exactly the gaps
+ * and cannot touch a tsheg — which is what makes it the honest instrument here, against the
+ * Word habit of selecting each space and giving it a smaller font. The text is not edited at
+ * all; the spacing is a property of how this line is set.
+ */
+const SPACE_TARGET: GroundTarget = {
+  axis: 'x',
+  host: (h) => h.parentElement,
+  room: (block) => spaceRoom(block),
+  apply: (block, mm) => { block.style.wordSpacing = `${mm}mm`; },
+  restore: (block, was) => { block.style.wordSpacing = was; },
+  read: (block) => block.style.wordSpacing,
+};
+
+/**
+ * How much further a block's spaces may be tightened before they close, in mm.
+ *
+ * Measured off the SPACE ITSELF: a throwaway span in the block's own computed font, so the
+ * floor is this face at this size rather than a guessed constant — Chogyal's space is an
+ * order of magnitude wider than the tsheg beside it, and nothing like Gentium's.
+ *
+ * The probe INHERITS the spacing already applied, deliberately. Every `room` in this file
+ * answers "how far from where it stands", and the clamp is `from - up`; a probe that reset to
+ * the natural width would answer "how wide is a space" instead, and the two get added
+ * together — a line already tightened by 4.6mm would then be allowed to go to -13.9mm and
+ * pull the glyphs either side through each other. Inheriting makes `up` the room that is
+ * actually left, so the floor lands exactly where the spaces close, wherever the drag starts.
+ *
+ * Loosening is left generously open: a title page may well want more air, not less.
+ */
+export function spaceRoom(block: HTMLElement): { up: number; down: number } {
+  const probe = document.createElement('span');
+  // `white-space: pre` so the single space cannot be collapsed away before it is measured.
+  // Everything else — face, size, and the current word-spacing — is inherited.
+  probe.style.cssText = 'white-space:pre;position:absolute;visibility:hidden';
+  probe.textContent = ' ';
+  block.appendChild(probe);
+  const left = probe.getBoundingClientRect().width;
+  probe.remove();
+  const page = block.closest<HTMLElement>('.booklet-page');
+  const s = page ? pageScaleOf(page) : 1;
+  return { up: Math.max(0, left / s / MM_PX), down: 8 };
+}
+
+/** How far one ELEMENT can travel before it leaves the sheet, in mm either way. Unlike
+ *  `groundRoom` the element itself is the ink — a block knows its own extent. */
+export function elementRoom(el: HTMLElement, pageHeightMm?: number): { up: number; down: number } {
+  const page = el.closest<HTMLElement>('.booklet-page');
+  if (!page) return { up: 0, down: 0 };
+  const r = el.getBoundingClientRect(), pr = page.getBoundingClientRect();
+  const s = pageScaleOf(page, pageHeightMm);
+  return {
+    up: Math.max(0, (r.top - pr.top) / s / MM_PX),
+    down: Math.max(0, (pr.bottom - r.bottom) / s / MM_PX),
+  };
+}
+
+const Ground: React.FC<{
+  valueMm: number;
+  /** Which seam this value sits on, for the colour convention the sheet already uses:
+   *  `shared` (lapis) = the Tibetan verso, one setting for every edition; `edition` (jade) =
+   *  this booklet's own. */
+  tone: 'shared' | 'edition';
+  title: string;
+  ariaLabel: string;
+  pageHeightMm?: number;
+  onCommit: (mm: number) => void;
+  target: GroundTarget;
+  /** Extra class on the rail — the block rail hangs off its block, the page rail off the
+   *  page's margin, and only their placement differs. */
+  variant?: string;
+  /** The dashed datum rule. The page rail draws it across the text block; a block rail is
+   *  small enough that its own travel reads plainly, so it does without. */
+  datum?: boolean;
+}> = ({ valueMm, tone, title, ariaLabel, pageHeightMm, onCommit, target, variant, datum }) => {
+  const [preview, setPreview] = React.useState<number | null>(null);
+  const [mark, setMark] = React.useState<number | null>(null);   // px from the page top: the datum
+  // As in `WidthLine`: the live value rides the REF, not the state. A fast or coalesced drag
+  // can land its move and its release in one batch, and a release that read the state would
+  // read the pre-drag value and silently drop the whole gesture.
+  const drag = React.useRef<
+    { y: number; from: number; cur: number; s: number; up: number; down: number;
+      host: HTMLElement; was: string } | null
+  >(null);
+  const cur = preview ?? valueMm;
+  // The clamps the gesture is working against, in STATE — the render reads them (to grey the
+  // rail at whichever end is biting), and a ref read during render is not safe to do: it is
+  // invisible to React's scheduling and lies under a StrictMode double-render. The ref above
+  // is written and read only inside event handlers, which is exactly where it is sound.
+  const [bounds, setBounds] = React.useState<{ min: number; max: number } | null>(null);
+
+  const begin = (el: HTMLElement, from: number, pointerId?: number) => {
+    const host = target.host(el);
+    const page = el.closest<HTMLElement>('.booklet-page');
+    if (!host || !page) return;
+    const room = target.room(host, pageHeightMm);
+    setBounds({ min: valueMm - room.up, max: valueMm + room.down });
+    const s = pageScaleOf(page, pageHeightMm);
+    // The datum: where the ink's top sits right now, in page-local px, so the dashed rule
+    // stays put while the block moves out from under it.
+    if (datum) {
+      const content = page.querySelector<HTMLElement>(':scope > .booklet-content');
+      const kids = content ? (Array.from(shiftHostOf(content).children) as HTMLElement[]) : [];
+      if (kids.length) {
+        const pr = page.getBoundingClientRect();
+        setMark((Math.min(...kids.map((k) => k.getBoundingClientRect().top)) - pr.top) / s);
+      }
+    }
+    drag.current = {
+      y: from, from: valueMm, cur: valueMm, s, up: room.up, down: room.down,
+      host, was: target.read(host),
+    };
+    setPreview(valueMm);
+    if (pointerId != null) {
+      try { el.setPointerCapture(pointerId); } catch { /* not fatal */ }
+    }
+  };
+
+  // The pointer coordinate this handle reads. Placement is dragged up and down; a space's
+  // width is dragged left and right, because that is the direction it grows in.
+  const at = (e: { clientX: number; clientY: number }) => target.axis === 'x' ? e.clientX : e.clientY;
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    begin(e.currentTarget as HTMLElement, at(e), e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    // 1:1 — the pointer's travel IS the block's travel, once the overview's scale is divided
+    // back out. Free at the stored step; nothing snaps.
+    const raw = d.from + (at(e) - d.y) / d.s / MM_PX;
+    const next = Math.max(d.from - d.up, Math.min(d.from + d.down, raw));
+    d.cur = Math.round(next * 10) / 10;
+    // Move the INK, not just the readout — written straight onto the element, see
+    // `GroundTarget`. On release React repaints from the stored row and the two agree again.
+    target.apply(d.host, d.cur);
+    setPreview(d.cur);
+  };
+  const endDrag = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    const final = d.cur;
+    setPreview(null);
+    setMark(null);
+    setBounds(null);
+    try { (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); } catch { /* not fatal */ }
+    // Hand the value back to React. On a commit its re-render sets the same one, so nothing
+    // moves; on a click — or a drag the caller declines to store — this is what puts the
+    // block back where it was, since no re-render is coming to do it.
+    target.restore(d.host, d.was);
+    // A click, not a drag — and leaving it uncommitted is what lets `onDoubleClick` through.
+    if (Math.abs(final - d.from) < 0.05) return;
+    onCommit(final);
+  };
+
+  /** The keyboard road, which the native range used to give for free. */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const step = e.key === 'PageUp' || e.key === 'PageDown' ? 5 : e.shiftKey ? 1 : 0.1;
+    let next: number | null = null;
+    if (e.key === 'ArrowDown' || e.key === 'PageDown') next = cur + step;
+    else if (e.key === 'ArrowUp' || e.key === 'PageUp') next = cur - step;
+    else if (e.key === 'Home') next = 0;
+    if (next == null) return;
+    e.preventDefault();
+    const host = target.host(e.currentTarget as HTMLElement);
+    const room = host ? target.room(host, pageHeightMm) : { up: 0, down: 0 };
+    onCommit(Math.round(Math.max(cur - room.up, Math.min(cur + room.down, next)) * 10) / 10);
+  };
+
+  const shifted = Math.abs(cur) > 0.05;
+  // `preview` is non-null for exactly the life of a gesture, so it is the render-safe answer
+  // to "is this being dragged" — no ref read, no extra state to keep in step.
+  const dragging = preview != null;
+  // Which end is being pushed against, so the rail can say "this page is full" by resisting
+  // rather than by vanishing. A control that disappears and comes back as you tune the page
+  // next door is worse than one that holds still and greys.
+  const atEnd = dragging && bounds
+    ? (cur <= bounds.min + 0.05 ? 'up' : cur >= bounds.max - 0.05 ? 'down' : null)
+    : null;
+
+  return (
+    <>
+      {mark != null && (
+        <div className="bk-groundmark" style={{ top: `${mark}px` }}>
+          <span>{cur > 0 ? `↓${cur.toFixed(1)}` : cur < 0 ? `↑${(-cur).toFixed(1)}` : '0.0'}mm</span>
+        </div>
+      )}
+      <div className={`bk-ground bk-ground-${tone}${variant ? ` ${variant}` : ''}`}
+           data-shifted={shifted ? '' : undefined}
+           data-dragging={dragging ? '' : undefined}
+           data-atend={atEnd ?? undefined}
+           role="slider" tabIndex={0}
+           aria-orientation="vertical"
+           aria-label={ariaLabel}
+           aria-valuenow={Number(cur.toFixed(1))}
+           aria-valuetext={`${cur.toFixed(1)} mm`}
+           title={title}
+           onPointerDown={onPointerDown}
+           onPointerMove={onPointerMove}
+           onPointerUp={endDrag}
+           onPointerCancel={endDrag}
+           onKeyDown={onKeyDown}
+           onDoubleClick={() => onCommit(0)}>
+        <span className="bk-ground-hint">↕</span>
+        {shifted && !dragging && (
+          <span className="bk-ground-chip">
+            {cur > 0 ? `↓${cur.toFixed(1)}` : `↑${(-cur).toFixed(1)}`}
+          </span>
+        )}
+      </div>
+    </>
+  );
+};
+
+/** The whole page's ground: a rail in the margin spanning the text block. BODY pages, where
+ *  the page is the unit that moves. */
+export const PageGround: React.FC<{
+  valueMm: number; tone: 'shared' | 'edition'; title: string; ariaLabel: string;
+  pageHeightMm?: number; onCommit: (mm: number) => void;
+}> = (p) => <Ground {...p} target={PAGE_TARGET} datum />;
+
+/**
+ * ONE block's ground, on a special page.
+ *
+ * A title page is not one block that moves together — it is a seal, a Tibetan title, a main
+ * title, a sub-title, an origin and an author, each with its own size and its own air around
+ * it. So the handle is per block, and it hangs off the block's left edge: the vertical twin
+ * of the width grip on its right, which is why it lives inside `WidthLine` rather than out on
+ * the page. Grab the bar next to the thing you are placing.
+ */
+export const BlockGround: React.FC<{
+  valueMm: number; pageHeightMm?: number; onCommit: (mm: number) => void;
+}> = ({ valueMm, pageHeightMm, onCommit }) => (
+  <Ground valueMm={valueMm} tone="edition" pageHeightMm={pageHeightMm} onCommit={onCommit}
+          target={BLOCK_TARGET} variant="bk-ground-block"
+          title={'Drag to move this block up or down on the page. Double-click to put it '
+            + 'back where the page would place it.'}
+          ariaLabel="Move this block up or down" />
+);
+
+/**
+ * ONE line's SPACES, tightened or opened.
+ *
+ * A Tibetan title breaks at its shad, and the space after it is set by the face — Chogyal's
+ * is far wider than a title page usually wants. This is the honest way to say so: the type is
+ * SET more tightly, and the text is not touched. (The habit it replaces is selecting each
+ * space in a word processor and giving it a smaller font, which hides a typographic decision
+ * inside the string and does not survive the text being reused.)
+ *
+ * Only U+0020 moves. The tsheg between syllables is U+0F0B, so `word-spacing` cannot reach it
+ * however far this is dragged — the syllables keep their own rhythm.
+ */
+export const BlockSpace: React.FC<{
+  valueMm: number; onCommit: (mm: number) => void;
+}> = ({ valueMm, onCommit }) => (
+  <Ground valueMm={valueMm} tone="shared" onCommit={onCommit}
+          target={SPACE_TARGET} variant="bk-space"
+          title={'Drag left to close this line’s spaces, right to open them. Only the spaces '
+            + 'move — the tsheg between syllables is a different character and keeps its own '
+            + 'width. Double-click for the face’s own spacing. Every edition prints the same '
+            + 'Tibetan, so this is set once.'}
+          ariaLabel="Space width in this line" />
+);
 
 /**
  * One special page's block, asking for its width.
@@ -178,6 +641,16 @@ export type BlockWidthOf = (key: string) => {
 
 /** No width control at all — the print page, and any caller that has not wired it. */
 const NO_WIDTH: BlockWidthOf = () => ({ valueMm: 0, min: 0, max: 0 });
+
+/**
+ * The same address, asking where the block SITS rather than how wide it is.
+ *
+ * The vertical twin of `BlockWidthOf`, keyed identically — a block's placement and its
+ * measure are two adjustments to one thing, so they share an address and differ only in
+ * axis. `onCommit` absent means "carry this value, offer no handle": exactly what the print
+ * page wants, and what makes the offset ink rather than chrome.
+ */
+export type BlockGroundOf = (key: string) => { valueMm: number; onCommit?: (mm: number) => void };
 
 /**
  * A line's anchor — what the booklet stores its breaks, widths and fills against.
@@ -446,15 +919,15 @@ export interface TocRow {
 /** The centred title block (Tibetan title + translated main title / italic subtitle),
  *  shared by the booklet cover and each text's internal title page. `seal` shows the ༀ
  *  ornament (cover only); `image` (a seal/logo) renders in its place when supplied. */
-/** The placeable fields: the six title-page slots, plus `content` — the single block a TOC /
- *  copyright / back-cover page nudges as a whole. Keyed for the shift store + styles. */
-export type TitleField = 'image' | 'tibetan' | 'title' | 'subtitle' | 'origin' | 'author'
-  | 'content';
-
 export const TitleContent: React.FC<{
   titleLines: DocLine[]; seal?: boolean; image?: React.ReactNode;
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
   widthOf?: BlockWidthOf;
+  /** Where each block sits (bench only; the print page passes values with no handlers). */
+  groundOf?: BlockGroundOf;
+  /** How wide each Tibetan title line's spaces set (see `BlockSpace`). */
+  spaceOf?: BlockGroundOf;
+  pageHeightMm?: number;
   /**
    * This booklet's own Tibetan for the title, if it has been given one — one line per line,
    * newline-separated. Empty or absent falls back to the text's, which is where the string
@@ -463,12 +936,15 @@ export const TitleContent: React.FC<{
    * text.
    */
   tibetan?: string | null;
-  /** The cover's dedicated fields (this edition's text), rendered under the sub-title. */
-  origin?: string | null;
-  author?: string | null;
-  /** Vertical nudge (mm) per field — moves that field only, off its default centred spot. */
-  shiftOf?: (field: TitleField) => number;
-}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, tibetan, origin, author, shiftOf }) => {
+  /**
+   * This page's authored slot overrides, by block name (`TITLE_BLOCKS`). Each is seeded in
+   * the editor from the paragraph of the text's title translation it replaces, and stored
+   * only once it differs — so an absent entry means "follow the text", exactly as the
+   * Tibetan above does.
+   */
+  slots?: Partial<Record<TitleBlock, string | null>>;
+}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, groundOf, spaceOf, pageHeightMm,
+        tibetan, slots }) => {
   // The booklet's own lines, or the text's. An override is plain text — it has no syllables,
   // so its lines anchor their widths on a block key instead (see `anchorOf`).
   const ownLines = (tibetan ?? '').split('\n').map((t) => t.trim()).filter(Boolean);
@@ -477,59 +953,70 @@ export const TitleContent: React.FC<{
   // one entry per title line.
   const trans = (titleLines.find((t) => t.paragraphs?.length)?.paragraphs)
     ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
-  // Each field rides a wrapper that translates it vertically by its nudge — `translateY` so a
-  // move disturbs only that field, never the flow of the others.
-  const shift = (field: TitleField, node: React.ReactNode) => {
-    const mm = shiftOf?.(field) ?? 0;
-    return (
-      <div className={`bk-title-field bk-title-field-${field}`}
-           style={Math.abs(mm) > 0.001 ? { transform: `translateY(${mm}mm)` } : undefined}>
-        {node}
-      </div>
-    );
-  };
   return (
     <div className="bk-titlepage">
-      {shift('image', <>
-        {image}
-        {seal && !image && <div className="bk-seal">ༀ</div>}
-      </>)}
-      {shift('tibetan', ownLines.length
+      {/* The seal/image is a block of the page like any other, so it gets a placement handle
+          like any other — it is usually the thing that most wants nudging against the title
+          under it. Through `WidthLine` with no width range: its size is set in mm in the
+          Documents tab, so there is no measure to drag, only a ground. */}
+      {image && (
+        <WidthLine valueMm={0} min={0} max={0} className="bk-image-slot"
+                   ground={groundOf?.('#image')} pageHeightMm={pageHeightMm}>
+          {image}
+        </WidthLine>
+      )}
+      {seal && !image && (
+        <WidthLine valueMm={0} min={0} max={0} className="bk-seal"
+                   ground={groundOf?.('#image')} pageHeightMm={pageHeightMm}>ༀ</WidthLine>
+      )}
+      {ownLines.length
         ? ownLines.map((line, i) => (
           <WidthLine key={`o${i}`} className="bk-tibetan bk-title-tib"
-                     {...widthOf(`#title_tib${i}`)}>
+                     {...widthOf(`#title_tib${i}`)} centred
+                     ground={groundOf?.(`#title_tib${i}`)} space={spaceOf?.(`#title_tib${i}`)}
+                     pageHeightMm={pageHeightMm}>
             {line}
           </WidthLine>
         ))
         : titleLines.map((t, i) => (
           // A real line out of the text: anchored on its own syllable, like any body line,
           // and so shared by every edition.
-          <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(anchorOf(t))}>
+          <WidthLine key={i} className="bk-tibetan bk-title-tib" {...widthOf(anchorOf(t))} centred
+                     ground={groundOf?.(anchorOf(t))} space={spaceOf?.(anchorOf(t))}
+                     pageHeightMm={pageHeightMm}>
             {/* No `bk-tibetan-small` here, deliberately. The role speaks in absolute points,
                 so the class would pin a title's small run to 12pt inside 24pt type, where it
                 wants roughly 18. The vocabulary cannot say "proportionally smaller", so the
                 title abstains rather than be confidently wrong. */}
             {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
           </WidthLine>
-        )))}
-      {trans[0] && shift('title', (
-        <WidthLine className="bk-title-main" {...widthOf('#title_main')}>
-          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(trans[0]) }} />
-        </WidthLine>
-      ))}
-      {trans.length > 1 && shift('subtitle', trans.slice(1).map((p, i) => (
-        <WidthLine key={`sub${i}`} className="bk-title-sub" {...widthOf(`#title_sub${i}`)}>
+        ))}
+      {/* The four named slots, each the override or the paragraph it was seeded from.
+          The width KEY is deliberately the one this block already had — paragraph n has
+          always been `#title_sub{n-1}` — because naming the slots must not move anyone's
+          stored adjustments onto a different block. The names are new; the addresses are
+          not. */}
+      {TITLE_BLOCKS.map((block) => {
+        const meta = TITLE_BLOCK_META[block];
+        const own = slots?.[block];
+        const html = own && own.trim() ? own : trans[meta.seed];
+        if (!html) return null;
+        return (
+          <WidthLine key={block} className={meta.cls} {...widthOf(titleBlockKey(block))} centred
+                     ground={groundOf?.(titleBlockKey(block))} pageHeightMm={pageHeightMm}>
+            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(html) }} />
+          </WidthLine>
+        );
+      })}
+      {/* Anything the text's title carries beyond the four slots. Keeping them as sub-titles
+          is what makes naming the slots a no-op for an existing booklet: a fifth paragraph
+          renders where it always did, under the key it always had, rather than vanishing. */}
+      {trans.slice(TITLE_BLOCKS.length).map((p, i) => (
+        <WidthLine key={`sub${i + TITLE_BLOCKS.length - 1}`} className="bk-title-sub"
+                   {...widthOf(`#title_sub${i + TITLE_BLOCKS.length - 1}`)} centred
+                   ground={groundOf?.(`#title_sub${i + TITLE_BLOCKS.length - 1}`)}
+                   pageHeightMm={pageHeightMm}>
           <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
-        </WidthLine>
-      )))}
-      {origin && origin.trim() && shift('origin', (
-        <WidthLine className="bk-title-origin" {...widthOf('#title_origin')}>
-          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(origin) }} />
-        </WidthLine>
-      ))}
-      {author && author.trim() && shift('author', (
-        <WidthLine className="bk-title-author" {...widthOf('#title_author')}>
-          <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(author) }} />
         </WidthLine>
       ))}
     </div>
@@ -553,13 +1040,15 @@ export const TitleContent: React.FC<{
  */
 const FurnitureLines: React.FC<{
   body: string; block: string; widthOf: BlockWidthOf; className?: string;
-}> = ({ body, block, widthOf, className }) => {
+  groundOf?: BlockGroundOf; pageHeightMm?: number;
+}> = ({ body, block, widthOf, className, groundOf, pageHeightMm }) => {
   const paras = splitParagraphs(body);
   if (!paras.length) return null;
   return (
     <div className="bk-fbody">
       {paras.map((para, i) => (
-        <WidthLine key={i} className={className} {...widthOf(`#${block}${i}`)}>
+        <WidthLine key={i} className={className} {...widthOf(`#${block}${i}`)} centred
+                   ground={groundOf?.(`#${block}${i}`)} pageHeightMm={pageHeightMm}>
           <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(para) }} />
         </WidthLine>
       ))}
@@ -578,16 +1067,15 @@ export const FurnitureContent: React.FC<{
   widthOf?: BlockWidthOf;
   /** This booklet's own Tibetan for the cover title (see `TitleContent`). */
   tibetan?: string | null;
-  /** Cover title page: dedicated origin/author text (this edition) and per-field nudges. */
-  origin?: string | null;
-  author?: string | null;
-  shiftOf?: (field: TitleField) => number;
-}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan,
-        origin, author, shiftOf }) => {
-  // A TOC / copyright / back-cover page nudges its whole content block up or down.
-  const cShift = shiftOf?.('content') ?? 0;
-  const cStyle: React.CSSProperties | undefined =
-    Math.abs(cShift) > 0.001 ? { transform: `translateY(${cShift}mm)` } : undefined;
+  /** This page's authored title slots (see `TitleContent`). */
+  slots?: Partial<Record<TitleBlock, string | null>>;
+  /** Where each block sits (see `BlockGround`). */
+  groundOf?: BlockGroundOf;
+  /** How wide the Tibetan title lines' spaces set (see `BlockSpace`). */
+  spaceOf?: BlockGroundOf;
+  pageHeightMm?: number;
+}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan, slots,
+        groundOf, spaceOf, pageHeightMm }) => {
   // The imported image, sized from the stored width/height (mm); null = natural.
   const sized = item.image_width_mm != null || item.image_height_mm != null;
   const imgStyle: React.CSSProperties = {
@@ -607,7 +1095,8 @@ export const FurnitureContent: React.FC<{
                       height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
       : undefined;
     return <TitleContent titleLines={titleLines} seal widthOf={widthOf} tibetan={tibetan}
-                        origin={origin} author={author} shiftOf={shiftOf}
+                        slots={slots} groundOf={groundOf} spaceOf={spaceOf}
+                        pageHeightMm={pageHeightMm}
                         image={item.has_image ? bkImage : sealImage} />;
   }
   if (item.kind === 'copyright') {
@@ -616,20 +1105,21 @@ export const FurnitureContent: React.FC<{
       return <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
     }
     return (
-      <div className="bk-copyright" style={cStyle}>
+      <div className="bk-copyright">
         {item.has_image && bkImage}
-        {body && <FurnitureLines body={body} block="copyright" widthOf={widthOf} />}
+        {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="copyright" widthOf={widthOf} />}
       </div>
     );
   }
   if (item.kind === 'toc') {
     return (
-      <div className="bk-toc" style={cStyle}>
+      <div className="bk-toc">
         {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
         {toc.map((e, i) => (
           <WidthLine key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
                      style={{ paddingLeft: `${e.level * 5}mm` }}
-                     {...widthOf(`#toc:${e.itemId ?? i}`)}>
+                     {...widthOf(`#toc:${e.itemId ?? i}`)}
+                     ground={groundOf?.(`#toc:${e.itemId ?? i}`)} pageHeightMm={pageHeightMm}>
             {/* Inner HTML (block tags already flattened) so entities/emphasis render as
                 on the body headings, not as raw &#x27; text. */}
             <span className="bk-toc-title" dangerouslySetInnerHTML={{ __html: e.title }} />
@@ -646,7 +1136,7 @@ export const FurnitureContent: React.FC<{
         <div className="bk-imagepage">
           {bkImage}
           {body && (
-            <FurnitureLines body={body} block="caption" widthOf={widthOf}
+            <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="caption" widthOf={widthOf}
                             className="bk-image-caption" />
           )}
         </div>
@@ -657,9 +1147,9 @@ export const FurnitureContent: React.FC<{
     // Optional image and/or per-language text, centred; empty otherwise.
     if (!item.has_image && !body) return null;
     return (
-      <div className="bk-backcover" style={cStyle}>
+      <div className="bk-backcover">
         {item.has_image && bkImage}
-        {body && <FurnitureLines body={body} block="backcover" widthOf={widthOf}
+        {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="backcover" widthOf={widthOf}
                                  className="bk-copyright" />}
       </div>
     );
@@ -673,16 +1163,18 @@ export const FurniturePage: React.FC<{
   orgSeal?: OrgSeal | null;
   widthOf?: BlockWidthOf;
   tibetan?: string | null;
-  origin?: string | null;
-  author?: string | null;
-  shiftOf?: (field: TitleField) => number;
-  /** Bench-only overlay (the per-field placement sliders), rendered inside the page box. */
-  overlay?: React.ReactNode;
-}> = ({ overlay, ...props }) => (
+  /** This page's authored title slots (see `TitleContent`). */
+  slots?: Partial<Record<TitleBlock, string | null>>;
+  /** Where each block sits. A special page has no single block to move — it is a seal, a
+   *  title, a sub-title and so on, each placed on its own — so the handle is per block and
+   *  lives on the block (see `BlockGround`), not out on the page. */
+  groundOf?: BlockGroundOf;
+  spaceOf?: BlockGroundOf;
+  pageHeightMm?: number;
+}> = (props) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content"><FurnitureContent {...props} /></div>
-      {overlay}
     </div>
   </div>
 );
@@ -690,17 +1182,18 @@ export const FurniturePage: React.FC<{
 /** A text's internal title page as a facing-page mock (bench use). */
 export const InternalTitlePage: React.FC<{
   titleLines: DocLine[]; widthOf?: BlockWidthOf; tibetan?: string | null;
-  origin?: string | null; author?: string | null;
-  shiftOf?: (field: TitleField) => number;
-  overlay?: React.ReactNode;
-}> = ({ titleLines, widthOf, tibetan, origin, author, shiftOf, overlay }) => (
+  slots?: Partial<Record<TitleBlock, string | null>>;
+  groundOf?: BlockGroundOf;
+  spaceOf?: BlockGroundOf;
+  pageHeightMm?: number;
+}> = ({ titleLines, widthOf, tibetan, slots, groundOf, spaceOf, pageHeightMm }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content">
         <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan}
-                      origin={origin} author={author} shiftOf={shiftOf} />
+                      slots={slots} groundOf={groundOf} spaceOf={spaceOf}
+                      pageHeightMm={pageHeightMm} />
       </div>
-      {overlay}
     </div>
   </div>
 );
@@ -794,6 +1287,61 @@ function pageRowMm(
  * same Tibetan in all four booklets, so its shift is shared; the recto's is its edition's.
  */
 export const PAGE_SHIFT_KIND = { verso: 'page_shift_verso', recto: 'page_shift_recto' } as const;
+
+/**
+ * The same signed mm, for ONE BLOCK of a special page.
+ *
+ * The vertical twin of `width_furniture`, and keyed identically: the block's address, per
+ * edition, except the booklet's own Tibetan which is shared like the text's. A special page
+ * is not one block that moves together — a title page is a seal, a Tibetan title, a main
+ * title, a sub-title, an origin and an author, each with its own size and its own air — so
+ * the unit that moves is the block, not the page.
+ *
+ * (It began as a page-level `page_shift_furniture` anchored '#page'. That kind never
+ * shipped and no stored row used it, so it was renamed rather than migrated.)
+ */
+export const FURNITURE_SHIFT_KIND = 'shift_furniture';
+
+/** The lang seam, identical to `width_furniture`'s: '#title_tib*' is the booklet's own
+ *  Tibetan, the same string in every edition, so its placement is set once. */
+export const furnitureShiftLang = (key: string, lang: string): string =>
+  key.startsWith('#title_tib') ? '' : lang;
+
+export const furnitureShiftMm = (
+  rows: DocumentLayoutRow[], itemId: number, key: string, lang: string,
+): number => {
+  const rowLang = key.startsWith('#') ? furnitureShiftLang(key, lang) : '';
+  return rows.find((r) => r.kind === FURNITURE_SHIFT_KIND && r.item_id === itemId
+                       && r.anchor_syl_id === key
+                       && (r.lang ?? '') === rowLang)?.value ?? 0;
+};
+
+/**
+ * How wide a Tibetan title line's spaces set. Signed mm on `word-spacing`.
+ *
+ * SHARED across editions in every case — the Tibetan title is one string printed in all four
+ * booklets, so its setting is decided once. That is true of both anchor vintages: the
+ * booklet's own lines (`#title_tib{i}`) and a title lifted from the text (a syllable id),
+ * which is why this reads `lang = ''` unconditionally rather than mirroring
+ * `furnitureShiftLang`'s per-edition seam.
+ */
+export const FURNITURE_SPACE_KIND = 'space_furniture';
+
+export const furnitureSpaceMm = (
+  rows: DocumentLayoutRow[], itemId: number, key: string,
+): number => rows.find((r) => r.kind === FURNITURE_SPACE_KIND && r.item_id === itemId
+                           && r.anchor_syl_id === key && (r.lang ?? '') === '')?.value ?? 0;
+
+/** Read back with NO handlers — what the print page carries. */
+export const furnitureSpaceOf = (
+  rows: DocumentLayoutRow[], itemId: number,
+): BlockGroundOf => (key) => ({ valueMm: furnitureSpaceMm(rows, itemId, key) });
+
+/** A special page's block placements, read back with NO handlers — what the print page
+ *  carries. The bench passes the same shape plus `onCommit`, so the two cannot drift. */
+export const furnitureGroundOf = (
+  rows: DocumentLayoutRow[], itemId: number, lang: string,
+): BlockGroundOf => (key) => ({ valueMm: furnitureShiftMm(rows, itemId, key, lang) });
 export const pageShiftMm = (
   rows: DocumentLayoutRow[], line: DocLine | undefined, lang: string, side: PageSide,
 ): number => pageRowMm(rows, line, PAGE_SHIFT_KIND[side], gapFillLang(side, lang));
@@ -1227,7 +1775,51 @@ export function deriveBooklet(
 export const TIBETAN_LANG = '';
 
 export function furnitureBodyOf(
-  furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string,
+  furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string, block = '',
 ): string | null {
-  return furniture.find((f) => f.item_id === item.id && f.lang === lang)?.body ?? null;
+  // `block ?? ''` tolerates a row that predates the column (an older API, a cached
+  // response): it meant the free-form body, which is exactly what '' means now.
+  return furniture.find((f) => f.item_id === item.id && f.lang === lang
+                            && (f.block ?? '') === block)?.body ?? null;
 }
+
+/** This page's authored title slots for one edition, ready for `TitleContent`. A slot with
+ *  no row is simply absent, which is what "follows the text" means. */
+export function furnitureSlotsOf(
+  furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string,
+): Partial<Record<TitleBlock, string | null>> {
+  const out: Partial<Record<TitleBlock, string | null>> = {};
+  for (const block of TITLE_BLOCKS) out[block] = furnitureBodyOf(furniture, item, lang, block);
+  return out;
+}
+
+/** The title page's authored slots, in the order they print. The Tibetan is not here: it is
+ *  shared across editions and lives at `lang ''` under the free-form block, as it always
+ *  has. */
+export const TITLE_BLOCKS = ['title_main', 'title_sub', 'title_origin', 'title_author'] as const;
+export type TitleBlock = (typeof TITLE_BLOCKS)[number];
+
+/** What each slot is called, and which paragraph of the text's title translation seeds it
+ *  when the user has not overridden it. The seed index IS the historical layout: paragraph 0
+ *  was the main title and the rest were repeated sub-titles, so an untouched booklet renders
+ *  exactly as it did before these slots existed. */
+export const TITLE_BLOCK_META: Record<TitleBlock, { label: string; seed: number; cls: string }> = {
+  title_main:   { label: 'Main title', seed: 0, cls: 'bk-title-main' },
+  title_sub:    { label: 'Sub-title',  seed: 1, cls: 'bk-title-sub' },
+  title_origin: { label: 'Origin',     seed: 2, cls: 'bk-title-origin' },
+  title_author: { label: 'Author',     seed: 3, cls: 'bk-title-author' },
+};
+
+/**
+ * The per-block adjustment key for a title slot — the address its width (and, later, its
+ * placement) is stored under.
+ *
+ * It is derived from the SEED index, not the block name, because these blocks are not new:
+ * paragraph 0 was `#title_main` and paragraph n was `#title_sub{n-1}` long before the slots
+ * had names. Keying by name would silently re-point every stored adjustment at a different
+ * block — the origin line inheriting what was set for the sub-title, and so on.
+ */
+export const titleBlockKey = (block: TitleBlock): string => {
+  const seed = TITLE_BLOCK_META[block].seed;
+  return seed === 0 ? '#title_main' : `#title_sub${seed - 1}`;
+};

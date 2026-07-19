@@ -501,9 +501,11 @@ def list_furniture(document_id: int):
     conn = get_db()
     try:
         _require_doc(conn, document_id)
-        return [DocumentFurnitureRow(item_id=r["item_id"], lang=r["lang"], body=r["body"])
+        return [DocumentFurnitureRow(item_id=r["item_id"], lang=r["lang"],
+                                    block=r["block"], body=r["body"])
                 for r in conn.execute(
-                    "SELECT item_id, lang, body FROM document_furniture WHERE document_id = ?",
+                    "SELECT item_id, lang, block, body FROM document_furniture "
+                    "WHERE document_id = ?",
                     (document_id,)).fetchall()]
     finally:
         conn.close()
@@ -519,13 +521,14 @@ def upsert_furniture(document_id: int, payload: DocumentFurnitureIn):
             raise HTTPException(404, "Item not in this document")
         body = _sanitize_body(payload.body)
         conn.execute(
-            "INSERT INTO document_furniture (document_id, item_id, lang, body) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(document_id, item_id, lang) DO UPDATE SET body = excluded.body",
-            (document_id, payload.item_id, payload.lang, body))
+            "INSERT INTO document_furniture (document_id, item_id, lang, block, body) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(document_id, item_id, lang, block) DO UPDATE SET body = excluded.body",
+            (document_id, payload.item_id, payload.lang, payload.block, body))
         _touch(conn, document_id)
         conn.commit()
-        return DocumentFurnitureRow(item_id=payload.item_id, lang=payload.lang, body=body)
+        return DocumentFurnitureRow(item_id=payload.item_id, lang=payload.lang,
+                                    block=payload.block, body=body)
     finally:
         conn.close()
 

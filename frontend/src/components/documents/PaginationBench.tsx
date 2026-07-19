@@ -2,18 +2,21 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
 import {
   API_BASE, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getTitleFields, putTitleShift, getOrgSeal, putPaginationStamp,
+  getOrgSeal, putPaginationStamp,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow, type TitlePageField, type OrgSeal, type DocumentLayoutKind,
+  type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
 import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, FurnitureContent, InternalTitlePage,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
+  PageGround, shiftHostOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
+  furnitureGroundOf as furnitureGroundRead, furnitureSpaceOf as furnitureSpaceRead,
+  FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
-  type DerivedBooklet, type PageUnit, type TocRow, type TitleField,
+  type DerivedBooklet, type PageUnit, type TocRow,
 } from './bookletRender';
 import {
   awaitBookletFonts, readStream, readHairlineAdvance, flowPages,
@@ -127,55 +130,24 @@ const GapFillSlider: React.FC<{
   );
 };
 
-/** What one mounted page has left, in mm: how much more each empty line could open before
- *  the ink leaves the text BLOCK, and how far the page could move before it leaves the
- *  SHEET, either way. */
-interface PageRoom { gap: number; up: number; down: number }
-
-/** Round to the slider's step. Both ends of a SIGNED range have to sit on the step ladder or
- *  0 is unreachable: `step` counts from `min`, and `min` here is a measured quotient. The gap
- *  fill never met this — its `min` is a literal 0. */
-const round1 = (mm: number) => Math.round(mm * 10) / 10;
-
-/**
- * The page's vertical shift: move the whole block down or up.
+/** What one mounted page has left, in mm: how much more each empty line could open before the
+ *  ink leaves the text BLOCK.
  *
- * What is left when the gap fill has run out. Opening the empty lines spends a page's slack
- * first, but only to the limit of decent spacing — past that the block itself has to travel,
- * and it may take ink between the text block's foot and the sheet's edge. That is the point:
- * the guide is a guide, the sheet is the limit, and the page's clip enforces it.
- *
- * The stops are where the ink would leave the SHEET, measured off the page as it stands.
- * Independent of the gap fill's stop, which is shift-invariant, so the two can be traded back
- * and forth without either re-scaling under the other.
- */
-const PageShiftSlider: React.FC<{
-  side: PageSide; value: number; room: PageRoom; onChange: (mm: number) => void;
-}> = ({ side, value, room, onChange }) => {
-  const min = Math.min(round1(value - room.up), value);
-  const max = Math.max(round1(value + room.down), value);
-  if (min >= -0.05 && max <= 0.05) return null;         // nowhere to go
-  const label = value > 0.05 ? `↓${value.toFixed(1)}mm`
-              : value < -0.05 ? `↑${(-value).toFixed(1)}mm` : 'shift';
-  return (
-    <div className={`bk-pageshift bk-pageshift-${side}`} title={
-      `Move this ${side === 'verso' ? 'Tibetan' : 'translation'} page's whole content down or `
-      + `up, when opening the empty lines is not enough. It may take the type past the bottom `
-      + `guide — down to the edge of the sheet, which is where it stops. Double-click to put `
-      + `it back. ${side === 'verso'
-          ? 'The Tibetan page only — every edition prints the same one, so this is set once.'
-          : 'This edition’s translation page only.'}`}>
-      <input type="range" min={min} max={max} step={0.1} value={value}
-             onChange={(e) => onChange(Number(e.target.value))}
-             onDoubleClick={() => onChange(0)} />
-      <span>{label}</span>
-      {Math.abs(value) > 0.05 && (
-        <button type="button" className="bk-slider-reset" title="Reset this page's shift (put the content back on the guide)"
-                onClick={() => onChange(0)}>↺</button>
-      )}
-    </div>
-  );
-};
+ *  It used to carry the two SHEET distances as well, for the page-shift slider's stops. The
+ *  ground rail that replaced it measures those itself, at the moment it is grabbed
+ *  (`groundRoom`) — the room is shift-invariant, so one reading holds for the whole drag, and
+ *  a drag's needs have no business in a per-render effect. Keeping them here as well would be
+ *  dead state that still looked live. */
+interface PageRoom { gap: number }
+
+/** The tooltip the ground rail carries, which is the copy the page-shift slider carried
+ *  before it: what the control is FOR, and which of the four booklets it speaks for. */
+const groundTitle = (side: PageSide) =>
+  `Drag to move this ${side === 'verso' ? 'Tibetan' : 'translation'} page's whole content down `
+  + `or up, when opening the empty lines is not enough. It may take the type past the bottom `
+  + `guide — down to the edge of the sheet, which is where it stops. ${side === 'verso'
+      ? 'The Tibetan page only — every edition prints the same one, so this is set once.'
+      : 'This edition’s translation page only.'}`;
 
 /** How far this page has been moved off its guide — a band from the text block's top to where
  *  the content now starts. Honest only because `.bk-atpagetop` zeroes the top margin of
@@ -192,40 +164,6 @@ const ShiftMark: React.FC<{ mm: number }> = ({ mm }) => {
   );
 };
 
-/** The title page's per-field placement: one vertical slider per field, stacked in the page's
- *  right margin, each nudging its field up/down (mm) off its default centred spot. Bench-only —
- *  the value writes back to `title_page_field` and moves the field via `translateY`. */
-const TITLE_SLIDER_FIELDS: [TitleField, string][] = [
-  ['image', 'image'], ['tibetan', 'བོད'], ['title', 'title'],
-  ['subtitle', 'sub'], ['origin', 'origin'], ['author', 'author'],
-  ['content', 'block'],
-];
-const TitleFieldSliders: React.FC<{
-  shiftOf: (f: TitleField) => number;
-  onSet: (f: TitleField, mm: number) => void;
-  rangeMm: number;
-  only?: Set<TitleField>;
-}> = ({ shiftOf, onSet, rangeMm, only }) => (
-  <div className="bk-title-sliders" title="Move each title-page field up or down on the page (shared across editions). Double-click a slider to reset it.">
-    {TITLE_SLIDER_FIELDS.filter(([f]) => !only || only.has(f)).map(([f, label]) => {
-      const v = shiftOf(f);
-      // Vertical range: dragging UP raises the field, so the input's max (top) is the most
-      // NEGATIVE shift. `direction: rtl` on a vertical range puts the max at the top.
-      return (
-        <div key={f} className={`bk-title-slider${Math.abs(v) > 0.05 ? ' is-set' : ''}`}>
-          <span className="bk-title-slider-label">{label}</span>
-          <input type="range" min={-rangeMm} max={rangeMm} step={0.5} value={-v}
-                 style={{ writingMode: 'vertical-lr' as any, direction: 'rtl' }}
-                 onChange={(e) => onSet(f, -Number(e.target.value))}
-                 onDoubleClick={() => onSet(f, 0)} />
-          <span className="bk-title-slider-val">
-            {Math.abs(v) > 0.05 ? (v > 0 ? `↓${v.toFixed(0)}` : `↑${(-v).toFixed(0)}`) : ''}
-          </span>
-        </div>
-      );
-    })}
-  </div>
-);
 
 /**
  * A fingerprint of the BALANCING rows the pagination was flowed against — the third drift
@@ -312,7 +250,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   const treeVersion = useTreeNodeStore(s => s.version);
   const trVersion = useTranslationStore(s => s.version);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
-  const [titleFields, setTitleFields] = useState<TitlePageField[]>([]);
   const [styleCss, setStyleCss] = useState('');
   // The org's cover seal travels with the styles: it is part of the template, and the studio
   // can change it, so it is re-read whenever the styles are.
@@ -395,16 +332,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     let alive = true;
     (async () => {
       setLoading(true);
-      const [d, lay, furn, tf, css, seal] = await Promise.all([
+      const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        getTitleFields(documentId), loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
       setFurniture(furn);
-      setTitleFields(tf);
       setStyleCss(css);
       setOrgSeal(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
@@ -449,15 +385,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     try {
       compileCache.current.clear();
       setAllCompiles(null);
-      const [d, lay, furn, tf, css, seal] = await Promise.all([
+      const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        getTitleFields(documentId), loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
       setFurniture(furn);
-      setTitleFields(tf);
       setStyleCss(css);
       setOrgSeal(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
@@ -1239,7 +1174,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     page_shift_verso: 'Tibetan page shift', page_shift_recto: 'page shift',
     width_tibetan: 'Tibetan width', width_phonetics: 'phonetics width',
     width_translation: 'translation width', width_section: 'heading width',
-    width_furniture: 'block width',
+    width_furniture: 'block width', shift_furniture: 'block placement',
+    space_furniture: 'space width',
   };
   /** Both anchor vintages of a per-line row, so a restore reaches rows written before the
    *  op was part of the anchor (see `anchorOf`). */
@@ -1307,7 +1243,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // view the recto's plang is the edition on screen).
   const [roomByPage, setRoomByPage] = useState<Map<string, PageRoom>>(new Map());
   const roomOf = (si: number, side: PageSide, plang: string): PageRoom =>
-    roomByPage.get(`${si}:${side}:${plang}`) ?? { gap: 0, up: 0, down: 0 };
+    roomByPage.get(`${si}:${side}:${plang}`) ?? { gap: 0 };
 
   // ── The page's vertical shift: move the whole block, once air has run out ──
   // Signed, so 0 — not "<= 0" — is what clears it: an upward shift is a real value, and the
@@ -1322,6 +1258,35 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const kind = PAGE_SHIFT_KIND[side];
     const rowLang = gapFillLang(side, forLang);
     Math.abs(mm) < 0.05 ? void delRow(l, kind, rowLang) : void putRow(l, kind, mm, rowLang);
+  };
+
+  /**
+   * Where each BLOCK of a special page sits — the vertical twin of `furnitureWidthOf`, and
+   * deliberately its mirror image: same block keys, same '#'-prefix rule, same per-edition
+   * seam with the booklet's own Tibetan shared. A block's measure and its placement are two
+   * adjustments to one thing and should be addressed the same way.
+   *
+   * Its own kind rather than the body pair, because those anchor on a page's first LINE and
+   * a special page has none; and the write goes through `withUndo(..., slotStr(body))` since
+   * `putRow`/`delRow` take a `DocLine`.
+   */
+  const furnitureGroundOf = (item: DocumentItem): BlockGroundOf => (key: string) => {
+    const rowLang = key.startsWith('#') ? furnitureShiftLang(key, lang) : '';
+    const body = {
+      item_id: item.id, anchor_syl_id: key,
+      kind: FURNITURE_SHIFT_KIND as DocumentLayoutKind, lang: rowLang,
+    };
+    return {
+      valueMm: furnitureShiftMm(rows, item.id, key, lang),
+      onCommit: (mm: number) => {
+        void withUndo(`${KIND_LABEL[FURNITURE_SHIFT_KIND] ?? 'block placement'} changed`,
+          [body], async () => {
+            // Signed, so 0 — not "<= 0" — is what clears it, as for the body pages.
+            Math.abs(mm) < 0.05 ? await deleteLayoutRow(documentId, body)
+                                : await putLayoutRow(documentId, { ...body, value: mm });
+          }, slotStr(body));
+      },
+    };
   };
 
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
@@ -1572,16 +1537,25 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
      *  - the SHEET — is any ink actually being lost? The shift is exactly what decides that,
      *    at either edge.
      *
-     * `?? c` is what keeps the furniture pages working through the same function: they have
-     * no wrapper (a block between `.booklet-content` and their `height: 100%` children would
-     * make that percentage indefinite and un-centre every one of them), and with `w === c`
-     * the arithmetic below is identical to what it was before there was a shift at all.
+     * `shiftHostOf` is what keeps the furniture pages working through the same function: they
+     * have no wrapper (a block between `.booklet-content` and their `height: 100%` children
+     * would make that percentage indefinite and un-centre every one of them), so their shift
+     * rides the ROLE ELEMENT and that is the element it hands back.
+     *
+     * It must be the shifted element, not `.booklet-content`, or the invariant above breaks
+     * the moment a special page is moved: the ink descends while the box stays put, so
+     * `setSlack` shrinks with every downward nudge and the page eventually reports itself
+     * "taller than the text block however it is placed" — which is false, and un-actionable.
      */
     const extentOf = (c: HTMLElement) => {
-      const w = c.querySelector<HTMLElement>(':scope > .bk-shift') ?? c;
+      const w = shiftHostOf(c);
       const page = c.parentElement as HTMLElement;
-      let ink = -Infinity;
-      for (const ch of Array.from(w.children)) ink = Math.max(ink, ch.getBoundingClientRect().bottom);
+      let ink = -Infinity, inkTop = Infinity;
+      for (const ch of Array.from(w.children)) {
+        const r = ch.getBoundingClientRect();
+        ink = Math.max(ink, r.bottom);
+        inkTop = Math.min(inkTop, r.top);
+      }
       const wr = w.getBoundingClientRect(), pr = page.getBoundingClientRect();
       // The overview scales the page with a transform, so every rect here is in SCALED
       // pixels while `clientHeight` stays in layout pixels. The page's own ratio recovers
@@ -1595,7 +1569,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         n: w.children.length,
         setSlack: c.clientHeight - (ink - wr.top) / s,      // the block; shift-invariant
         footSlack: (pr.bottom - ink) / s,                   // the sheet, below
-        headSlack: (wr.top - pr.top) / s,                   // the sheet, above
+        // The sheet, above — off the INK, not the box. A special page places its blocks one
+        // by one inside a box that does not move, so a block dragged up leaves the sheet
+        // while `wr.top` sits reassuringly at the top margin. On a body page the ink starts
+        // at the wrapper (`.bk-atpagetop` zeroes the margin above it), so `min` is the
+        // wrapper and nothing changes.
+        headSlack: (Math.min(wr.top, inkTop) - pr.top) / s,
       };
     };
     const mark = () => {
@@ -1622,14 +1601,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           page.removeAttribute('title');
         }
       }
-      // Each page's remaining room, for the two sliders' stops. Per side: the pages balance
+      // Each page's remaining room, for the gap fill's stop. Per side: the pages balance
       // independently, so a shared stop would hold the roomier one back to the tighter one's.
-      //   gap  — how much MORE each empty line could open before the ink leaves the BLOCK.
-      //   down — how far the page could move before its ink leaves the SHEET's foot.
-      //   up   — ...before its head leaves the sheet.
+      //   gap — how much MORE each empty line could open before the ink leaves the BLOCK.
       // `gap` is shift-invariant, so shifting does not move the gap slider's stop; the two
       // controls are independent, and you can trade one back for the other. The reverse
-      // coupling is real and stays: opening the gaps pushes ink down, so `down` shrinks.
+      // coupling is real and stays: opening the gaps pushes ink down, so the ground rail's own
+      // room shrinks — which it re-measures each time it is grabbed, so it needs nothing here.
       const next = new Map<string, PageRoom>();
       for (const sp of scrollRef.current.querySelectorAll<HTMLElement>('.booklet-spread[data-unit]')) {
         // EVERY page of the spread — the overview mounts one recto per edition, and a
@@ -1642,8 +1620,6 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           const gaps = c.querySelectorAll('.bk-gap').length;
           next.set(`${sp.dataset.unit}:${side}:${page.dataset.plang ?? ''}`, {
             gap: gaps ? Math.max(0, e.setSlack / gaps / MM_PX) : 0,
-            down: Math.max(0, e.footSlack / MM_PX),
-            up: Math.max(0, e.headSlack / MM_PX),
           });
         }
       }
@@ -1653,9 +1629,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setRoomByPage((prev) => {
         const same = prev.size === next.size && Array.from(next).every(([k, v]) => {
           const p = prev.get(k);
-          return !!p && Math.abs(p.gap - v.gap) < 0.05
-                     && Math.abs(p.down - v.down) < 0.05
-                     && Math.abs(p.up - v.up) < 0.05;
+          return !!p && Math.abs(p.gap - v.gap) < 0.05;
         });
         return same ? prev : next;
       });
@@ -1689,10 +1663,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     // — the same string prints in every edition. Every other '#block' is that edition's text.
     const rowLang = furn && !key.startsWith('#title_tib') ? lang : '';
     const k = `${item.id}:${key}:${kind}:${rowLang}`;
+    // Every block on a special page is centred except a TOC entry, which is a left-aligned
+    // row. A centred block gives half its measure off each side, so it needs TWICE the
+    // number to reach the physical border with both edges — the same reach the one-sided
+    // blocks get from `margin_outer_mm`. `min` needs no such doubling: it is already a
+    // total ("leave a 20mm measure"), which means the same thing either way.
+    const outer = config ? config.margin_outer_mm : 10;
+    const max = key.startsWith('#toc:') ? outer : outer * 2;
     return {
       valueMm: layoutByKey.get(k)?.value ?? 0,
       min: widthRange.min,
-      max: config ? config.margin_outer_mm : 10,
+      max,
       onCommit: (mm: number | null) => {
         void (async () => {
           const body = { item_id: item.id, anchor_syl_id: key, kind, lang: rowLang };
@@ -1705,16 +1686,28 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     };
   };
 
-  // The cover's dedicated origin/author text (per edition) and each field's vertical nudge
-  // (shared, lang=''). A gloss/title distinction aside, these feed `TitleContent`.
-  const titleContentOf = (itemId: number, field: string, forLang: string): string | null =>
-    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === forLang)?.body ?? null;
-  const titleShiftOf = (itemId: number) => (field: TitleField): number =>
-    titleFields.find((f) => f.item_id === itemId && f.field === field && f.lang === '')?.shift_mm ?? 0;
-  const setTitleShift = (itemId: number, field: TitleField, mm: number) => {
-    void putTitleShift(documentId, { item_id: itemId, field, shift_mm: mm })
-      .then(() => getTitleFields(documentId)).then(setTitleFields)
-      .catch((e: any) => setMsg(e.message || 'Title placement save failed'));
+  /**
+   * How wide a Tibetan title line's spaces set. Written SHARED (lang '') whatever the anchor
+   * vintage, because the Tibetan title is one string printed in every edition — the same
+   * reason `width_furniture` treats `#title_tib*` as shared.
+   */
+  const furnitureSpaceOf = (item: DocumentItem): BlockGroundOf => (key: string) => {
+    const body = {
+      item_id: item.id, anchor_syl_id: key,
+      kind: FURNITURE_SPACE_KIND as DocumentLayoutKind, lang: '',
+    };
+    return {
+      valueMm: furnitureSpaceMm(rows, item.id, key),
+      onCommit: (mm: number) => {
+        void withUndo(`${KIND_LABEL[FURNITURE_SPACE_KIND] ?? 'space width'} changed`,
+          [body], async () => {
+            // Signed, so 0 — not "<= 0" — clears it: tightening is negative and is the
+            // whole point of the control.
+            Math.abs(mm) < 0.05 ? await deleteLayoutRow(documentId, body)
+                                : await putLayoutRow(documentId, { ...body, value: mm });
+          }, slotStr(body));
+      },
+    };
   };
 
   const renderFurniture = (item: DocumentItem) => {
@@ -1749,9 +1742,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                       toc={item.kind === 'toc' ? ed.tocRows : []}
                       orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
-                      origin={titleContentOf(item.id, 'origin', ed.lang)}
-                      author={titleContentOf(item.id, 'author', ed.lang)}
-                      shiftOf={titleShiftOf(item.id)} />
+                      slots={furnitureSlotsOf(furniture, item, ed.lang)}
+                      groundOf={furnitureGroundRead(rows, item.id, ed.lang)}
+                      spaceOf={furnitureSpaceRead(rows, item.id)}
+                      pageHeightMm={config?.page_height_mm} />
                   </div>
                 </div>
               ))}
@@ -1760,28 +1754,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         </div>
       );
     }
-    const isCover = item.kind === 'cover';
-    // The cover places its six fields; a TOC / copyright / back cover places its one content
-    // block. An image or blank page has nothing to place.
-    const blockPage = item.kind === 'toc' || item.kind === 'copyright' || item.kind === 'backcover';
-    const sliderFields = isCover
-      ? new Set<TitleField>(['image', 'tibetan', 'title', 'subtitle', 'origin', 'author'])
-      : blockPage ? new Set<TitleField>(['content']) : null;
     return (
       <FurniturePage key={`f${item.id}`} item={item}
-        titleLines={isCover ? mainTitleLines : []}
+        titleLines={item.kind === 'cover' ? mainTitleLines : []}
         body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
         orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
         tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
-        origin={isCover ? titleContentOf(item.id, 'origin', lang) : null}
-        author={isCover ? titleContentOf(item.id, 'author', lang) : null}
-        shiftOf={sliderFields ? titleShiftOf(item.id) : undefined}
-        overlay={sliderFields ? (
-          <TitleFieldSliders shiftOf={titleShiftOf(item.id)}
-            onSet={(f, mm) => setTitleShift(item.id, f, mm)}
-            only={sliderFields}
-            rangeMm={Math.round((config?.page_height_mm ?? 200) / 2)} />
-        ) : undefined} />
+        slots={furnitureSlotsOf(furniture, item, lang)}
+        groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}
+        pageHeightMm={config?.page_height_mm} />
     );
   };
 
@@ -2104,14 +2085,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
               <InternalTitlePage titleLines={u.titleLines}
                                  widthOf={furnitureWidthOf(u.item)}
                                  tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)}
-                                 origin={titleContentOf(u.item.id, 'origin', lang)}
-                                 author={titleContentOf(u.item.id, 'author', lang)}
-                                 shiftOf={titleShiftOf(u.item.id)}
-                                 overlay={overview ? undefined : (
-                                   <TitleFieldSliders shiftOf={titleShiftOf(u.item.id)}
-                                     onSet={(f, mm) => setTitleShift(u.item.id, f, mm)}
-                                     rangeMm={Math.round((config?.page_height_mm ?? 200) / 2)} />
-                                 )} />
+                                 slots={furnitureSlotsOf(furniture, u.item, lang)}
+                                 groundOf={furnitureGroundOf(u.item)}
+                                 spaceOf={furnitureSpaceOf(u.item)}
+                                 pageHeightMm={config.page_height_mm} />
             ) : (
               <div className="booklet-spread" data-unit={si}>
                 {spreadCols.map((col) => {
@@ -2155,11 +2132,13 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                             value={gapFillOf(u.s.start, col.side, colLang)}
                             max={gapFillOf(u.s.start, col.side, colLang) + roomOf(si, col.side, col.colLang).gap}
                             onChange={(mm) => setGapFill(u.s.start, col.side, mm, colLang)} />
-                          <PageShiftSlider
-                            side={col.side}
-                            value={pageShiftOf(u.s.start, col.side, colLang)}
-                            room={roomOf(si, col.side, col.colLang)}
-                            onChange={(mm) => setPageShift(u.s.start, col.side, mm, colLang)} />
+                          <PageGround
+                            valueMm={pageShiftOf(u.s.start, col.side, colLang)}
+                            tone={col.side === 'verso' ? 'shared' : 'edition'}
+                            title={groundTitle(col.side)}
+                            ariaLabel={`Move this ${col.side === 'verso' ? 'Tibetan' : 'translation'} page's content up or down`}
+                            pageHeightMm={config.page_height_mm}
+                            onCommit={(mm) => setPageShift(u.s.start, col.side, mm, colLang)} />
                         </>
                       )}
                     </div>

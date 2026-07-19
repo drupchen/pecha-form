@@ -134,7 +134,7 @@ export function cleanSpecimenHtml(html: string): string {
  *  nodes (and so the caret) alone, whereas re-writing innerHTML would jump it. The stored copy is
  *  sanitized properly (spans unwrapped) by `cleanSpecimenHtml`; this only stops the freeze from
  *  showing in the live specimen. */
-function stripAttrs(root: HTMLElement): void {
+export function stripAttrs(root: HTMLElement): void {
   root.querySelectorAll('*').forEach(el => {
     for (const a of [...el.attributes]) el.removeAttribute(a.name);
   });
@@ -584,6 +584,11 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                       {p.fontSize && !SIZES.includes(p.fontSize) && <option value={p.fontSize}>{p.fontSize}</option>}
                       {SIZES.map(s => <option key={s} value={s}>{s}</option>)}
                     </select>
+                    {/* Weight and slant are the CONTENT's to say on a title-page slot: its
+                        field is rich text, and a slant set here would swallow the author's
+                        own emphasis (see `marksFromContent`). Offering controls that the
+                        compiled CSS then ignores would be worse than not offering them. */}
+                    {!rd.marksFromContent && (<>
                     <select className={sel} style={border} value={p.fontWeight ?? ''} onChange={e => void setProp(rd.role, 'fontWeight', e.target.value ? Number(e.target.value) : '')}>
                       {inherit}
                       {[300, 400, 500, 600, 700, 800].map(w => <option key={w} value={w}>{w}</option>)}
@@ -591,6 +596,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
                     <select className={sel} style={border} value={p.italic == null ? '' : (p.italic ? 'italic' : 'upright')} onChange={e => void setProp(rd.role, 'italic', e.target.value === '' ? '' : e.target.value === 'italic')}>
                       {inherit}<option value="italic">italic</option><option value="upright">upright</option>
                     </select>
+                    </>)}
                     <select className={sel} style={border} value={p.align ?? ''} onChange={e => void setProp(rd.role, 'align', e.target.value)}>
                       {inherit}
                       {['left', 'center', 'right', 'justify'].map(a => <option key={a} value={a}>{a}</option>)}

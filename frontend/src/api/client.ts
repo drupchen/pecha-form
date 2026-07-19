@@ -579,6 +579,12 @@ export type DocumentLayoutKind =
    *  left once opening the empty lines has reached the limit of decent spacing. It may
    *  legitimately place ink between the text block's foot and the sheet's edge. */
   | 'page_shift_verso' | 'page_shift_recto'
+  /** The same signed mm for one BLOCK of a special page — the vertical twin of
+   *  `width_furniture`, keyed identically (block address, per edition). */
+  | 'shift_furniture'
+  /** Signed mm on one Tibetan title line's `word-spacing` — the U+0020 gaps only, never the
+   *  tsheg. Shared across editions, like the Tibetan title itself. */
+  | 'space_furniture'
   /** The user's vetoes on the auto-flow: it must not SPLIT this line / not re-place a
    *  lifted automatic BREAK here. Written by the explicit removal paths, deleted by
    *  placing a split/break there again. Flow constraints only — never rendered. */
@@ -641,10 +647,17 @@ export const deleteLayoutRow = (id: number, body: {
     { method: 'DELETE', headers: J, body: JSON.stringify(body) });
 
 // Per-language furniture content (copyright text, cover/title overrides, captions).
-export interface DocumentFurnitureRow { item_id: number; lang: string; body: string }
+/** `block` names the page element the row holds: '' is the item's free-form body (and, at
+ *  lang '', the shared Tibetan title); a title page's slots are 'title_main' / 'title_sub' /
+ *  'title_origin' / 'title_author'. A slot with no row follows the text. */
+export interface DocumentFurnitureRow {
+  item_id: number; lang: string; block: string; body: string;
+}
 export const getFurniture = (id: number) =>
   jfetch<DocumentFurnitureRow[]>(`${API_BASE}/documents/${id}/furniture`);
-export const putFurniture = (id: number, body: { item_id: number; lang: string; body: string }) =>
+export const putFurniture = (
+  id: number, body: { item_id: number; lang: string; block?: string; body: string },
+) =>
   jfetch<DocumentFurnitureRow>(`${API_BASE}/documents/${id}/furniture`,
     { method: 'PUT', headers: J, body: JSON.stringify(body) });
 

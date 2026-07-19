@@ -24,6 +24,8 @@ LAYOUT_KINDS = (
     'gap_fill_recto',   # ...on a translation page (per edition)
     'page_shift_verso', # SIGNED mm the whole Tibetan page is moved down (+) or up (-) (shared)
     'page_shift_recto', # ...on a translation page (per edition)
+    'shift_furniture',  # signed mm on a special page's BLOCK — the vertical twin of width_furniture
+    'space_furniture',  # signed mm on a Tibetan title line's word-spacing (the U+0020 gaps)
     'no_split',         # the user removed a split here — the auto-flow must not re-split this line
     'no_break',         # the user lifted an automatic break here — the flow must not re-place it
 )
@@ -603,12 +605,20 @@ CREATE INDEX IF NOT EXISTS idx_document_layout_doc ON document_layout(document_i
 -- caption). Booklet-specific (NOT a text): e.g. the copyright page's per-language text.
 -- The title page's translated title is seeded from the text's own title but can be
 -- overridden here. body is the sanitized HTML subset used by the translation layer.
+-- `block` names WHICH element of the page the row holds, so a title page's slots can be
+-- authored apart instead of being paragraph boundaries in one blob. '' is the item's
+-- free-form body — the copyright text, a caption, the back cover, and (at lang '') the
+-- shared Tibetan title — which is what every pre-existing row is. The title page's slots
+-- use 'title_main' / 'title_sub' / 'title_origin' / 'title_author'.
+-- A row exists only when the user OVERRODE that slot: absent means "follow the text", the
+-- same contract the Tibetan title has always had.
 CREATE TABLE IF NOT EXISTS document_furniture (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     item_id     INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
     lang        TEXT NOT NULL,
+    block       TEXT NOT NULL DEFAULT '',
     body        TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (document_id, item_id, lang)
+    PRIMARY KEY (document_id, item_id, lang, block)
 );
 
 -- The title page's per-field content and placement, per booklet item (the cover, and later
@@ -1067,6 +1077,31 @@ def _rebuild_phonetics_lang(conn) -> None:
     conn.execute("DROP TABLE phonetics")
     conn.execute("ALTER TABLE phonetics_new RENAME TO phonetics")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_phonetics_text ON phonetics(origin_text_id)")
+
+
+def _rebuild_document_furniture_block(conn) -> None:
+    """Add the `block` dimension to a pre-existing `document_furniture` table. The PK grows
+    from `(document_id, item_id, lang)` to `(…, block)` — SQLite can't alter a PK in place,
+    so rebuild. Every pre-platform row is the item's free-form body, which is exactly what
+    block '' means, so the carry-over is total and lossless: nothing is dropped and nothing
+    changes meaning. No-op once `block` exists (incl. fresh DBs created from SCHEMA)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(document_furniture)")}
+    if not cols or "block" in cols:
+        return
+    conn.execute("""
+        CREATE TABLE document_furniture_new (
+            document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            item_id     INTEGER NOT NULL REFERENCES document_items(id) ON DELETE CASCADE,
+            lang        TEXT NOT NULL,
+            block       TEXT NOT NULL DEFAULT '',
+            body        TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (document_id, item_id, lang, block)
+        )""")
+    conn.execute("""
+        INSERT INTO document_furniture_new (document_id, item_id, lang, block, body)
+        SELECT document_id, item_id, lang, '', body FROM document_furniture""")
+    conn.execute("DROP TABLE document_furniture")
+    conn.execute("ALTER TABLE document_furniture_new RENAME TO document_furniture")
 
 
 def _rebuild_text_groups_org(conn) -> None:
@@ -1564,6 +1599,7 @@ def init_db():
         _rebuild_document_layout_kinds(conn)
         _rebuild_phonetics_lang(conn)
         _rebuild_text_groups_org(conn)
+        _rebuild_document_furniture_block(conn)
         # Seed the four working languages (idempotent; more are added via the API).
         conn.executemany(
             "INSERT OR IGNORE INTO languages (code, name) VALUES (?, ?)",

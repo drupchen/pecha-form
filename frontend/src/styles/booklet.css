@@ -93,8 +93,17 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   transform: scale(var(--ov-inv, 1));
   transform-origin: bottom left;
 }
-.booklet-ov-scale .bk-pageshift span,
-.booklet-ov-scale .bk-pageshift .bk-slider-reset {
+/* The ground rail counter-scales on X ONLY. Its width is a hit target and must stay 14px on
+   screen (at ovScale ~0.35 an unscaled rail is 5px — unusable, in the very mode built for
+   comparing placements). Its height is a MEANING — "this is the text block" — so it keeps the
+   page's scale; a full scale() would shrink it and the rail would stop describing the block.
+   Same carve-out the page-shift track had, for the same reason. */
+.booklet-ov-scale .bk-ground {
+  transform: scaleX(var(--ov-inv, 1));
+  transform-origin: left center;
+}
+.booklet-ov-scale .bk-ground-chip,
+.booklet-ov-scale .bk-groundmark span {
   transform: scale(var(--ov-inv, 1));
   transform-origin: left center;
 }
@@ -135,35 +144,34 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .booklet-page.furniture { padding: var(--m-top) var(--m-outer) var(--m-bottom); }
 .bk-titlepage { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; gap: 4mm; }
+/* A title slot's field in the Documents tab: contentEditable, so it needs its own empty
+   state and focus ring — an empty one collapses to nothing and looks like a bug otherwise. */
+.bk-richline:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-soft, #77706a);
+  font-style: italic;
+}
+.bk-richline:focus { outline: 2px solid var(--lapis, #2f6f9f); outline-offset: -1px; }
+
 .bk-seal { font-size: 26pt; color: #444; margin-bottom: 8mm; }
+/* The image's placement box. It only carries the ground rail, so it must take the image's
+   own size rather than stretch — the title page centres its blocks and a full-width wrapper
+   would put the rail out at the text block's edge instead of beside the seal. */
+.bk-image-slot { display: flex; flex-direction: column; align-items: center; }
 .bk-title-tib { font-family: var(--font-tibetan); font-size: 20pt; line-height: 1.4; }
 .bk-title-main { font-family: var(--font-title); font-size: 18pt; line-height: 1.35;
   margin-top: 4mm; }
-.bk-title-sub { font-family: var(--font-title); font-size: 12.5pt; font-style: italic;
-  line-height: 1.35; }
+/* The title page's slots carry NO slant and NO weight of their own — see `marksFromContent`
+   in bookletStyles.ts. They are authored as rich text, so "From <em>The Heart Essence…</em>"
+   is the author saying which part is italic; a slant declared here would set the whole block
+   that way and make the distinction invisible. `<em>`/`<strong>` target their own elements,
+   so they beat inheritance and mark the type correctly against an upright block. */
+.bk-title-sub { font-family: var(--font-title); font-size: 12.5pt; line-height: 1.35; }
 .bk-title-sub:first-of-type { margin-top: 1mm; }
-/* Origin (the source cycle) and author/translator credit — their own styled fields. */
-.bk-title-origin { font-family: var(--font-title); font-size: 11pt; font-style: italic;
-  line-height: 1.35; }
-.bk-title-author { font-family: var(--font-translation); font-size: 11pt; line-height: 1.35;
-  color: #333; }
-/* Each field rides a wrapper so its vertical nudge (translateY) moves it alone. The wrapper
-   keeps the title page's own centring + inter-line spacing, so grouping a field's lines does
-   not change how they sit. */
-.bk-title-field { display: flex; flex-direction: column; align-items: center; gap: 4mm; }
-.bk-title-field:empty { display: none; }
-
-/* Bench-only: the per-field vertical placement sliders, stacked in the title page's right
-   margin. Hidden in print (the overlay is not even rendered there, this is belt-and-braces). */
-.bk-title-sliders { position: absolute; top: 0; right: 1mm; bottom: 0; z-index: 6;
-  display: flex; flex-direction: column; justify-content: center; gap: 1.5mm; }
-.bk-title-slider { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.bk-title-slider-label { font: 500 7px/1 system-ui, sans-serif; color: #999; }
-.bk-title-slider input[type='range'] { height: 42px; width: 14px; cursor: ns-resize; }
-.bk-title-slider.is-set input[type='range'] { accent-color: var(--vermilion, #c53030); }
-.bk-title-slider-val { font: 600 7px/1 system-ui, sans-serif; color: var(--vermilion, #c53030);
-  min-height: 8px; }
-@media print { .bk-title-sliders { display: none; } }
+/* Origin (the source cycle) and author/translator credit — their own faces, and like every
+   title slot they carry no slant of their own. */
+.bk-title-origin { font-family: var(--font-title); font-size: 11pt; line-height: 1.35; }
+.bk-title-author { font-family: var(--font-translation); font-size: 11pt; line-height: 1.35; }
 .bk-copyright { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; font-family: var(--font-translation);
   font-size: 11pt; color: #333; }
@@ -492,6 +500,17 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  * margins prints, and ink past the sheet is clipped.) */
 .bk-shift { position: relative; top: var(--page-shift, 0mm); }
 
+/* A SPECIAL page places its blocks one by one, so there is no page-level lever here: each
+ * block's mm ride `top` on its own `.bk-widthline` (set inline by `WidthLine`, from a
+ * `shift_furniture` row). `position: relative` is a purely VISUAL offset, so the flex box
+ * that centres the blocks — and the `height: 100%` chain it resolves against — are both
+ * untouched, and the blocks do not push each other about.
+ *
+ * NOT `transform: translateY` — see the warning on `.bk-shift` above; a transform makes a
+ * block formatting context and a containing block, and these boxes hold line contexts.
+ * NOT asymmetric page padding: that changes the flex container's height, so the centring
+ * recomputes and the block moves by half what was asked while `.bk-toc` reflows. */
+
 /* The empty-line gap between chunks — the balancing lever (height set inline).
  * `--gap-fill` is set on the PAGE and inherits down: every empty line on that page grows by
  * the same amount, which is the "fill the page out" control. It is per EDITION — the breaks
@@ -544,51 +563,142 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-slider-reset:hover { color: var(--vermilion, #c53030); border-color: var(--vermilion, #c53030); }
 @media print { .bk-slider-reset { display: none !important; } }
 
-/* The page's vertical shift: drag the whole block down or up. Sits in each page's LEFT
- * margin — the verso's outer, the recto's binding. Not the outer margin on both: the recto's
- * outer holds the folio and its guide, and a width grip reaches into the right margin of
- * either page. `writing-mode: vertical-lr` puts the minimum at the top, so the thumb travels
- * the way the type does. A design control, never ink. */
-.bk-pageshift {
+/* The page's GROUND: a rail beside the text block, grabbed anywhere, that slides the whole
+ * block down or up. Sits in each page's LEFT margin — the verso's outer, the recto's binding.
+ * Not the outer margin on both: the recto's outer holds the folio and its guide, and a width
+ * grip reaches into the right margin of either page. A design control, never ink.
+ *
+ * It spans exactly the TEXT BLOCK, which is the same rectangle the geometry guide draws, so
+ * it reads as the ground the block stands on rather than as a control with a range. Replaced
+ * a vertical `<input type=range>`: a thumb has an aiming cost that a grab-anywhere rail does
+ * not, and that cost grew with the overview's scale — precisely the mode built for comparing
+ * placements across editions.
+ *
+ * It occupies page-x [7.56, 21.56] — INSIDE the [7.5, 23.5] lane the old slider held, so the
+ * gutter clamp below (written against 26px) stays valid and conservative unchanged. */
+.bk-ground {
   position: absolute;
   left: 2mm;
   top: var(--m-top);
   height: calc(var(--page-h) - var(--m-top) - var(--m-bottom));
-  /* The slider owns the far-left "Lane A" of the margin (its 16px input + reset live in
-     page-x ~[7.5, 23.5]). It sits ABOVE the gutter ladder (4/5/6) so any sub-pixel /
-     overview-scale residue in that lane still resolves to the slider — safe because the
-     container is pointer-events:none, so only the input+reset (both inside Lane A, which the
-     gutter is clamped out of below) ever capture; the gutter's hovers are never eaten. */
+  width: 14px;                  /* the widthgrip's grab-zone width; the ink is the border */
+  /* Above the gutter ladder (4/5/6), so any sub-pixel / overview-scale residue in the lane
+     resolves to the rail. Unlike the old slider this element CAPTURES over its whole height
+     rather than delegating to a 16px child, so the gutter's clamp below is now what keeps the
+     two apart — that rule is load-bearing for this control too. */
   z-index: 7;
-  /* Always shown, like the gap fill. */
+  cursor: ns-resize;
+  touch-action: none;
+  box-sizing: border-box;
+  border-left: 2px solid var(--jade, #3a7d5f);
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 140ms ease, border-left-width 100ms ease;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 3px;
-  /* The full-height track must not eat hovers meant for the line gutter beside it — only
-     its own interactive children capture. */
-  pointer-events: none;
 }
-.bk-pageshift input[type='range'], .bk-pageshift .bk-slider-reset { pointer-events: auto; }
-.bk-pageshift input[type='range'] {
-  writing-mode: vertical-lr;    /* NOT -webkit-appearance: slider-vertical (gone in Chrome 135) */
-  direction: ltr;
-  flex: 1;
-  width: 16px;
-  /* Pin the 16px input to the LEFT of its column so its horizontal span is deterministic
-     (page-x ~[7.5, 23.5], `left:2mm` + 16px) regardless of the value-label's width — the
-     centred default let a long label ("↓12.4mm") push the input past the gutter's reserved
-     lane. This is the capturing element; the label/reset (non-capturing) stay centred. */
-  align-self: flex-start;
-  accent-color: var(--jade, #3a7d5f);
+/* Reveal on the page, grab on the rail. */
+.booklet-page:hover .bk-ground { opacity: 0.45; }
+.bk-ground:hover, .bk-ground[data-dragging] { opacity: 1; border-left-width: 3px; }
+.bk-ground:focus-visible { opacity: 1; outline: 2px solid var(--lapis, #2f6f9f); outline-offset: 1px; }
+/* A page that HAS been moved says so at rest, unhovered — the same doctrine as the shift
+   mark below: that is a fact about the document, not a hover affordance. */
+.bk-ground[data-shifted] { opacity: 0.3; }
+.bk-ground-hint { font: 9px/1 system-ui, sans-serif; color: inherit; opacity: 0;
+                  margin-left: 1px; pointer-events: none; }
+.bk-ground:hover .bk-ground-hint { opacity: 0.7; }
+.bk-ground-chip {
+  position: absolute; top: 0; left: 4px;
+  font: 600 8px/1 system-ui, sans-serif; white-space: nowrap; pointer-events: none;
 }
-.bk-pageshift span { font: 600 8px/1 system-ui, sans-serif; color: var(--jade, #3a7d5f);
-                     white-space: nowrap; }
+/* Pushing against a clamp: the rail resists and greys at that end rather than disappearing.
+   An absent control cannot say "this page is full"; a stuck one can. */
+.bk-ground[data-atend] { border-left-color: var(--ink-soft, #77706a); }
+.bk-ground-edition { color: var(--jade, #3a7d5f); }
 /* The Tibetan page reads in the darker ink — it is the shared one, set once for all four
    editions. Same convention as the gap fill's. */
-.bk-pageshift-verso input[type='range'] { accent-color: var(--lapis, #2f6f9f); }
-.bk-pageshift-verso span { color: var(--lapis, #2f6f9f); }
-@media print { .bk-pageshift { display: none !important; } }
+.bk-ground-shared { color: var(--lapis, #2f6f9f); border-left-color: var(--lapis, #2f6f9f); }
+/* The BLOCK rail: the same instrument, hung off one block instead of the page.
+ *
+ * It sits just outside the block's left edge — the vertical twin of the width grip on its
+ * right, and the reason it lives inside `.bk-widthline` rather than out in the page margin.
+ * You grab the bar next to the thing you are placing, which is what makes a title page's six
+ * elements individually placeable without six rails in one margin column to tell apart.
+ *
+ * `right: 100%` puts it beside whatever the block's own width turns out to be, so it follows
+ * a narrowed block inward with no measurement. */
+.bk-ground-block {
+  left: auto;
+  right: 100%;
+  top: 0;
+  height: 100%;
+  margin-right: 4px;
+  /* Under the width grips' stacking so a grip is never buried by a neighbour's rail. */
+  z-index: 3;
+}
+/* Reveal a block's rail on the BLOCK, not on the whole page: on a title page every block
+   would otherwise light up at once, which says nothing about which one you are near. */
+.booklet-page:hover .bk-ground-block { opacity: 0; }
+.bk-widthline:hover > .bk-ground-block { opacity: 0.45; }
+.bk-ground-block[data-shifted] { opacity: 0.3; }
+.bk-widthline:hover > .bk-ground-block[data-shifted] { opacity: 0.55; }
+.bk-ground-block:hover, .bk-ground-block[data-dragging] { opacity: 1; }
+/* The chip would sit outside the sheet on a left-hugging rail; put it on the other side. */
+.bk-ground-block .bk-ground-chip { left: auto; right: 4px; }
+
+/* The SPACE handle: the same instrument turned on its side, because a space's width is a
+ * horizontal thing and dragging it up and down would say nothing about it.
+ *
+ * It sits under the line, centred, so it reads as belonging to that line and cannot be
+ * confused with the ground rail on the left edge or the width grip on the right. Left closes
+ * the spaces, right opens them — the same direction convention as the width grip. */
+.bk-space {
+  left: 50%;
+  right: auto;
+  top: 100%;
+  height: 14px;
+  width: 34px;
+  transform: translateX(-50%);
+  margin-top: 1px;
+  border-left: none;
+  border-top: 2px solid var(--lapis, #2f6f9f);
+  border-radius: 2px;
+  cursor: ew-resize;
+  justify-content: center;
+  z-index: 3;
+}
+.booklet-page:hover .bk-space { opacity: 0; }
+.bk-widthline:hover > .bk-space { opacity: 0.45; }
+.bk-space[data-shifted] { opacity: 0.3; }
+.bk-widthline:hover > .bk-space[data-shifted] { opacity: 0.55; }
+.bk-space:hover, .bk-space[data-dragging] { opacity: 1; border-top-width: 3px; }
+.bk-space[data-atend] { border-top-color: var(--ink-soft, #77706a); }
+/* The rail's ↕ hint means the wrong axis here, and the chip belongs under the bar. */
+.bk-space .bk-ground-hint { display: none; }
+.bk-space .bk-ground-chip { top: 3px; left: 50%; transform: translateX(-50%); }
+/* The counter-scale rule above scales X only, which is right for a vertical rail and wrong
+   for this one — it would stretch the bar instead of keeping it 34px. */
+.booklet-ov-scale .bk-space {
+  transform: translateX(-50%) scale(var(--ov-inv, 1));
+  transform-origin: center top;
+}
+
+@media print { .bk-ground, .bk-groundmark { display: none !important; } }
+
+/* The datum you left, drawn only while the block is actually moving: a dashed rule across the
+ * text block at the ink's ORIGINAL top, with the live reading at its end. Page-relative, so
+ * it holds still while the block travels out from under it. */
+.bk-groundmark {
+  position: absolute;
+  left: var(--m-outer); right: var(--m-outer);
+  z-index: 6;
+  border-top: 1px dashed var(--lapis, #2f6f9f);
+  pointer-events: none;
+}
+.bk-groundmark span {
+  position: absolute; right: 0; top: 2px;
+  font: 600 8px/1 system-ui, sans-serif; color: var(--lapis, #2f6f9f); white-space: nowrap;
+}
 
 /* How far this page has been moved off its guide. A band from the text block's top to where
  * the content now starts, drawn off the SAME vars as the text-block guide so it cannot drift
@@ -689,7 +799,7 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  *   hovered line's gutter     5   (its whole rail floats above neighbours)
  *   gutter holding a mark     6   (a vermilion mark is never buried, even by a hovered
  *                                  neighbour whose 19px rail slightly overlaps this line)
- *   page-shift slider         7   (owns the far-left lane; the gutter is clamped out of it,
+ *   ground rail               7   (owns the far-left lane; the gutter is clamped out of it,
  *                                  so this only breaks sub-pixel/overview ties) */
 .bk-gutter {
   position: absolute;
@@ -703,13 +813,18 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   white-space: nowrap;
   z-index: 4;
 }
-/* Keep the gutter out of the slider's far-left "Lane A": its left edge never crosses page-x
-   26px (just past the 23.5px slider input). `--m-bind`/`--m-outer` is the page's left padding
-   (binding on a recto, outer on a verso) = where the text block — and so the linewrap-relative
-   `left:-24px` — starts. On today's wide margins `-24px` wins (byte-for-byte unchanged); the
-   clamp only engages once the margin drops below ~13.2mm — the narrow-binding regime where the
-   rail otherwise reaches the slider — and then it shifts the rail RIGHT toward the (non-
-   interactive, white-backed) text instead of onto the slider. Print-hidden either way. */
+/* Keep the gutter out of the ground rail's far-left "Lane A": its left edge never crosses
+   page-x 26px (just past the rail's 21.56px right edge; it was written against the 23.5px
+   slider the rail replaced, and stays valid and conservative). `--m-bind`/`--m-outer` is the
+   page's left padding (binding on a recto, outer on a verso) = where the text block — and so
+   the linewrap-relative `left:-24px` — starts. On today's wide margins `-24px` wins
+   (byte-for-byte unchanged); the clamp only engages once the margin drops below ~13.2mm — the
+   narrow-binding regime where the rail otherwise reaches Lane A — and then it shifts the
+   gutter RIGHT toward the (non-interactive, white-backed) text instead. Print-hidden either
+   way.
+   NB this rule now carries more weight than it did: the ground rail CAPTURES over its whole
+   height, where the old slider's container was `pointer-events:none` and only its 16px input
+   captured. This clamp is what keeps the gutter's hovers from reaching it. */
 .booklet-page.recto .bk-gutter { left: max(-24px, calc(26px - var(--m-bind))); }
 .booklet-page.verso .bk-gutter { left: max(-24px, calc(26px - var(--m-outer))); }
 .bk-linewrap:hover > .bk-gutter,

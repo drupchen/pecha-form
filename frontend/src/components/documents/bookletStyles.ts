@@ -32,6 +32,23 @@ export type StudioFormat = 'twopage' | 'running';
 
 export interface RoleDef {
   role: string; label: string; selector: string; def: StyleProps;
+  /**
+   * Emphasis on this role belongs to the CONTENT, not the style.
+   *
+   * A title page's slots are authored as rich text, where "From <em>The Heart Essence…</em>"
+   * means the work's name is italic and the word before it is not. If the ROLE also declares
+   * a slant, it sets the whole block that way and the distinction the author made simply
+   * disappears — italic inside italic looks like nothing at all. Same for weight.
+   *
+   * So these roles emit neither `font-style` nor `font-weight`: the block inherits upright at
+   * the booklet's normal weight, and `<em>`/`<strong>` (which target those elements directly,
+   * and so beat inheritance) do the marking. Style Studio hides both controls for them.
+   *
+   * Nothing is lost — a wholly italic title is "select all, italic" in the field, which is
+   * also where anyone would look for it. A heavier face is chosen by FAMILY (the bundled
+   * Libertinus Serif Semibold is its own family), not by a weight on the role.
+   */
+  marksFromContent?: boolean;
   /** Style Studio placement: per format, the group header this role sits under. A role
    *  absent from a format's map is hidden while that format is selected; a role listed
    *  under both formats is the SAME underlying style, shown in each. */
@@ -113,15 +130,18 @@ const RAW_ROLE_DEFS: RoleDef[] = [
   { role: 'intro', label: 'Introduction', selector: '.bk-role-intro .bk-translation',
     def: { fontFamily: 'var(--font-translation)', fontSize: 'var(--translation-pt)', italic: false, indent: '0', hangingIndent: '4mm' }, place: { twopage: G_TR, running: G_RUN } },  // a normal reading line, unindented; wrapped lines hang
   // ── Covers & matter (shown under every format) ──
-  { role: 'title_tib', label: 'Title page — Tibetan', selector: '.bk-title-tib',
+  // Every title-page slot takes its emphasis from the CONTENT (`marksFromContent`): the
+  // fields are rich text, so a slant declared here would swallow the author's own `<em>`.
+  // Hence no `italic` and no `fontWeight` on any of them.
+  { role: 'title_tib', label: 'Title page — Tibetan', selector: '.bk-title-tib', marksFromContent: true,
     def: { fontFamily: 'var(--font-tibetan)', fontSize: '24pt', align: 'center', lineHeight: '1.4' }, place: { twopage: G_MATTER, running: G_MATTER } },  // ཁ་བྱང 24, centred
-  { role: 'title_main', label: 'Title page — main title', selector: '.bk-title-main',
+  { role: 'title_main', label: 'Title page — main title', selector: '.bk-title-main', marksFromContent: true,
     def: { fontFamily: 'var(--font-title)', fontSize: '18pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Title Libertinus Serif Semibold 18, centred
-  { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub',
-    def: { fontFamily: 'Calibri', fontSize: '12pt', italic: true, align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Subtitle Calibri 12 italic
-  { role: 'title_origin', label: 'Title page — origin', selector: '.bk-title-origin',
-    def: { fontFamily: 'var(--font-title)', fontSize: '11pt', italic: true, align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // the source cycle
-  { role: 'title_author', label: 'Title page — author', selector: '.bk-title-author',
+  { role: 'title_sub', label: 'Title page — subtitle', selector: '.bk-title-sub', marksFromContent: true,
+    def: { fontFamily: 'Calibri', fontSize: '12pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // Subtitle Calibri 12
+  { role: 'title_origin', label: 'Title page — origin', selector: '.bk-title-origin', marksFromContent: true,
+    def: { fontFamily: 'var(--font-title)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // the source cycle
+  { role: 'title_author', label: 'Title page — author', selector: '.bk-title-author', marksFromContent: true,
     def: { fontFamily: 'var(--font-translation)', fontSize: '11pt', align: 'center', lineHeight: '1.35' }, place: { twopage: G_MATTER, running: G_MATTER } },  // author / translator credit
   { role: 'copyright', label: 'Copyright', selector: '.bk-copyright',
     def: { fontFamily: 'var(--font-translation)', fontSize: '11pt' }, place: { twopage: G_MATTER, running: G_MATTER } },  // no docx style — Normal-ish
@@ -186,11 +206,11 @@ export const ORG_BASE: Record<string, StyleProps> = {
   small: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2' },
   small_verses: { fontFamily: 'Libertinus Serif Display', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.2', hangingIndent: '4mm' },
   intro: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.25', hangingIndent: '4mm' },
-  title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
-  title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
-  title_sub: { fontFamily: 'Calibri', fontSize: '12pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
-  title_origin: { fontFamily: 'Libertinus Serif', fontSize: '11pt', fontWeight: 400, italic: true, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
-  title_author: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_tib: { fontFamily: 'Chogyal', fontSize: '24pt', color: INK, align: 'center', indent: '0', lineHeight: '1.4' },
+  title_main: { fontFamily: 'Libertinus Serif', fontSize: '18pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_sub: { fontFamily: 'Calibri', fontSize: '12pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_origin: { fontFamily: 'Libertinus Serif', fontSize: '11pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
+  title_author: { fontFamily: 'Gentium Basic', fontSize: '11pt', color: INK, align: 'center', indent: '0', lineHeight: '1.35' },
   copyright: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'center', indent: '0', lineHeight: '1.5' },
   toc: { fontFamily: 'Gentium Basic', fontSize: '11pt', fontWeight: 400, italic: false, color: INK, align: 'left', indent: '0', lineHeight: '1.5' },
   folio: { fontFamily: 'Georgia', fontSize: '9pt', fontWeight: 400, italic: false, color: INK, align: 'right', indent: '0', lineHeight: '1' },
@@ -213,12 +233,19 @@ export function formatFamily(v: string): string {
   return /^var\(|,/.test(v) ? v : `'${v}', serif`;
 }
 
-function ruleFor(selector: string, p: StyleProps): string {
+function ruleFor(selector: string, p: StyleProps, marksFromContent = false): string {
   const decls: string[] = [];
   if (p.fontFamily) decls.push(`font-family: ${formatFamily(p.fontFamily)}`);
   if (p.fontSize) decls.push(`font-size: ${p.fontSize}`);
-  if (p.fontWeight != null) decls.push(`font-weight: ${p.fontWeight}`);
-  if (p.italic != null) decls.push(`font-style: ${p.italic ? 'italic' : 'normal'}`);
+  // Weight and slant are skipped ENTIRELY for a `marksFromContent` role — not just left at
+  // their defaults. A booklet styled before these roles existed may carry a stored
+  // `italic: true` on one of them, and emitting it would go on swallowing the author's own
+  // `<em>`. Dropping it here neutralises that data without a migration; the row stays,
+  // harmless, and applies again if the role ever stops being content-marked.
+  if (!marksFromContent) {
+    if (p.fontWeight != null) decls.push(`font-weight: ${p.fontWeight}`);
+    if (p.italic != null) decls.push(`font-style: ${p.italic ? 'italic' : 'normal'}`);
+  }
   if (p.color) decls.push(`color: ${p.color}`);
   if (p.lineHeight) decls.push(`line-height: ${p.lineHeight}`);
   if (p.align) decls.push(`text-align: ${p.align}`);
@@ -242,7 +269,8 @@ export function compileStyleCss(resolved: Record<string, StyleProps>, fonts: Org
   const faces = fonts.map(f =>
     `@font-face { font-family: '${f.family}'; src: url('${API_BASE}/org-fonts/${f.id}/file'); ` +
     `font-weight: ${f.weight}; font-style: ${f.italic ? 'italic' : 'normal'}; font-display: swap; }`);
-  const rules = ROLE_DEFS.map(rd => ruleFor(rd.selector, resolved[rd.role] ?? rd.def)).filter(Boolean);
+  const rules = ROLE_DEFS.map(rd =>
+    ruleFor(rd.selector, resolved[rd.role] ?? rd.def, rd.marksFromContent)).filter(Boolean);
   return [...faces, ...rules].join('\n');
 }
 
