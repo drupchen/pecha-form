@@ -626,7 +626,10 @@ export const TranslateView: React.FC = () => {
     const ovSrc = overrideFor(match?.id, sourceLang);
     const tr = translationOf(match, sourceLang);
     const bodySrc = ovSrc?.body ?? tr?.body;
-    if (bodySrc) return <TranslationBody body={bodySrc} />;
+    // A Latin source carries per-paragraph line numbers too — the `.chunk-editor` counter, the
+    // same one the target translation uses — so its lines can be matched against the Tibetan/
+    // target the way the Tibetan source's numbered gutter is.
+    if (bodySrc) return <TranslationBody body={bodySrc} className="chunk-editor text-sm" />;
     return (
       <div>
         <div className="text-xs text-ink-soft italic mb-1">no {sourceLang} yet — Tibetan:</div>
