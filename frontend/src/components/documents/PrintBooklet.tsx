@@ -22,7 +22,7 @@ import '../../styles/booklet.css';
  * so it is the same rendering engine as the bench → WYSIWYG. A `data-booklet-ready`
  * flag + `window.__BOOKLET_READY__` signal the PDF driver that fonts and layout settled.
  */
-export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ documentId, lang }) => {
+export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?: string }> = ({ documentId, lang, version }) => {
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [config, setConfig] = useState<LayoutConfig | null>(null);
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
@@ -157,6 +157,7 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string }> = ({ d
           body={furnitureBodyOf(furniture, item, lang)}
           toc={item.kind === 'toc' ? tocRows : []}
           orgSeal={orgSeal}
+          version={version}
           widthOf={furnitureWidthOf(item)}
           tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
           slots={furnitureSlotsOf(furniture, item, lang)}

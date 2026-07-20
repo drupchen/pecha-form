@@ -307,7 +307,7 @@ export const deletePhonetic = (body: {
 // --------------------------------------------------------------------------
 
 export type DocumentItemKind =
-  'cover' | 'blank' | 'toc' | 'copyright' | 'text' | 'image_page' | 'backcover';
+  'cover' | 'blank' | 'toc' | 'text' | 'image_page' | 'backcover';
 
 export interface DocumentItem {
   id: number;
@@ -375,6 +375,24 @@ export type OrgLayout = {
   margin_top_mm: number; margin_bottom_mm: number;
   margin_bind_mm: number; margin_outer_mm: number;
 };
+/** The physical-page geometry keys shared by OrgLayout (house default) and LayoutConfig
+ *  (per-booklet), in reading order — the sheet, then its margins. One list so the org and
+ *  per-booklet page-format editors can't drift. */
+export const PAGE_GEOMETRY_FIELDS = [
+  ['page_width_mm', 'width'], ['page_height_mm', 'height'],
+  ['margin_top_mm', 'top'], ['margin_bottom_mm', 'bottom'],
+  ['margin_bind_mm', 'bind'], ['margin_outer_mm', 'outer'],
+] as const;
+
+/** Named sheet sizes (mm) for the page-format picker; a size that matches none reads 'Custom'. */
+export const PAGE_PRESETS: { name: string; w: number; h: number }[] = [
+  { name: 'A6', w: 105, h: 148 },
+  { name: 'A5', w: 148, h: 210 },
+  { name: 'B5', w: 176, h: 250 },
+  { name: 'A4', w: 210, h: 297 },
+  { name: 'Letter', w: 215.9, h: 279.4 },
+];
+
 export const getOrgLayout = (): Promise<OrgLayout> =>
   jfetch<OrgLayout>(`${API_BASE}/org-layout`);
 export const putOrgLayout = (config: Partial<OrgLayout>): Promise<OrgLayout> =>

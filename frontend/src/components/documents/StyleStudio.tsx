@@ -7,7 +7,7 @@ import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
   putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
   getStyleSample, putStyleSample, getOrgSeal, uploadOrgSeal, deleteOrgSeal, setOrgSealSize,
-  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout, withUrlAuth,
+  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout, withUrlAuth, PAGE_GEOMETRY_FIELDS,
   type OrgFont, type OrgSeal, type LayoutConfig, type OrgLayout,
 } from '../../api/client';
 import {
@@ -154,14 +154,6 @@ const Editable: React.FC<{
               className={`${className} bk-editable`} contentEditable suppressContentEditableWarning
               onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
   };
-
-/** The org's page format, in the order a person reads a page: the sheet, then its margins.
- *  `bind` is the spine side and `outer` the open edge — the pair the recto/verso guides mirror. */
-const ORG_LAYOUT_FIELDS: [keyof OrgLayout, string][] = [
-  ['page_width_mm', 'width'], ['page_height_mm', 'height'],
-  ['margin_top_mm', 'top'], ['margin_bottom_mm', 'bottom'],
-  ['margin_bind_mm', 'bind'], ['margin_outer_mm', 'outer'],
-];
 
 export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
   const [scope, setScope] = useState<Scope>('doc');
@@ -527,7 +519,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
               <div className="flex flex-col gap-1.5">
                 <div className="text-[10px] uppercase tracking-wide text-ink-soft">Page format & guides</div>
                 <div className="rounded-md bg-white p-2 grid grid-cols-2 gap-1.5">
-                  {ORG_LAYOUT_FIELDS.map(([key, label]) => (
+                  {PAGE_GEOMETRY_FIELDS.map(([key, label]) => (
                     <label key={key} className="flex items-center justify-between gap-1 text-[11px]">
                       <span className="text-ink-soft">{label}</span>
                       <span className="inline-flex items-center gap-0.5">

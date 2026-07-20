@@ -562,7 +562,7 @@ CREATE TABLE IF NOT EXISTS document_items (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     position    INTEGER NOT NULL DEFAULT 0,
     kind        TEXT NOT NULL CHECK (kind IN
-                    ('cover','blank','toc','copyright','text','image_page','backcover')),
+                    ('cover','blank','toc','text','image_page','backcover')),
     -- Set for kind='text' — the secondary (or primary) text this page renders.
     text_id     INTEGER REFERENCES texts(id) ON DELETE SET NULL,
     -- Furniture params (styled at D2/D3): image caption, cover/copyright text, etc.
@@ -1591,6 +1591,60 @@ def get_db():
     return conn
 
 
+def _fold_copyright_into_backcover(conn) -> None:
+    """The copyright page was redundant with the back cover — both are an optional image with
+    centred text beneath it. Fold each `copyright` furniture item into its document's back cover
+    and drop the copyright item, so the copyright content lives on the back cover, under the
+    image. Idempotent: a no-op once no `copyright` items remain (fresh DBs, re-runs). Child rows
+    are deleted explicitly rather than via FK cascade, so it does not depend on the pragma state
+    mid-migration."""
+    copyrights = conn.execute(
+        "SELECT id, document_id FROM document_items WHERE kind = 'copyright'").fetchall()
+    for c in copyrights:
+        doc_id, cp_id = c["document_id"], c["id"]
+        bc = conn.execute(
+            "SELECT id FROM document_items WHERE document_id = ? AND kind = 'backcover' LIMIT 1",
+            (doc_id,)).fetchone()
+        if bc is None:
+            # No back cover to fold into — retype the copyright item in place; it keeps its
+            # content, image and position and simply becomes the back cover.
+            conn.execute("UPDATE document_items SET kind = 'backcover' WHERE id = ?", (cp_id,))
+            continue
+        bc_id = bc["id"]
+        # Merge the copyright's per-language/-block text into the back cover's, appending after
+        # any existing back-cover text (usually there is none — doc 8's is empty).
+        for f in conn.execute(
+                "SELECT lang, block, body FROM document_furniture WHERE item_id = ?",
+                (cp_id,)).fetchall():
+            body = (f["body"] or "")
+            if not body.strip():
+                continue
+            existing = conn.execute(
+                "SELECT body FROM document_furniture "
+                "WHERE document_id = ? AND item_id = ? AND lang = ? AND block = ?",
+                (doc_id, bc_id, f["lang"], f["block"])).fetchone()
+            merged = (existing["body"] + body) if existing and (existing["body"] or "").strip() else body
+            conn.execute(
+                "INSERT INTO document_furniture (document_id, item_id, lang, block, body) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(document_id, item_id, lang, block) DO UPDATE SET body = excluded.body",
+                (doc_id, bc_id, f["lang"], f["block"], merged))
+        # Move the copyright's image only if the back cover has none of its own.
+        cp_img = conn.execute(
+            "SELECT mime, data, width_mm, height_mm FROM document_images WHERE item_id = ?",
+            (cp_id,)).fetchone()
+        has_bc_img = conn.execute(
+            "SELECT 1 FROM document_images WHERE item_id = ?", (bc_id,)).fetchone()
+        if cp_img is not None and has_bc_img is None:
+            conn.execute(
+                "INSERT INTO document_images (item_id, document_id, mime, data, width_mm, height_mm) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (bc_id, doc_id, cp_img["mime"], cp_img["data"], cp_img["width_mm"], cp_img["height_mm"]))
+        for t in ("document_furniture", "document_images", "document_layout", "title_page_field"):
+            conn.execute(f"DELETE FROM {t} WHERE item_id = ?", (cp_id,))
+        conn.execute("DELETE FROM document_items WHERE id = ?", (cp_id,))
+
+
 def init_db():
     conn = get_db()
     # WAL survives in the DB file; set once so concurrent multi-user reads never
@@ -1621,6 +1675,8 @@ def init_db():
         # retries to re-render). The table only exists after the schema above.
         conn.execute("UPDATE document_versions SET status = 'failed', "
                      "error = 'interrupted by restart' WHERE status = 'rendering'")
+        # The copyright page folded into the back cover — move its content over and drop it.
+        _fold_copyright_into_backcover(conn)
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)

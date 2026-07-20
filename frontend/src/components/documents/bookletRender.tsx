@@ -290,6 +290,82 @@ export const WidthLine: React.FC<{
 };
 
 /**
+ * A furniture image with two live handles, so every image the booklet carries can be placed
+ * and sized on the page itself instead of only in the Documents tab: a vertical `BlockGround`
+ * rail (placement, hangs off the left edge, like a title block) and a horizontal grip on the
+ * right edge that resizes the image — the drag sets its stored WIDTH in mm and clears the
+ * height, so the aspect ratio is kept. The cover, copyright, back cover and image page all
+ * render through this, so both handles are present in the detailed view and in every overview
+ * column. `onResize` absent (the org seal) = placement only, no resize grip.
+ */
+export const BkImage: React.FC<{
+  src: string;
+  widthMm?: number | null;
+  heightMm?: number | null;
+  className?: string;
+  ground?: { valueMm: number; onCommit?: (mm: number) => void };
+  onResize?: (widthMm: number) => void;
+  pageHeightMm?: number;
+}> = ({ src, widthMm, heightMm, className, ground, onResize, pageHeightMm }) => {
+  const imgRef = React.useRef<HTMLImageElement>(null);
+  const [previewW, setPreviewW] = React.useState<number | null>(null);
+  const drag = React.useRef<{ x: number; from: number; cur: number; s: number } | null>(null);
+  const w = previewW ?? widthMm;
+  const sized = w != null || heightMm != null;
+  const imgStyle: React.CSSProperties = {
+    width: w != null ? `${w}mm` : undefined,
+    // While dragging, height is auto so the aspect follows the width; at rest, the stored mm.
+    height: previewW != null ? 'auto' : (heightMm != null ? `${heightMm}mm` : undefined),
+  };
+
+  const onDown = (e: React.PointerEvent) => {
+    if (!onResize || !imgRef.current) return;
+    e.preventDefault(); e.stopPropagation();
+    const page = (e.currentTarget as HTMLElement).closest<HTMLElement>('.booklet-page');
+    const s = page ? pageScaleOf(page) : 1;
+    // Start from the stored width, or measure the natural render (unscaled px → mm).
+    const fromMm = widthMm ?? imgRef.current.getBoundingClientRect().width / s / MM_PX;
+    drag.current = { x: e.clientX, from: fromMm, cur: fromMm, s };
+    setPreviewW(fromMm);
+    try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* not fatal */ }
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const next = Math.max(5, d.from + (e.clientX - d.x) / d.s / MM_PX);   // never below 5mm
+    d.cur = next;
+    setPreviewW(next);
+  };
+  const onUp = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    const final = d.cur;
+    setPreviewW(null);
+    try { (e.target as HTMLElement).releasePointerCapture?.(e.pointerId); } catch { /* not fatal */ }
+    if (Math.abs(final - d.from) < 0.2) return;   // a click, not a drag
+    onResize?.(Number(final.toFixed(1)));
+  };
+
+  return (
+    // `bk-widthline` so the hover-reveal CSS that shows the block ground + grip applies; the
+    // slot wraps the image (fit-content) so both handles sit on the image's own edges, not the
+    // full text block's.
+    <div className={`bk-image-slot bk-widthline bk-imgslot${className ? ` ${className}` : ''}`}
+         style={{ position: 'relative', ...(ground?.valueMm ? { top: `${ground.valueMm}mm` } : {}) }}>
+      <img ref={imgRef} className={`bk-image${sized ? '' : ' bk-image-nat'}`} src={src} style={imgStyle} alt="" />
+      {ground?.onCommit && (
+        <BlockGround valueMm={ground.valueMm} pageHeightMm={pageHeightMm} onCommit={ground.onCommit} />
+      )}
+      {onResize && (
+        <span className="bk-imggrip" title="Drag to resize the image — its height follows the width."
+              onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
+      )}
+    </div>
+  );
+};
+
+/**
  * The page's GROUND: grab the rail beside the text block and slide the whole block up or down.
  *
  * Replaces the vertical `<input type="range">` this page used to carry. A slider asks you to
@@ -955,16 +1031,10 @@ export const TitleContent: React.FC<{
     ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
   return (
     <div className="bk-titlepage">
-      {/* The seal/image is a block of the page like any other, so it gets a placement handle
-          like any other — it is usually the thing that most wants nudging against the title
-          under it. Through `WidthLine` with no width range: its size is set in mm in the
-          Documents tab, so there is no measure to drag, only a ground. */}
-      {image && (
-        <WidthLine valueMm={0} min={0} max={0} className="bk-image-slot"
-                   ground={groundOf?.('#image')} pageHeightMm={pageHeightMm}>
-          {image}
-        </WidthLine>
-      )}
+      {/* The cover image / org seal is a `BkImage`, self-contained: it carries its own placement
+          rail (and, for the booklet's own image, a resize grip). The ༀ fallback glyph has no
+          size of its own, so it keeps the plain `WidthLine` placement rail. */}
+      {image}
       {seal && !image && (
         <WidthLine valueMm={0} min={0} max={0} className="bk-seal"
                    ground={groundOf?.('#image')} pageHeightMm={pageHeightMm}>ༀ</WidthLine>
@@ -1038,10 +1108,17 @@ export const TitleContent: React.FC<{
  * stretches instead, so each line spans the text block and narrowing one actually rewraps it.
  * Centred text stays centred: `text-align` does that, not the box's width.
  */
+/** Resolve the booklet's template variables in a body of text. Today just `{{version}}` →
+ *  the declared version (empty until one is bumped); the raw token stays in the editor and only
+ *  resolves on the page, so the copyright "version {{version}}" follows the versioning system. */
+export function applyDocVars(text: string, version?: string): string {
+  return text.replaceAll('{{version}}', version ?? '');
+}
+
 const FurnitureLines: React.FC<{
   body: string; block: string; widthOf: BlockWidthOf; className?: string;
-  groundOf?: BlockGroundOf; pageHeightMm?: number;
-}> = ({ body, block, widthOf, className, groundOf, pageHeightMm }) => {
+  groundOf?: BlockGroundOf; pageHeightMm?: number; version?: string;
+}> = ({ body, block, widthOf, className, groundOf, pageHeightMm, version }) => {
   const paras = splitParagraphs(body);
   if (!paras.length) return null;
   return (
@@ -1049,7 +1126,7 @@ const FurnitureLines: React.FC<{
       {paras.map((para, i) => (
         <WidthLine key={i} className={className} {...widthOf(`#${block}${i}`)} centred
                    ground={groundOf?.(`#${block}${i}`)} pageHeightMm={pageHeightMm}>
-          <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(para) }} />
+          <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(applyDocVars(para, version)) }} />
         </WidthLine>
       ))}
     </div>
@@ -1073,43 +1150,32 @@ export const FurnitureContent: React.FC<{
   groundOf?: BlockGroundOf;
   /** How wide the Tibetan title lines' spaces set (see `BlockSpace`). */
   spaceOf?: BlockGroundOf;
+  /** Commit a new width (mm) for THIS item's image (bench only) — the resize grip's target. */
+  onResizeImage?: (widthMm: number) => void;
+  /** The declared version, for `{{version}}` in a furniture body (see `applyDocVars`). */
+  version?: string;
   pageHeightMm?: number;
 }> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan, slots,
-        groundOf, spaceOf, pageHeightMm }) => {
-  // The imported image, sized from the stored width/height (mm); null = natural.
-  const sized = item.image_width_mm != null || item.image_height_mm != null;
-  const imgStyle: React.CSSProperties = {
-    width: item.image_width_mm ? `${item.image_width_mm}mm` : undefined,
-    height: item.image_height_mm ? `${item.image_height_mm}mm` : undefined,
-  };
-  const bkImage = <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
-                       src={withUrlAuth(itemImageUrl(item.id))} style={imgStyle} alt="" />;
+        groundOf, spaceOf, onResizeImage, version, pageHeightMm }) => {
+  // The booklet's own image, with its placement rail and resize grip (see `BkImage`).
+  const bkImage = (
+    <BkImage src={withUrlAuth(itemImageUrl(item.id))}
+             widthMm={item.image_width_mm} heightMm={item.image_height_mm}
+             ground={groundOf?.('#image')} onResize={onResizeImage} pageHeightMm={pageHeightMm} />
+  );
 
   if (item.kind === 'cover') {
     // At the ༀ ornament's place: this booklet's own cover image if it has one, else the org's
-    // seal from the template, else (neither) the ༀ glyph — see TitleContent.
-    const sealSized = orgSeal?.width_mm != null || orgSeal?.height_mm != null;
+    // seal from the template, else (neither) the ༀ glyph — see TitleContent. The org seal is
+    // sized in the Style Studio (org-level), so it takes a placement rail but no resize grip.
     const sealImage = orgSeal?.has_image
-      ? <img className={`bk-image${sealSized ? '' : ' bk-image-nat'}`} src={withUrlAuth(orgSealUrl())} alt=""
-             style={{ width: orgSeal.width_mm ? `${orgSeal.width_mm}mm` : undefined,
-                      height: orgSeal.height_mm ? `${orgSeal.height_mm}mm` : undefined }} />
+      ? <BkImage src={withUrlAuth(orgSealUrl())} widthMm={orgSeal.width_mm} heightMm={orgSeal.height_mm}
+                 ground={groundOf?.('#image')} pageHeightMm={pageHeightMm} />
       : undefined;
     return <TitleContent titleLines={titleLines} seal widthOf={widthOf} tibetan={tibetan}
                         slots={slots} groundOf={groundOf} spaceOf={spaceOf}
                         pageHeightMm={pageHeightMm}
                         image={item.has_image ? bkImage : sealImage} />;
-  }
-  if (item.kind === 'copyright') {
-    // The copyright ("second cover") emblem above the copyright text.
-    if (!item.has_image && !body) {
-      return <div className="bk-copyright bk-placeholder">Copyright text — add it in the Documents tab.</div>;
-    }
-    return (
-      <div className="bk-copyright">
-        {item.has_image && bkImage}
-        {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="copyright" widthOf={widthOf} />}
-      </div>
-    );
   }
   if (item.kind === 'toc') {
     return (
@@ -1137,7 +1203,7 @@ export const FurnitureContent: React.FC<{
           {bkImage}
           {body && (
             <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="caption" widthOf={widthOf}
-                            className="bk-image-caption" />
+                            className="bk-image-caption" version={version} />
           )}
         </div>
       )
@@ -1150,7 +1216,7 @@ export const FurnitureContent: React.FC<{
       <div className="bk-backcover">
         {item.has_image && bkImage}
         {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="backcover" widthOf={widthOf}
-                                 className="bk-copyright" />}
+                                 className="bk-copyright" version={version} />}
       </div>
     );
   }
@@ -1170,6 +1236,8 @@ export const FurniturePage: React.FC<{
    *  lives on the block (see `BlockGround`), not out on the page. */
   groundOf?: BlockGroundOf;
   spaceOf?: BlockGroundOf;
+  onResizeImage?: (widthMm: number) => void;
+  version?: string;
   pageHeightMm?: number;
 }> = (props) => (
   <div className="booklet-spread">

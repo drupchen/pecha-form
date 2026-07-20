@@ -651,14 +651,15 @@ def _find_chrome() -> str | None:
     return None
 
 
-def _render_booklet_pdf(document_id: int, org_id: int, lang: str) -> bytes:
+def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label: str = "") -> bytes:
     """Render ONE edition of the booklet to PDF bytes via headless Chromium, with the
     navigation outline injected. Shared by the live `export_pdf` and the version renderer,
     so a frozen version can never diverge from a live export. Raises HTTPException on failure.
 
-    The headless Chrome has no session cookie — the print page authenticates every API call
-    with a short-lived signed print token (read-only, bound to the org). It only transits
-    the local process argv."""
+    `version_label` resolves `{{version}}` in the copyright: a frozen version passes its own
+    semver, a live export the latest. The headless Chrome has no session cookie — the print
+    page authenticates every API call with a short-lived signed print token (read-only, bound
+    to the org). It only transits the local process argv."""
     chrome = _find_chrome()
     if not chrome:
         raise HTTPException(500, "No Chrome/Chromium binary found on the server for PDF export.")
@@ -667,6 +668,9 @@ def _render_booklet_pdf(document_id: int, org_id: int, lang: str) -> bytes:
     try:
         token = mint_print_token(document_id, org_id)
         url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}&print_token={token}"
+        if version_label:
+            from urllib.parse import quote
+            url += f"&version={quote(version_label)}"
         cmd = [
             chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
             "--no-pdf-header-footer", "--virtual-time-budget=25000",
@@ -699,9 +703,14 @@ def export_pdf(document_id: int, lang: str = "en"):
         doc = _require_doc(conn, document_id)
         title = doc["title"]
         org_id = doc["org_id"]
+        # A live export follows the latest declared (ready) version, for `{{version}}`.
+        latest = conn.execute(
+            "SELECT semver FROM document_versions WHERE document_id=? AND status='ready' "
+            "ORDER BY major DESC, minor DESC LIMIT 1", (document_id,)).fetchone()
+        version_label = latest["semver"] if latest else ""
     finally:
         conn.close()
-    pdf = _render_booklet_pdf(document_id, org_id, lang)
+    pdf = _render_booklet_pdf(document_id, org_id, lang, version_label)
     safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
     return Response(
         content=pdf, media_type="application/pdf",
@@ -770,9 +779,9 @@ def _safe_unlink(path: str) -> None:
 
 ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
-# Furniture kinds that can carry an imported (resizable) image — the cover seal, the
-# copyright/second-cover emblem, the back cover, and standalone image pages.
-IMAGE_KINDS = ("cover", "copyright", "image_page", "backcover")
+# Furniture kinds that can carry an imported (resizable) image — the cover seal, the back
+# cover (which now also holds the copyright text), and standalone image pages.
+IMAGE_KINDS = ("cover", "image_page", "backcover")
 
 
 @router.put("/document-items/{item_id}/image")
@@ -907,17 +916,20 @@ def _render_version(version_id: int):
     conn = get_db()
     try:
         v = conn.execute(
-            "SELECT document_id, org_id, langs FROM document_versions WHERE id=?",
+            "SELECT document_id, org_id, langs, semver FROM document_versions WHERE id=?",
             (version_id,)).fetchone()
         if not v:
             return
         document_id, org_id = v["document_id"], v["org_id"]
         langs = json.loads(v["langs"] or "[]")
+        semver = v["semver"]
     finally:
         conn.close()
 
     for lang in langs:
-        pdf = _render_booklet_pdf(document_id, org_id, lang)  # may raise → worker marks failed
+        # The frozen PDF bakes in its OWN version — it is rendered while still 'rendering', so
+        # "latest ready" would resolve to the previous version.
+        pdf = _render_booklet_pdf(document_id, org_id, lang, semver)  # may raise → worker marks failed
         page_count = None
         try:
             from pypdf import PdfReader

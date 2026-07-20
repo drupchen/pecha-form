@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock } from 'lucide-react';
+import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock, Ruler } from 'lucide-react';
 import {
   API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getOrgSeal, putPaginationStamp, setPaginationFrozen,
+  getOrgSeal, putPaginationStamp, setPaginationFrozen, putLayoutConfig, setItemImageSize, getVersions,
+  PAGE_GEOMETRY_FIELDS, PAGE_PRESETS,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
@@ -285,6 +286,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // The user froze the pagination: hold every break and suppress the automatic re-flow.
   const [frozen, setFrozen] = useState(false);
   const [freezing, setFreezing] = useState(false);
+  const [showPageFormat, setShowPageFormat] = useState(false);
+  // The latest declared (ready) version's semver, for `{{version}}` in the copyright preview.
+  const [versionLabel, setVersionLabel] = useState('');
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -330,6 +334,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     setAllCompiles(null);
     setCodeTick((t) => t + 1);
   });
+
+  // The declared version for the live preview: the newest 'ready' semver (like the Documents
+  // chip). A frozen version's own PDF gets its semver from the print URL instead.
+  useEffect(() => {
+    let alive = true;
+    getVersions(documentId)
+      .then(vs => { if (alive) setVersionLabel(vs.find(v => v.status === 'ready')?.semver ?? ''); })
+      .catch(() => { if (alive) setVersionLabel(''); });
+    return () => { alive = false; };
+  }, [documentId]);
 
   useEffect(() => {
     let alive = true;
@@ -409,6 +423,36 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setHeadingsByItem(compiled.headingsByItem);
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  // This booklet's physical page — a per-document override of the house geometry (default ←
+  // org ← document). Writing it updates the guides live (rootVars reads `config`) and lands in
+  // the layout fingerprint, so the pagination re-flows to the new sheet unless frozen.
+  const savePageGeometry = async (overrides: Partial<LayoutConfig>) => {
+    // Positive, finite mm only — a bad field re-reads rather than storing junk (see saveOrgLayout).
+    if (Object.values(overrides).some((v) => !Number.isFinite(v) || (v as number) <= 0)) {
+      setConfig((await getDocumentLayout(documentId)).config);
+      return;
+    }
+    try {
+      setConfig((await putLayoutConfig(documentId, overrides)).config);
+    } catch (e) {
+      setMsg(`Page format: ${(e as Error).message}`.slice(0, 140));
+    }
+  };
+
+  // A furniture image resized on the page (its right-edge grip). Persist the new WIDTH and clear
+  // the height so the aspect ratio is kept; optimistically update the item so the image holds it.
+  const onResizeImage = async (item: DocumentItem, widthMm: number) => {
+    setDoc((d) => d
+      ? { ...d, items: d.items.map((it) => it.id === item.id
+          ? { ...it, image_width_mm: widthMm, image_height_mm: null } : it) }
+      : d);
+    try {
+      await setItemImageSize(item.id, widthMm, null);
+    } catch (e) {
+      setMsg(`Image size: ${(e as Error).message}`.slice(0, 140));
     }
   };
 
@@ -1801,6 +1845,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
                       groundOf={furnitureGroundOfAll(item, ed.lang)}
                       spaceOf={furnitureSpaceRead(rows, item.id)}
+                      onResizeImage={(mm) => void onResizeImage(item, mm)}
+                      version={versionLabel}
                       pageHeightMm={config?.page_height_mm} />
                   </div>
                 </div>
@@ -1818,6 +1864,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
         tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
         slots={furnitureSlotsOf(furniture, item, lang)}
         groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}
+        onResizeImage={(mm) => void onResizeImage(item, mm)}
+        version={versionLabel}
         pageHeightMm={config?.page_height_mm} />
     );
   };
@@ -2027,6 +2075,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Overview: the shared verso plus one recto per edition — a column with no stream (still
   // compiling, out of step, failed) renders as a labelled placeholder page.
   type SpreadCol = { side: PageSide; colLang: string; lines: DocLine[] | null; note?: string };
+  // The named sheet the current page matches (a hair of tolerance for the odd .9mm), or null =
+  // a custom size. Drives the page-format button label and which preset chip reads active.
+  const pagePreset = PAGE_PRESETS.find(
+    (p) => Math.abs(p.w - config.page_width_mm) < 0.5 && Math.abs(p.h - config.page_height_mm) < 0.5,
+  ) ?? null;
+
   const spreadCols: SpreadCol[] = overview
     ? [{ side: 'verso' as PageSide, colLang: '', lines: renderLines },
        ...overviewEditions.map((e) => ({
@@ -2116,6 +2170,62 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Edit booklet typography (org styles / per-document overrides)">
           <Type size={12} /> styles
         </button>
+        {/* Page format — this booklet's physical sheet + margins (the guides are drawn to them). */}
+        <div className="relative">
+          <button type="button" onClick={() => setShowPageFormat(v => !v)}
+                  className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${showPageFormat ? 'text-lapis' : 'text-ink-soft'}`}
+                  style={{ border: '1px solid var(--cline)' }}
+                  title="This booklet's physical page — sheet size and margins, which the guides are drawn to.">
+            <Ruler size={12} /> {pagePreset ? pagePreset.name : 'Custom'}
+          </button>
+          {showPageFormat && (
+            <div className="absolute z-40 mt-1 left-0 w-64 rounded-md bg-cream-hi p-3 shadow-lg flex flex-col gap-2"
+                 style={{ border: '1px solid var(--cline)' }}>
+              <div className="text-[10px] uppercase tracking-wide text-ink-soft">Page format — this booklet</div>
+              <div className="flex flex-wrap gap-1">
+                {PAGE_PRESETS.map((p) => {
+                  const active = pagePreset?.name === p.name;
+                  return (
+                    <button key={p.name} type="button"
+                            onClick={() => void savePageGeometry({ page_width_mm: p.w, page_height_mm: p.h })}
+                            className={`px-1.5 py-0.5 rounded text-[11px] ${active ? 'bg-lapis text-cream-hi' : 'text-lapis hover:bg-cream'}`}
+                            style={{ border: '1px solid var(--cline)' }} title={`${p.w} × ${p.h} mm`}>
+                      {p.name}
+                    </button>
+                  );
+                })}
+                {!pagePreset && (
+                  <span className="px-1.5 py-0.5 rounded text-[11px] bg-lapis text-cream-hi"
+                        style={{ border: '1px solid var(--cline)' }}>Custom</span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {PAGE_GEOMETRY_FIELDS.map(([key, label]) => (
+                  <label key={key} className="flex items-center justify-between gap-1 text-[11px]">
+                    <span className="text-ink-soft">{label}</span>
+                    <span className="inline-flex items-center gap-0.5">
+                      {/* Uncontrolled + keyed on the value so a preset click reseeds the field. */}
+                      <input type="number" min={1} step={0.1}
+                             key={`${key}:${config[key]}`}
+                             defaultValue={config[key]}
+                             className="w-14 text-right rounded px-1 bg-white"
+                             style={{ border: '1px solid var(--cline)' }}
+                             onBlur={(e) => {
+                               const v = Number(e.target.value);
+                               if (v !== config[key]) void savePageGeometry({ [key]: v });
+                             }} />
+                      <span className="text-ink-soft">mm</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="text-[10px] text-ink-soft">
+                Overrides the house default (set in Style Studio). Changing it re-flows the
+                pagination{frozen ? ' — unfreeze to re-flow.' : '.'}
+              </div>
+            </div>
+          )}
+        </div>
         <button type="button" onClick={() => setSplitMode(v => !v)}
                 className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${splitMode ? 'text-vermilion' : 'text-ink-soft'}`}
                 style={{ border: '1px solid var(--cline)' }}

@@ -784,6 +784,20 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 
 @media print { .bk-widthgrip { display: none !important; } }
 
+/* A furniture image's slot shrinks to the image so its placement rail (left) and resize grip
+   (right) sit on the image's own edges, and stays centred on the page. */
+.bk-imgslot { width: fit-content; max-width: 100%; margin-left: auto; margin-right: auto; }
+/* The image resize grip — a horizontal-drag twin of `.bk-widthgrip`, on the image's right edge. */
+.bk-imggrip {
+  position: absolute; right: -7px; top: 0; bottom: 0; width: 14px;
+  cursor: ew-resize; display: none; z-index: 2;
+  border-right: 2px solid var(--jade, #3a7d5f);
+  border-radius: 2px; touch-action: none;
+}
+.bk-widthline:hover > .bk-imggrip { display: block; }
+.bk-imggrip:hover, .bk-imggrip:active { border-right-color: var(--lapis, #2f6f9f); }
+@media print { .bk-imggrip { display: none !important; } }
+
 /* ── The line's gutter rail ──────────────────────────────────────────────────
  * ONE horizontal rail per line holds every gutter control (break, hairline, veto, edit
  * mark), so the gutter can never grow TALLER than its own ~13px line and pile onto the

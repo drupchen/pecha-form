@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Library, Plus, Trash2, ChevronUp, ChevronDown, FileText, Image as ImageIcon,
-  BookOpen, List, Copyright, Square, BookMarked, LayoutTemplate, Pencil, GitBranch,
+  BookOpen, List, Square, BookMarked, LayoutTemplate, Pencil, GitBranch,
 } from 'lucide-react';
 import { useDocumentStore } from '../../store/useDocumentStore';
 import { useTextStore } from '../../store/useTextStore';
@@ -26,7 +26,7 @@ import { cleanSpecimenHtml, stripAttrs } from './StyleStudio';
 /** Furniture kinds with an editor: per-language authored text and an uploaded, resizable
  *  image. These were two identically-populated constants — two names for one concept, which
  *  implied a distinction the code never made. */
-const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'copyright', 'image_page', 'backcover'];
+const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
 
 /**
  * One title slot's text, edited as it will PRINT rather than as the markup behind it.
@@ -120,16 +120,27 @@ const RichLine: React.FC<{
   );
 };
 
+/** A furniture body was authored as `<p>`-delimited paragraphs; the rich editor (like the title
+ *  slots) speaks `<br>`. Convert paragraph boundaries to line breaks so opening a legacy body in
+ *  `RichLine` shows its lines and re-saves them as `<br>` rather than joining them. `splitParagraphs`
+ *  renders a `<br>`-only body as one centred block, so the page is unchanged. */
+function bodyToRich(html: string): string {
+  if (!html) return '';
+  return html
+    .replace(/<\/p>\s*<p[^>]*>/gi, '<br>')
+    .replace(/<\/?p[^>]*>/gi, '')
+    .trim();
+}
+
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
   blank: { label: 'Blank page', icon: <Square size={14} /> },
   toc: { label: 'Table of contents', icon: <List size={14} /> },
-  copyright: { label: 'Copyright', icon: <Copyright size={14} /> },
   text: { label: 'Text', icon: <FileText size={14} /> },
   image_page: { label: 'Image', icon: <ImageIcon size={14} /> },
   backcover: { label: 'Back cover', icon: <BookMarked size={14} /> },
 };
-const FURNITURE: DocumentItemKind[] = ['cover', 'blank', 'toc', 'copyright', 'image_page', 'backcover'];
+const FURNITURE: DocumentItemKind[] = ['cover', 'blank', 'toc', 'image_page', 'backcover'];
 
 /** The booklet's navigation outline (what the PDF's bookmarks contain): each text with
  *  its translation-pane headings nested by level, translated labels + reader folio. */
@@ -750,27 +761,39 @@ export const DocumentsView: React.FC = () => {
                           {isTextItem
                             ? 'Table-of-contents title — per language (blank = the text’s own title)'
                             : it.kind === 'image_page'
-                              ? 'Caption — per language (optional)'
-                              : it.kind === 'backcover'
-                                ? 'Back-cover text — per language (optional; HTML: <p>, <em>, <strong>)'
-                                : `${KIND_META[it.kind].label} content — per language (HTML: <p>, <em>, <strong>)`}
+                              ? 'Caption — per language (optional; select text for italic/bold, Enter for a new line)'
+                              : 'Back-cover text — per language (optional; select text for italic/bold, Enter for a new line)'}
                         </div>
                         )}
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
                         )}
+                        {/* TOC title: a plain one-line field. Other furniture bodies (back cover,
+                            image caption) use the same rich editor as the title slots — what you
+                            see is what prints, with italic/bold and line breaks, no HTML tags. */}
+                        {/* A plain <div>, NOT a <label>: a label around the contentEditable
+                            RichLine re-targets the click on mouse-up and blurs it the instant you
+                            click in (the title-slot rows are <div>s for the same reason). */}
                         {it.kind !== 'cover' && current.languages.map(code => (
-                          <label key={code} className="flex items-start gap-2">
+                          <div key={code} className="flex items-start gap-2">
                             <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
-                            <textarea
-                              defaultValue={furnitureBody(it.id, code)}
-                              onBlur={e => void saveFurniture(it.id, code, e.target.value)}
-                              rows={isTextItem ? 1 : 2}
-                              placeholder={isTextItem ? 'e.g. Essence of Accomplishment' : (it.kind === 'copyright' ? 'Copyright © …' : 'content…')}
-                              className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
-                              style={{ border: '1px solid var(--cline)' }}
-                            />
-                          </label>
+                            {isTextItem ? (
+                              <textarea
+                                defaultValue={furnitureBody(it.id, code)}
+                                onBlur={e => void saveFurniture(it.id, code, e.target.value)}
+                                rows={1}
+                                placeholder="e.g. Essence of Accomplishment"
+                                className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
+                                style={{ border: '1px solid var(--cline)' }}
+                              />
+                            ) : (
+                              <RichLine
+                                key={`body-${it.id}-${code}`}
+                                html={bodyToRich(furnitureBody(it.id, code))}
+                                placeholder={it.kind === 'backcover' ? 'e.g. Copyright © …' : 'Caption…'}
+                                onCommit={h => void saveFurniture(it.id, code, h)} />
+                            )}
+                          </div>
                         ))}
                       </div>
                     )}

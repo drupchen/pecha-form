@@ -38,7 +38,9 @@ function printModeParams() {
   const p = new URLSearchParams(window.location.search);
   const id = p.get('print');
   if (!id || !Number.isFinite(Number(id))) return null;
-  return { documentId: Number(id), lang: p.get('lang') || 'en' };
+  // `version` = the declared version this render is FOR (a frozen version's own semver, or the
+  // latest for a live export), used to resolve `{{version}}` in the copyright.
+  return { documentId: Number(id), lang: p.get('lang') || 'en', version: p.get('version') || '' };
 }
 
 export default function App() {
@@ -46,7 +48,8 @@ export default function App() {
   if (printParams) {
     return (
       <ErrorBoundary>
-        <PrintBooklet documentId={printParams.documentId} lang={printParams.lang} />
+        <PrintBooklet documentId={printParams.documentId} lang={printParams.lang}
+                      version={printParams.version} />
       </ErrorBoundary>
     );
   }
