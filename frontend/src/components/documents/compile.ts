@@ -244,14 +244,24 @@ export async function compileTextItem(
   });
   const translationByLine = new Map<number, string>();
   for (const [ck, idxs] of linesByChunk) {
-    const parts = splitParagraphs(transFor(chunkByKey.get(ck)!));
+    const body = transFor(chunkByKey.get(ck)!);
+    const parts = splitParagraphs(body);
+    // Empties preserved (interior blank lines) — only the free-form leftover reads this, so its
+    // blank lines survive; the aligned per-line mapping below stays on the filtered `parts`.
+    const rawParts = splitParagraphsRaw(body);
     idxs.forEach((lineIdx, k) => {
       // The last line takes whatever paragraphs are left over — as separate lines. Joining
       // them with a space ran them together into one, which is the same loss in a quieter
-      // form: the text was there, but not the lines the translator wrote.
-      const piece = k === idxs.length - 1 && parts.length > idxs.length
-        ? parts.slice(k).join('<br>')
-        : (parts[k] ?? '');
+      // form: the text was there, but not the lines the translator wrote. Keep the translator's
+      // blank lines here (→ `<br><br>`); walk `rawParts` past the k-th NON-empty paragraph.
+      let piece: string;
+      if (k === idxs.length - 1 && parts.length > idxs.length) {
+        let nonEmpty = 0, rs = 0;
+        while (rs < rawParts.length && nonEmpty < k) { if (rawParts[rs]) nonEmpty += 1; rs += 1; }
+        piece = rawParts.slice(rs).join('<br>');
+      } else {
+        piece = parts[k] ?? '';
+      }
       if (piece) translationByLine.set(lineIdx, piece);
     });
   }
@@ -429,6 +439,27 @@ export function splitParagraphs(html: string): string[] {
       return (hasEl ? p.innerHTML : p.textContent ?? '').trim();
     })
     .filter(Boolean);
+}
+
+/** Like `splitParagraphs`, but KEEPS interior empty paragraphs — a translator's blank line — as
+ *  `''`, dropping only leading/trailing blanks. `<p></p>` and `<p><br></p>` both normalise to
+ *  `''`. Used only for the free-form "leftover" translation so its blank lines survive into the
+ *  booklet; the per-line aligned mapping stays on `splitParagraphs` so verse lines don't shift. */
+export function splitParagraphsRaw(html: string): string[] {
+  if (!html) return [];
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const ps = Array.from(doc.body.querySelectorAll('p'));
+  const arr = ps.length
+    ? ps.map((p) => {
+        const hasEl = Array.from(p.childNodes).some((n) => n.nodeType === Node.ELEMENT_NODE);
+        const c = (hasEl ? p.innerHTML : p.textContent ?? '').trim();
+        return c === '<br>' || c === '<br/>' ? '' : c;
+      })
+    : (html.trim() ? [html.trim()] : []);
+  let s = 0, e = arr.length;
+  while (s < e && !arr[s]) s += 1;
+  while (e > s && !arr[e - 1]) e -= 1;
+  return arr.slice(s, e);
 }
 
 /** A navigation heading, resolved for ONE language: an ordered, flat entry the booklet

@@ -98,6 +98,12 @@
 .chunk-editor p:last-child {
   margin-bottom: 0;
 }
+/* A translator's blank line is an empty <p></p>, which collapses to zero height — so its line
+ * number lands on the neighbour's. Give it one line's height so the blank shows and the numbers
+ * stay on their own rows (matching the booklet, which now renders the blank too). */
+.chunk-editor p:empty {
+  min-height: 1lh;
+}
 /* Per-line number down the translation, restarting each unit. Numbers the live
  * TipTap editor AND the static render (both carry .chunk-editor), so the count
  * updates as paragraphs are added/removed and can be matched against the Tibetan. */
