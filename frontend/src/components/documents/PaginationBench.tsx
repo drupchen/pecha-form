@@ -1,8 +1,8 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText } from 'lucide-react';
+import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock } from 'lucide-react';
 import {
   API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  getOrgSeal, putPaginationStamp,
+  getOrgSeal, putPaginationStamp, setPaginationFrozen,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
   type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
 } from '../../api/client';
@@ -282,6 +282,9 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // style/geometry fingerprint. Both empty until a flow records them.
   const [stamp, setStamp] = useState<{ sig: Record<string, string> | null; fp: string | null }>(
     { sig: null, fp: null });
+  // The user froze the pagination: hold every break and suppress the automatic re-flow.
+  const [frozen, setFrozen] = useState(false);
+  const [freezing, setFreezing] = useState(false);
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -340,6 +343,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
+      setFrozen(lay.pagination_frozen);
       setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
@@ -392,6 +396,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setConfig(lay.config);
       setRows(lay.rows);
       setStamp({ sig: parseSigStamp(lay.pagination_sig), fp: lay.pagination_fp });
+      setFrozen(lay.pagination_frozen);
       setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
@@ -837,6 +842,10 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   };
   useEffect(() => {
     if (!config || !lines.length || seeding || !streamReady) return;
+    // Frozen: every break is held. Suppress BOTH the initial seed and the drift re-flow — this
+    // is the one choke point for automatic re-flow, so the freeze lives here. The stored breaks
+    // render untouched; unfreezing re-arms this effect and lets the drift re-flow catch up.
+    if (frozen) return;
     if (!hasStoredBreaks) { void requestSeed(false); return; }
     if (!stamp.sig) return;    // never stamped: nothing to compare to
     if (!drifted) return;
@@ -845,7 +854,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, lines, seeding, streamReady, hasStoredBreaks, drifted, styleStale, balanceStale,
-      balanceFp, dirty, stamp.sig, burstSettled]);
+      balanceFp, dirty, stamp.sig, burstSettled, frozen]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
@@ -1440,6 +1449,11 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Fixed-height virtualization: each page-unit is one page tall (+ a 24px gutter).
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Coalesce scroll → state to one update per frame. Each scroll event otherwise re-renders
+  // the whole bench, and under load those renders fall behind the scroll and leave the window
+  // stale (blank). The rAF collapses a burst of events into a single update carrying the
+  // freshest scrollTop.
+  const scrollRaf = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(800);
   // Distance from the scroll content's top to the virtualized body div. The body sits
@@ -1462,6 +1476,8 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     ro.observe(el);
     return () => ro.disconnect();
   }, [doc, frontMatter.length, backMatter.length, config, styleCss]);
+  // Drop any scroll frame still pending when the bench unmounts.
+  useEffect(() => () => { if (scrollRaf.current != null) cancelAnimationFrame(scrollRaf.current); }, []);
   // ── The overview's scale: the whole row of columns, shrunk to the bench's width ──
   // Natural row width = N pages plus the 10mm gaps `.booklet-spread` puts between them
   // (booklet.css). The scale rides on a wrapper ABOVE `.booklet-spread` — never on
@@ -1480,8 +1496,14 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     ? pageHpx * ovScale + 24 + OV_LABEL_HPX
     : pageHpx + 24;
   const local = Math.max(0, scrollTop - bodyOffsetTop);
-  const vFirst = Math.max(0, Math.floor(local / spreadHpx) - 1);
-  const vLast = Math.min(bodyUnits.length, Math.ceil((local + viewH) / spreadHpx) + 1);
+  // Overscan sized to the viewport, not a fixed ±1 spread. The mounted window updates only
+  // after onScroll → setScrollTop → re-render, so a scroll that moves more than the overscan
+  // before that lands shows blank — brutal in overview, where a spread is a fraction of the
+  // viewport (~340px vs ~800px). One viewport-plus each side keeps a frame's scroll covered;
+  // it adapts by itself (many small spreads in overview, few large ones in the detailed view).
+  const OVERSCAN = Math.ceil(viewH / spreadHpx) + 2;
+  const vFirst = Math.max(0, Math.floor(local / spreadHpx) - OVERSCAN);
+  const vLast = Math.min(bodyUnits.length, Math.ceil((local + viewH) / spreadHpx) + OVERSCAN);
 
   // ── Keep the viewport anchored to CONTENT across re-derives ──
   // Every balancing edit replaces `bodyUnits`, and the body's height with it. The spreads
@@ -1685,12 +1707,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
    * A furniture page is symmetric (`--m-outer` both sides), so a block may be pulled out to
    * either physical border.
    */
-  const furnitureWidthOf = (item: DocumentItem): BlockWidthOf => (key: string) => {
+  // `forLang` is the column's edition — the on-screen one in the detailed view, each column's
+  // own in the overview. The horizontal resize is per-edition (a title reads at a different
+  // width once its language does), so an overview column must key its width to ITS edition, not
+  // the on-screen one; otherwise every column shows and edits the same row and the resize looks
+  // shared. (The vertical drag is the opposite — shared — via `furnitureGroundOfAll`.)
+  const furnitureWidthOf = (item: DocumentItem, forLang = lang): BlockWidthOf => (key: string) => {
     const furn = key.startsWith('#');
     const kind: DocumentLayoutKind = furn ? 'width_furniture' : 'width_tibetan';
     // A '#title_tib' block is the booklet's own TIBETAN, so it is shared like the text's own
     // — the same string prints in every edition. Every other '#block' is that edition's text.
-    const rowLang = furn && !key.startsWith('#title_tib') ? lang : '';
+    const rowLang = furn && !key.startsWith('#title_tib') ? forLang : '';
     const k = `${item.id}:${key}:${kind}:${rowLang}`;
     // Every block on a special page is centred except a TOC entry, which is a left-aligned
     // row. A centred block gives half its measure off each side, so it needs TWICE the
@@ -1769,7 +1796,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                       titleLines={item.kind === 'cover' ? ed.mainTitleLines : []}
                       body={furnitureBodyOf(furniture, item, ed.lang)}
                       toc={item.kind === 'toc' ? ed.tocRows : []}
-                      orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
+                      orgSeal={orgSeal} widthOf={furnitureWidthOf(item, ed.lang)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
                       groundOf={furnitureGroundOfAll(item, ed.lang)}
@@ -2036,10 +2063,12 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           ))}
           {doc.languages.length === 0 && <span className="text-vermilion">set languages first</span>}
         </div>
-        <button type="button" onClick={() => void requestSeed(true, 'user')} disabled={seeding}
+        <button type="button" onClick={() => void requestSeed(true, 'user')} disabled={seeding || frozen}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
                 style={{ border: '1px solid var(--cline)' }}
-                title="Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.">
+                title={frozen
+                  ? 'Pagination is frozen — unfreeze to re-flow.'
+                  : 'Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.'}>
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
         </button>
         <button type="button" onClick={() => void refreshData()} disabled={refreshing}
@@ -2048,6 +2077,30 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
                 title="Re-read the booklet's content from the server — text, translations, headings, furniture, styles — and recompile the preview. Use when an edit made elsewhere hasn't rippled in. If the content moved, a re-flow follows on its own.">
           <RotateCw size={12} className={refreshing ? 'animate-spin' : ''} /> re-read
         </button>
+        {/* Freeze holds every page break and suppresses the automatic re-flow, so hand-tuning is
+            never reflowed away. Unfreezing restores the automatic + manual mix. */}
+        <button type="button" disabled={freezing || seeding}
+                onClick={() => {
+                  setFreezing(true);
+                  const next = !frozen;
+                  void setPaginationFrozen(documentId, next)
+                    .then(() => setFrozen(next))
+                    .finally(() => setFreezing(false));
+                }}
+                className={`px-2 py-1 rounded-md flex items-center gap-1 disabled:opacity-40 ${
+                  frozen ? 'bg-lapis text-cream-hi' : 'text-lapis hover:bg-cream'}`}
+                style={{ border: '1px solid var(--cline)' }}
+                title={frozen
+                  ? 'Pagination frozen: breaks held, automatic re-flow off. Click to unfreeze and return to automatic + manual breaks.'
+                  : 'Freeze the pagination: hold every page break and stop the automatic re-flow, so your fine adjustments are not reflowed away.'}>
+          {frozen ? <Lock size={12} /> : <Unlock size={12} />} {frozen ? 'frozen' : 'freeze'}
+        </button>
+        {frozen && drifted && (
+          <span className="text-ink-soft italic truncate max-w-xs"
+                title="The content changed since the freeze; the pagination is held. Unfreeze to re-flow.">
+            pagination held — unfreeze to re-flow
+          </span>
+        )}
         {msg && (
           <span className="text-vermilion truncate max-w-md" title={msg}>{msg}</span>
         )}
@@ -2094,8 +2147,15 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           virtualized body spreads, then back-matter furniture. */}
       <div className="flex-1 flex overflow-hidden">
       <div ref={scrollRef}
-           onScroll={(e) => { const t = e.currentTarget.scrollTop;
-                              setScrollTop(t); recordViewAnchor(t); }}
+           onScroll={(e) => {
+             const t = e.currentTarget.scrollTop;
+             if (scrollRaf.current != null) return;   // a frame is already pending; it reads live
+             scrollRaf.current = requestAnimationFrame(() => {
+               scrollRaf.current = null;
+               const cur = scrollRef.current ? scrollRef.current.scrollTop : t;
+               setScrollTop(cur); recordViewAnchor(cur);
+             });
+           }}
            className="flex-1 overflow-auto" style={{ background: 'var(--cream)', position: 'relative' }}>
         {frontMatter.length > 0 && (
           <div className="flex flex-col items-center gap-6 pt-6">{frontMatter.map(renderFurniture)}</div>

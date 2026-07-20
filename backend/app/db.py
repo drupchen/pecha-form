@@ -549,6 +549,10 @@ CREATE TABLE IF NOT EXISTS documents (
     title          TEXT NOT NULL,
     pagination_sig TEXT,
     pagination_fp  TEXT,
+    -- 1 = the user froze the pagination: every page break is held and the bench's
+    -- automatic re-flow is suppressed, so hand-tuning is never reflowed away. Unfreezing
+    -- (→ 0) re-enables the drift re-flow over the same automatic + manual break rows.
+    pagination_frozen INTEGER NOT NULL DEFAULT 0,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -970,7 +974,8 @@ _COLUMN_MIGRATIONS = {
     # bench can measure how stale they are (see the documents CREATE).
     "documents": [("org_id", "INTEGER NOT NULL DEFAULT 1"),
                   ("layout_config", "TEXT"), ("pagination_sig", "TEXT"),
-                  ("pagination_fp", "TEXT")],
+                  ("pagination_fp", "TEXT"),
+                  ("pagination_frozen", "INTEGER NOT NULL DEFAULT 0")],
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
     # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.

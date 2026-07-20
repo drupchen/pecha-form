@@ -625,6 +625,9 @@ export interface DocumentLayout {
    *  recorded, so nothing is assumed. */
   pagination_sig: string | null;
   pagination_fp: string | null;
+  /** True = the user froze the pagination: every break is held and the bench's automatic
+   *  re-flow is suppressed. Unfreezing re-enables it over the same break rows. */
+  pagination_frozen: boolean;
 }
 
 export const getDocumentLayout = (id: number) =>
@@ -633,6 +636,10 @@ export const getDocumentLayout = (id: number) =>
 export const putPaginationStamp = (id: number, pagination_sig: string, pagination_fp: string) =>
   jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/pagination-stamp`,
     { method: 'PUT', headers: J, body: JSON.stringify({ pagination_sig, pagination_fp }) });
+/** Freeze/unfreeze the booklet's pagination (hold every break + suppress auto re-flow). */
+export const setPaginationFrozen = (id: number, frozen: boolean) =>
+  jfetch<{ ok: boolean; frozen: boolean }>(`${API_BASE}/documents/${id}/pagination-frozen`,
+    { method: 'PUT', headers: J, body: JSON.stringify({ frozen }) });
 export const putLayoutConfig = (id: number, config: Partial<LayoutConfig>) =>
   jfetch<DocumentLayout>(`${API_BASE}/documents/${id}/layout-config`,
     { method: 'PUT', headers: J, body: JSON.stringify({ config }) });

@@ -717,11 +717,17 @@ class DocumentLayoutOut(BaseModel):
     # then leaves the breaks alone rather than assuming everything changed.
     pagination_sig: Optional[str] = None
     pagination_fp: Optional[str] = None
+    # True = pagination frozen: breaks held, automatic re-flow suppressed (see documents CREATE).
+    pagination_frozen: bool = False
 
 class PaginationStampIn(BaseModel):
     """Written by the bench right after a successful flow — this is what those breaks fit."""
     pagination_sig: str
     pagination_fp: str
+
+class PaginationFrozenIn(BaseModel):
+    """Toggle the pagination freeze for a booklet."""
+    frozen: bool
 
 # Per-language furniture content (copyright text, cover/title overrides, captions).
 # `block` names the page element: '' is the item's free-form body (and, at lang '', the

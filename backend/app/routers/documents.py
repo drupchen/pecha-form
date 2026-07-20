@@ -30,7 +30,7 @@ from ..schemas import (
     DocumentItemIn, DocumentItemPatch, DocumentItemOut,
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
-    DocumentLayoutConfigIn, DocumentLayoutOut, PaginationStampIn,
+    DocumentLayoutConfigIn, DocumentLayoutOut, PaginationStampIn, PaginationFrozenIn,
     DocumentFurnitureRow, DocumentFurnitureIn, ImageSizeIn,
     TitlePageFieldRow, TitleFieldIn, TitleShiftIn,
     DocumentVersionCreate, DocumentVersionOut,
@@ -387,7 +387,8 @@ def get_layout(document_id: int):
             config=_effective_config(conn, row),
             rows=[DocumentLayoutRow(**dict(r)) for r in rows],
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
-            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)
+            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None,
+            pagination_frozen=bool(row["pagination_frozen"]) if "pagination_frozen" in keys else False)
     finally:
         conn.close()
 
@@ -408,6 +409,23 @@ def put_pagination_stamp(document_id: int, payload: PaginationStampIn):
             (payload.pagination_sig, payload.pagination_fp, document_id))
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/pagination-frozen")
+def put_pagination_frozen(document_id: int, payload: PaginationFrozenIn):
+    """Freeze/unfreeze the booklet's pagination. Frozen holds every page break and suppresses
+    the bench's automatic re-flow; the break rows are untouched, so unfreezing restores the
+    same automatic + manual mix."""
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        conn.execute(
+            "UPDATE documents SET pagination_frozen = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (1 if payload.frozen else 0, document_id))
+        conn.commit()
+        return {"ok": True, "frozen": payload.frozen}
     finally:
         conn.close()
 
@@ -440,7 +458,8 @@ def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
             config=_effective_config(conn, row),
             rows=[DocumentLayoutRow(**dict(r)) for r in rows],
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
-            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None)
+            pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None,
+            pagination_frozen=bool(row["pagination_frozen"]) if "pagination_frozen" in keys else False)
     finally:
         conn.close()
 
