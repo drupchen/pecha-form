@@ -243,8 +243,52 @@ export function applyMoveDisplays(
   return out;
 }
 
-/** Insert the scramble layer's synthetic TITLE chunks: each appears before the
- *  chunk containing its anchor token (null anchor = end of stream). */
+/** A row the stream OWNS, as against a synthetic copy of one — a relocated fragment or a
+ *  passage repeat. A title anchors to real text only: the copies carry their source's
+ *  syllable ids, so anchoring to one would name a place that exists twice. */
+const isRealChunk = (c: DerivedChunk) => c.movedLayoutId == null && c.passage == null;
+
+/** The chunk's OWN token for a syllable — never a copy the hairline move injected here from
+ *  somewhere else (`movedIn`), whose `opId` belongs to another chunk's occurrence. */
+export const ownToken = (c: DerivedChunk, sylId: string) =>
+  c.tokens.find(t => t.id === sylId && t.movedIn == null);
+
+/**
+ * Where a title goes.
+ *
+ * A syllable id ALONE DOES NOT NAME A PLACE: transclude the same source four times (text 33
+ * does, of text 10) and its uuids appear four times over, so `findIndex` on the id sent every
+ * title in that run to the first occurrence. `anchor_op_id` names WHICH occurrence — the same
+ * `(id, opId)` pair the booklet anchors its page breaks on (`anchorOf`) — and `anchor_after`
+ * says which side of that chunk the title sits on, so a spot with no syllable of its own (above
+ * a moved row) can be addressed as "after the real chunk before it".
+ *
+ * Rows written before `anchor_op_id` existed carry NULL and resolve exactly as they did, as
+ * does one whose op no longer resolves: nothing already placed moves.
+ */
+function titleIndex(chunks: DerivedChunk[], l: ChunkLayout): number {
+  const syl = l.anchor_syl_id;
+  if (!syl) return -1;
+  const op = (l as { anchor_op_id?: number | null }).anchor_op_id ?? null;
+  // `sylIds` is what a chunk OWNS; `tokens` may also hold BORROWED text — the hairline move
+  // injects read-only copies of a fragment into its destination chunk (`movedIn`) without
+  // touching `sylIds`. Matching on tokens therefore found the copy first and placed the title
+  // beside the borrower, many rows above the syllable's real home.
+  const holds = (c: DerivedChunk, matchOp: boolean) =>
+    isRealChunk(c) && c.sylIds.includes(syl)
+    && (!matchOp || (ownToken(c, syl)?.opId ?? null) === op);
+
+  let at = op != null ? chunks.findIndex(c => holds(c, true)) : -1;
+  // No op stored, or a stale one (the derivation was rebuilt under it): fall back to the id,
+  // which is where this title has always landed.
+  if (at < 0) at = chunks.findIndex(c => holds(c, false));
+  if (at < 0) at = chunks.findIndex(c => c.sylIds.includes(syl));   // synthetic rows, last resort
+  if (at < 0) return -1;
+  return l.anchor_after ? at + 1 : at;
+}
+
+/** Insert the scramble layer's synthetic TITLE chunks at their anchor (see `titleIndex`);
+ *  an anchor that names nothing at all falls to the end of the stream. */
 export function insertTitleChunks(
   chunks: DerivedChunk[],
   layouts: ChunkLayout[],
@@ -264,10 +308,8 @@ export function insertTitleChunks(
       tagColor: null,
       titleLayout: l,
     };
-    const at = l.anchor_syl_id
-      ? out.findIndex(c => c.sylIds.includes(l.anchor_syl_id!))
-      : -1;
-    if (at >= 0) out.splice(at, 0, entry);
+    const at = titleIndex(out, l);
+    if (at >= 0) out.splice(Math.min(at, out.length), 0, entry);
     else out.push(entry);
   }
   return out;

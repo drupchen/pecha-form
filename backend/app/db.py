@@ -1066,6 +1066,12 @@ _COLUMN_MIGRATIONS = {
     # source range for that language, leaving the other languages untouched).
     "chunk_layouts": [("move_mode", "TEXT"),
                       ("anchor_after", "INTEGER NOT NULL DEFAULT 0"),
+                      # anchor_op_id: WHICH OCCURRENCE the anchor syllable is. Transclude one
+                      # source several times and its uuids repeat, so the id alone sent every
+                      # title in that run to the first occurrence; `(id, op)` is the same pair
+                      # the booklet anchors its page breaks on. NULL on rows written before
+                      # this, which resolve by id exactly as they always did.
+                      ("anchor_op_id", "INTEGER"),
                       ("lang", "TEXT"),
                       # render_as: 'small_intro' renders a translation-only title as a
                       # small-face gloss instead of a section heading.

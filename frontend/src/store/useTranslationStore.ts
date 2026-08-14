@@ -57,7 +57,13 @@ interface TranslationState {
     textId: number | null; srcStart: string; srcEnd: string; anchor: string | null;
     mode: 'inline' | 'segment'; anchorAfter?: boolean; lang?: string | null;
   }) => Promise<void>;
-  addTitle: (args: { textId: number | null; anchor: string | null; level: number }) => Promise<void>;
+  /** `anchor` names the chunk the title sits against, `anchorOp` WHICH OCCURRENCE of it
+   *  (a source transcluded twice repeats its uuids), and `anchorAfter` which side — how the
+   *  spot above a synthetic row is addressed, since it has no syllable of its own. */
+  addTitle: (args: {
+    textId: number | null; anchor: string | null; anchorOp?: number | null;
+    anchorAfter?: boolean; level: number;
+  }) => Promise<void>;
   setTitleBody: (layoutId: number, lang: string, body: string) => Promise<void>;
   setTitleLevel: (layoutId: number, level: number) => Promise<void>;
   setTitleRenderAs: (layoutId: number, renderAs: string | null) => Promise<void>;
@@ -211,9 +217,10 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
     });
   },
 
-  addTitle: async ({ textId, anchor, level }) => {
+  addTitle: async ({ textId, anchor, anchorOp, anchorAfter, level }) => {
     const row = await createLayout({
-      text_id: textId, kind: 'title', anchor_syl_id: anchor, level,
+      text_id: textId, kind: 'title', anchor_syl_id: anchor,
+      anchor_op_id: anchorOp ?? null, anchor_after: !!anchorAfter, level,
     });
     set(s => ({ layouts: [...s.layouts, row], version: s.version + 1 }));
   },

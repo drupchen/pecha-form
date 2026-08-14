@@ -9,7 +9,7 @@ import { useUIStore } from '../../store/useUIStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
 import { TreePane } from '../workspace/TreePane';
-import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks, type DerivedChunk } from './chunks';
+import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks, ownToken, type DerivedChunk } from './chunks';
 import { usePassageStore } from '../../store/usePassageStore';
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
@@ -640,10 +640,51 @@ export const TranslateView: React.FC = () => {
     );
   };
 
+  /**
+   * Where a title inserted at the bar above row `i` belongs, as an address that will still
+   * mean this spot tomorrow.
+   *
+   * A syllable id alone does not name a place: transclude one source several times (text 33
+   * does, four times over) and its uuids repeat, so the title flew to the first occurrence.
+   * `op` names WHICH occurrence. And a SYNTHETIC row — a relocated fragment, a passage repeat
+   * — has no syllable of its own to point at: its ids belong to the text it copies, which
+   * lives elsewhere in the stream. The spot above one is therefore addressed as "after the
+   * real chunk before it", so the title stays exactly here even when the fragment is
+   * re-placed or the move is undone.
+   */
+  const titleAnchorAt = (i: number): { syl: string | null; op: number | null; after: boolean } => {
+    const real = (r: DisplayRow) =>
+      !r.u.titleLayout && r.u.movedLayoutId == null && r.u.passage == null && !!r.u.sylIds.length;
+    // The chunk's own first syllable, with the op of ITS token — `tokens[0]` may be a copy the
+    // hairline move injected here from elsewhere, whose occurrence is another chunk's.
+    const own = (u: DerivedChunk) => {
+      const syl = u.sylIds[0] ?? null;
+      return { syl, op: (syl ? ownToken(u, syl)?.opId : null) ?? null };
+    };
+    const here = displayRows[i];
+    if (!here) return { syl: null, op: null, after: false };
+    if (real(here)) return { ...own(here.u), after: false };
+    for (let j = i - 1; j >= 0; j -= 1) {
+      if (real(displayRows[j])) return { ...own(displayRows[j].u), after: true };
+    }
+    // Nothing real above it (a synthetic row opens the stream): fall forward.
+    for (let j = i + 1; j < displayRows.length; j += 1) {
+      if (real(displayRows[j])) return { ...own(displayRows[j].u), after: false };
+    }
+    return { syl: null, op: null, after: false };
+  };
+
   /** Thin placement bar shown while a move is armed; also carries "+ title". Clicking it
    *  RELOCATES the fragment: it stands as its own segment here, with its own translation
-   *  (the hairline, by contrast, integrates it into a chunk's text). */
-  const placeBar = (anchor: string | null, key: string) => (
+   *  (the hairline, by contrast, integrates it into a chunk's text).
+   *
+   *  `anchor` is the MOVE's destination (unchanged). A title uses `titleAnchor` instead —
+   *  the same spot, addressed so it survives the arrangement changing around it. */
+  const placeBar = (
+    anchor: string | null,
+    key: string,
+    titleAnchor?: { syl: string | null; op: number | null; after: boolean },
+  ) => (
     <div key={key} className="flex items-center gap-2 -my-1.5 h-4 group">
       {!canEditTranslate ? null : armedMove ? (
         <button
@@ -668,8 +709,13 @@ export const TranslateView: React.FC = () => {
       ) : (
         <button
           type="button"
-          onClick={() => void addTitle({ textId: null, anchor, level: 1 })
-            .catch((e: any) => setSaveError(e.message || 'Title failed'))}
+          onClick={() => void addTitle({
+            textId: null,
+            anchor: titleAnchor ? titleAnchor.syl : anchor,
+            anchorOp: titleAnchor?.op ?? null,
+            anchorAfter: titleAnchor?.after ?? false,
+            level: 1,
+          }).catch((e: any) => setSaveError(e.message || 'Title failed'))}
           className="mx-auto opacity-0 group-hover:opacity-100 px-2 rounded-full text-[10px] text-ink-soft hover:text-lapis hover:bg-cream transition-opacity flex items-center gap-1"
           style={{ border: '1px solid var(--cline)' }}
           title="Insert an explicit title chunk here (implied in the Tibetan, made explicit in translation)"
@@ -1128,7 +1174,7 @@ export const TranslateView: React.FC = () => {
               if (u.movedOutAll != null) {
                 return (
                   <React.Fragment key={u.key}>
-                    {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`)}
+                    {placeBar(u.sylIds[0] ?? null, `bar-${u.key}`, titleAnchorAt(i))}
                     <div
                       data-link-key={u.startOffset}
                       className="grid grid-cols-2 gap-4 rounded-xl bg-cream-hi/60 p-4"
@@ -1213,7 +1259,7 @@ export const TranslateView: React.FC = () => {
               };
               return (
                 <React.Fragment key={u.key}>
-                  {placeBar(barAnchor, `bar-${u.key}`)}
+                  {placeBar(barAnchor, `bar-${u.key}`, titleAnchorAt(i))}
                   <div
                     data-link-key={u.startOffset}
                     // The "N to trim" chevrons walk exactly the rows wearing the badge below.
@@ -1527,7 +1573,7 @@ export const TranslateView: React.FC = () => {
                 </React.Fragment>
               );
             })}
-            {placeBar(null, 'bar-end')}
+            {placeBar(null, 'bar-end', { syl: null, op: null, after: false })}
           </div>
         </div>
       </div>

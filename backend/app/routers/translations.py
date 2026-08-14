@@ -735,8 +735,14 @@ class LayoutIn(BaseModel):
     # 'segment'/'title': lands BEFORE the chunk starting here. 'inline': lands beside this
     # very syllable, inside its chunk (after it when anchor_after). NULL = end of stream.
     anchor_syl_id: Optional[str] = None
+    # Which OCCURRENCE of that syllable: a source transcluded several times repeats its
+    # uuids, so the id alone does not name a place (see `insertTitleChunks`).
+    anchor_op_id: Optional[int] = None
     move_mode: str = "inline"       # 'inline' (hairline) | 'segment' (bar between chunks)
-    anchor_after: bool = False      # 'inline' only: place after the anchor syllable
+    # 'inline': place after the anchor syllable. 'title': sit on the far side of the anchor
+    # chunk — which is how the spot above a synthetic row (a relocated fragment, a passage
+    # repeat) is addressed, since it has no syllable of its own.
+    anchor_after: bool = False
     level: Optional[int] = None
     lang: Optional[str] = None      # move only: NULL = shared across editions; else that edition
 
@@ -747,6 +753,7 @@ class LayoutOut(BaseModel):
     src_start_syl_id: Optional[str] = None
     src_end_syl_id: Optional[str] = None
     anchor_syl_id: Optional[str] = None
+    anchor_op_id: Optional[int] = None
     move_mode: str = "inline"
     anchor_after: bool = False
     level: Optional[int] = None
@@ -762,7 +769,7 @@ def _layout_out(conn, r) -> LayoutOut:
         "SELECT lang, body FROM layout_titles WHERE layout_id = ?", (r["id"],)).fetchall()}
     return LayoutOut(id=r["id"], text_id=r["text_id"], kind=r["kind"],
                      src_start_syl_id=r["src_start_syl_id"], src_end_syl_id=r["src_end_syl_id"],
-                     anchor_syl_id=r["anchor_syl_id"],
+                     anchor_syl_id=r["anchor_syl_id"], anchor_op_id=r["anchor_op_id"],
                      # Legacy rows predate the gesture split; their anchor already meant
                      # "before the chunk starting here", which is what 'segment' means.
                      move_mode=r["move_mode"] or "segment",
@@ -819,11 +826,11 @@ def create_layout(payload: LayoutIn):
                            ).fetchone()["p"]
         cur = conn.execute(
             "INSERT INTO chunk_layouts (text_id, kind, src_start_syl_id, src_end_syl_id, "
-            "anchor_syl_id, move_mode, anchor_after, level, lang, position) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "anchor_syl_id, anchor_op_id, move_mode, anchor_after, level, lang, position) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (payload.text_id, payload.kind, payload.src_start_syl_id, payload.src_end_syl_id,
-             payload.anchor_syl_id, payload.move_mode, int(payload.anchor_after),
-             payload.level, payload.lang, pos))
+             payload.anchor_syl_id, payload.anchor_op_id, payload.move_mode,
+             int(payload.anchor_after), payload.level, payload.lang, pos))
         conn.commit()
         r = conn.execute("SELECT * FROM chunk_layouts WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _layout_out(conn, r)
