@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Volume2, Zap, Check, ChevronUp, ChevronDown } from 'lucide-react';
+import {
+  Volume2, Zap, RefreshCw, Replace, Pin, Check, ChevronUp, ChevronDown,
+} from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
@@ -13,7 +15,14 @@ import { deriveChunks, insertTitleChunks } from '../translate/chunks';
 import { TreePane } from '../workspace/TreePane';
 import { deriveLines, kindOf, type PhoneticLine } from './lines';
 import { useCan } from '../../store/usePermissions';
-import { generateBo, generateSkt, STYLE_LANGS, type BoStyle, type BoLang } from './generate';
+import {
+  generateBo, generateSkt, STYLE_LANGS, defaultBoStyle, type BoStyle, type BoLang,
+} from './generate';
+import { applyPhoneticRules } from './rules';
+import { RulesModal } from './RulesModal';
+import {
+  usePhoneticSettingsStore, rulesFor, styleFor,
+} from '../../store/usePhoneticSettingsStore';
 import type { SktLang } from './sanskrit';
 import type { Phonetic } from '../../api/client';
 
@@ -100,10 +109,29 @@ export const PhoneticsView: React.FC = () => {
 
   const [tab, setTab] = useState<'bo' | 'skt'>('bo');
   const [docLang, setDocLang] = useState<DocLang>('en');
-  const [style, setStyle] = useState<BoStyle>('padmakara');
+  // Seeded from the built-in default for the opening language; the org's own choice arrives
+  // with the settings and takes over (see the effect below).
+  const [style, setStyle] = useState<BoStyle>(() => defaultBoStyle('en'));
   const [iast, setIast] = useState(false);
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
+
+  // The org's phonetics settings — the replacement rules applied to everything this bench
+  // generates, and the style each language opens on. Fetched once: they are small, shared by
+  // every text, and the popup keeps the store in step.
+  const ruleLists = usePhoneticSettingsStore(s => s.lists);
+  const orgStyles = usePhoneticSettingsStore(s => s.styles);
+  const settingsLoaded = usePhoneticSettingsStore(s => s.loaded);
+  const fetchSettings = usePhoneticSettingsStore(s => s.fetchSettings);
+  const saveStyle = usePhoneticSettingsStore(s => s.saveStyle);
+  useEffect(() => { if (!settingsLoaded) void fetchSettings(); }, [settingsLoaded, fetchSettings]);
+
+  // Each language opens on its own style — Lotsawa House carries en/fr/de, Padmakara is the
+  // only one with Portuguese — so switching language switches style with it. Depending on the
+  // org's map (not on `style`) leaves a style picked by hand for this session alone.
+  const langStyle = styleFor(orgStyles, docLang);
+  useEffect(() => { setStyle(langStyle); }, [docLang, langStyle]);
 
   // Structural data (language-independent) + the sapche tree and translation chunks that label
   // and nest the inline headings.
@@ -130,6 +158,25 @@ export const PhoneticsView: React.FC = () => {
     const markerOffsets = new Set(markers.map(m => m.position));
     return deriveLines(tokens, markerOffsets, spans, breakOverrides);
   }, [tokens, markers, spans, breakOverrides]);
+
+  /** Syllables this text TRANSCLUDES from another text, keyed by occurrence — the same
+   *  source may be transcluded twice, and `(id, opId)` is what names the occurrence.
+   *  `source` distinguishes a transclusion from a parent link: a recitation extract's
+   *  syllables are its parent's and its phonetics rightly anchor there, but they are this
+   *  text's own content, not borrowed from a second text. */
+  const transcludedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of tokens) {
+      if (t.source === 'transclusion') s.add(`${t.id}:${t.op_id ?? ''}`);
+    }
+    return s;
+  }, [tokens]);
+
+  /** A line comes from a transcluded text when any of its syllables does. A transcluded run
+   *  is contiguous, so this is a whole-line property in practice. */
+  const isTranscluded = (l: PhoneticLine) =>
+    transcludedIds.size > 0
+    && l.tokens.some(t => transcludedIds.has(`${t.id}:${t.opId ?? ''}`));
 
   // Default to the tab that actually has content (a mantra-only text has no `bo` lines,
   // so open it on Sanskrit); leave a mixed-kind text on whatever the user picked.
@@ -348,8 +395,17 @@ export const PhoneticsView: React.FC = () => {
     }
   };
 
-  const generateOne = (l: PhoneticLine) =>
-    l.kind === 'bo' ? generateBo(l.text, style, boLang) : generateSkt(l.text, sktLang);
+  /** Generate one line, then run the org's replacements over it — the single point every
+   *  button here goes through, so what is stored already carries the house spellings (the
+   *  booklet and the PDF print stored bodies). Rules are keyed by the BOOKLET language, not
+   *  by the generation dialect: Padmakara has no German, so `boLang` falls back to English
+   *  and the German fixes are exactly what the rules are for. IAST is exempt — that mode is
+   *  the scholarly form, not a language flavour. */
+  const generateOne = (l: PhoneticLine) => {
+    const raw = l.kind === 'bo' ? generateBo(l.text, style, boLang) : generateSkt(l.text, sktLang);
+    if (l.kind === 'skt' && iast) return raw;
+    return applyPhoneticRules(raw, rulesFor(ruleLists, l.kind, docLang));
+  };
 
   const handleGenerate = (l: PhoneticLine) => {
     const out = generateOne(l);
@@ -361,6 +417,33 @@ export const PhoneticsView: React.FC = () => {
     for (const l of shown) {
       const m = matchFor(l);
       if (bodyOf(l, m).trim()) continue;   // skip lines that already have text
+      const out = generateOne(l);
+      if (out) void doSave(l, out, 'auto');
+    }
+  };
+
+  /** Regenerate every line on this tab, REPLACING what is there — except the transcluded
+   *  ones. Unlike "generate all empty" this discards existing wording, including reviewed
+   *  lines, so it asks first. */
+  const handleRegenerateAll = () => {
+    const mine: PhoneticLine[] = [];
+    let borrowed = 0;
+    for (const l of shown) {
+      if (isTranscluded(l)) borrowed += 1; else mine.push(l);
+    }
+    if (!mine.length) {
+      setError(borrowed ? 'Every line here comes from a transcluded text — nothing to regenerate.'
+                        : 'Nothing to regenerate on this tab.');
+      return;
+    }
+    const kept = borrowed
+      ? ` ${borrowed} line${borrowed === 1 ? '' : 's'} from transcluded texts ${
+          borrowed === 1 ? 'is' : 'are'} left untouched.`
+      : '';
+    if (!confirm(
+      `Regenerate phonetics for ${mine.length} line${mine.length === 1 ? '' : 's'}? `
+      + `Any wording already there — including reviewed lines — is replaced.${kept}`)) return;
+    for (const l of mine) {
       const out = generateOne(l);
       if (out) void doSave(l, out, 'auto');
     }
@@ -441,21 +524,37 @@ export const PhoneticsView: React.FC = () => {
         </div>
 
         {tab === 'bo' ? (
-          <label className="flex items-center gap-1.5">
-            <span className="text-ink-soft">style</span>
-            <select
-              value={style}
-              onChange={e => setStyle(e.target.value as BoStyle)}
-              className="px-2 py-1 rounded-md bg-white font-medium"
-              style={{ border: '1px solid var(--cline)' }}
-            >
-              {BO_STYLES.map(s => (
-                <option key={s} value={s}>
-                  {s}{STYLE_LANGS[s].includes(docLang) ? '' : ` (no ${docLang})`}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="flex items-center gap-1.5">
+            <label className="flex items-center gap-1.5">
+              <span className="text-ink-soft">style</span>
+              <select
+                value={style}
+                onChange={e => setStyle(e.target.value as BoStyle)}
+                className="px-2 py-1 rounded-md bg-white font-medium"
+                style={{ border: '1px solid var(--cline)' }}
+              >
+                {BO_STYLES.map(s => (
+                  <option key={s} value={s}>
+                    {s}{STYLE_LANGS[s].includes(docLang) ? '' : ` (no ${docLang})`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {/* The style a language OPENS on, for the whole organization. Offered only when
+                the current pick differs from it — otherwise there is nothing to set. */}
+            {canEditPhonetics && style !== langStyle && (
+              <button
+                type="button"
+                onClick={() => void saveStyle(docLang, style)
+                  .catch((e: any) => setError(e.message || 'Could not save the default style'))}
+                className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream transition-colors"
+                style={{ border: '1px solid var(--cline)' }}
+                title={`Open ${LANG_NAME[docLang]} on ${style} from now on, for everyone in the organization`}
+              >
+                <Pin size={12} /> default for {LANG_NAME[docLang]}
+              </button>
+            )}
+          </div>
         ) : (
           <label className="flex items-center gap-1.5 cursor-pointer">
             <input type="checkbox" checked={iast} onChange={e => setIast(e.target.checked)} />
@@ -472,6 +571,30 @@ export const PhoneticsView: React.FC = () => {
           title="Generate phonetics for every empty line on this tab"
         >
           <Zap size={12} /> generate all empty
+        </button>
+        )}
+
+        {canEditPhonetics && (
+        <button
+          type="button"
+          onClick={handleRegenerateAll}
+          className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream transition-colors"
+          style={{ border: '1px solid var(--cline)' }}
+          title="Regenerate every line on this tab, replacing what is there — except lines that come from transcluded texts"
+        >
+          <RefreshCw size={12} /> regenerate all
+        </button>
+        )}
+
+        {canEditPhonetics && (
+        <button
+          type="button"
+          onClick={() => setRulesOpen(true)}
+          className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream transition-colors"
+          style={{ border: '1px solid var(--cline)' }}
+          title="The replacements applied to every generated line, in order — per language"
+        >
+          <Replace size={12} /> replacements
         </button>
         )}
 
@@ -608,6 +731,16 @@ export const PhoneticsView: React.FC = () => {
         )}
         </div>
       </div>
+
+      {rulesOpen && (
+        <RulesModal
+          kind={tab}
+          lang={docLang}
+          langs={DOC_LANGS}
+          langName={(l) => LANG_NAME[l as DocLang] ?? l}
+          onClose={() => setRulesOpen(false)}
+        />
+      )}
     </div>
   );
 };

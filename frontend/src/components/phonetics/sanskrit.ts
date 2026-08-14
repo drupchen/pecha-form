@@ -11,8 +11,9 @@
  * transcriptions: an English base shared by en/de/pt, and French (systematic
  * `u→ou`, `j→dj`, stressed `e→é`, Tibetanized words: Houng, Gourou, Djana, Péma).
  * So the base is the Tibetanized-chant English form (Benza, Pema, Soha, aspiration
- * kept), and `fr` is derived from it by rule. `iast` stays available as a scholarly
- * mode.
+ * kept), and `fr` is derived from it BY THE REPLACEMENT RULES (`rules.ts`), which carry
+ * those conventions as their built-in defaults so a translator can change them.
+ * `iast` stays available as a scholarly mode.
  *
  * EWTS notation reminders: `+` joins a stack (pad+ma = padma); capitals are the
  * long vowels / retroflexes / anusvāra-visarga (A/I/U = ā/ī/ū, T/Th/D/Dh/N =
@@ -77,32 +78,16 @@ function translitToken(tok: string, lang: SktLang): string {
   return out;
 }
 
-/** French word overrides (applied whole-token, before the general rules). */
-const FR_WORD: Record<string, string> = {
-  Hung: 'Houng', Guru: 'Gourou', Pema: 'Péma', Peme: 'Pémé',
-  Soha: 'Soha', Benza: 'Benza', Om: 'Om', Ah: 'Ah', Mani: 'Mani',
-  Jyana: 'Djana', Puja: 'Pudja', Maha: 'Maha',
-};
-
-/** Turn a base (English) Sanskrit token into its French approximation: the
- *  systematic booklet rules `u→ou`, `j→dj`, stressed final `e→é`. Deterministic
- *  first approximation — the imported reviewed strings are exact; this only fills
- *  uncovered lines. */
-function frenchifyToken(t: string): string {
-  if (FR_WORD[t]) return FR_WORD[t];
-  let s = t;
-  s = s.replace(/j/g, 'dj').replace(/J/g, 'Dj');   // j → dj
-  s = s.replace(/u/g, 'ou').replace(/U/g, 'Ou');   // u → ou
-  s = s.replace(/e\b/g, 'é');                       // final e → é
-  return s;
-}
-
-const frenchify = (base: string) =>
-  base.split(/\s+/).map(frenchifyToken).filter(Boolean).join(' ');
-
-/** Romanize a full EWTS string (space-separated tsekbar tokens) for a language. */
+/**
+ * Romanize a full EWTS string (space-separated tsekbar tokens) for a language.
+ *
+ * French produces the same base as English here. The systematic French conventions
+ * (`j→dj`, `u→ou`, stressed final `e→é`) and the Tibetanized words (Houng, Gourou, Péma,
+ * Djana, Pudja) USED TO LIVE IN THIS FILE, where nobody could change them; they are now the
+ * built-in defaults of the phonetics REPLACEMENT RULES (`rules.ts`), applied after generation
+ * and editable per organization. Do not re-add them here — the table is the one place.
+ */
 export function ewtsToRoman(ewts: string, lang: SktLang): string {
   const tokens = ewts.split(/\s+/).map(t => translitToken(t, lang === 'fr' ? 'en' : lang));
-  const base = tokens.filter(Boolean).join(' ');
-  return lang === 'fr' ? frenchify(base) : base;
+  return tokens.filter(Boolean).join(' ');
 }

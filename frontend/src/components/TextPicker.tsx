@@ -134,6 +134,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
                   groups={secondaryGroups}
                   titleById={titleById}
                   groupMime={GROUP_MIME + ':secondary'}
+                  collapseKey="secondary"
                   onSelectDoc={handleSelectDoc}
                   renameText={(id, title) => updateMeta(id, { title })}
                   setTextGroup={(id, disp) => updateMeta(id, { text_group: disp ? toNs(disp) : null })}
@@ -153,6 +154,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
                   groups={primaryGroups}
                   titleById={titleById}
                   groupMime={GROUP_MIME}
+                  collapseKey="primary"
                   onSelectDoc={handleSelectDoc}
                   renameText={(id, title) => updateMeta(id, { title })}
                   setTextGroup={(id, disp) => updateMeta(id, { text_group: disp })}

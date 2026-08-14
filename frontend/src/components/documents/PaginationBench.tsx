@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock, Ruler } from 'lucide-react';
+import { X, RefreshCw, RotateCw, Scissors, Minus, Plus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock, Ruler } from 'lucide-react';
 import {
   API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
-  putPageCount,
+  putPageCount, getLanguages, setDocumentLanguages, type Language,
   getOrgSeal, putPaginationStamp, setPaginationFrozen, putLayoutConfig, setItemImageSize, getVersions,
   PAGE_GEOMETRY_FIELDS, PAGE_PRESETS,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
@@ -31,6 +31,7 @@ import { StyleStudio } from './StyleStudio';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import { useUndoStore } from '../../store/useUndoStore';
+import { useDocumentStore } from '../../store/useDocumentStore';
 import '../../styles/booklet.css';
 
 /** One edition's compiled stream, awaiting measurement. Every edition indexes the same
@@ -377,6 +378,47 @@ export const PaginationBench: React.FC<{
       .catch(() => { if (alive) setVersionLabel(''); });
     return () => { alive = false; };
   }, [documentId]);
+
+  // ── The editions this page is laid out in ──
+  // An aligned text IS its bench: it never renders a composition page, which is where the
+  // language chips used to live. A freshly extracted one therefore arrives with no editions
+  // at all — nothing to compile, no overview (it needs two), and previously no way out of it.
+  const [allLangs, setAllLangs] = useState<Language[]>([]);
+  const [pickingLangs, setPickingLangs] = useState(false);
+  const [savingLangs, setSavingLangs] = useState(false);
+  const editionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { getLanguages().then(setAllLangs).catch(() => setAllLangs([])); }, []);
+
+  useEffect(() => {
+    if (!pickingLangs) return;
+    const onDown = (e: MouseEvent) => {
+      if (editionsRef.current && !editionsRef.current.contains(e.target as Node)) {
+        setPickingLangs(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [pickingLangs]);
+
+  /** Add or remove an edition, then re-read: the whole page compiles per language, so the
+   *  stream, the furniture and the flow all have to come back with it. */
+  const toggleEdition = async (code: string) => {
+    if (!doc || savingLangs) return;
+    const next = doc.languages.includes(code)
+      ? doc.languages.filter((c) => c !== code)
+      : [...doc.languages, code];
+    setSavingLangs(true);
+    try {
+      await setDocumentLanguages(doc.id, next);
+      await refreshData();
+      onPageCount?.();          // the rail shows the editions beside the page count
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not change the editions' });
+    } finally {
+      setSavingLangs(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -2192,7 +2234,7 @@ export const PaginationBench: React.FC<{
           </button>
         )}
         <h2 className="font-display text-lg text-lapis truncate max-w-xs">{doc.title}</h2>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 relative" ref={editionsRef}>
           <span className="text-ink-soft mr-1">edition</span>
           {doc.languages.map((code) => (
             <button key={code} type="button" onClick={() => setLang(code)}
@@ -2202,7 +2244,39 @@ export const PaginationBench: React.FC<{
               {code}
             </button>
           ))}
-          {doc.languages.length === 0 && <span className="text-vermilion">set languages first</span>}
+          {/* Which editions this page HAS — not just which one is on screen. An aligned text
+              never shows a composition page, so this is the only place to say it, and a fresh
+              one has no languages at all: without this the bench could only complain. */}
+          <button type="button" onClick={() => setPickingLangs(v => !v)}
+                  className={`px-2 py-0.5 rounded-full flex items-center gap-1 transition-colors ${
+                    doc.languages.length === 0
+                      ? 'bg-vermilion/10 text-vermilion' : 'text-ink-soft hover:bg-cream'}`}
+                  style={{ border: '1px solid var(--cline)' }}
+                  title="Which editions this page is laid out in">
+            {doc.languages.length === 0 ? 'set languages' : <Plus size={11} />}
+          </button>
+          {pickingLangs && (
+            <div className="absolute top-full left-0 mt-1 z-30 p-2 rounded-md bg-cream-hi flex flex-col gap-1"
+                 style={{ border: '1px solid var(--cline)', boxShadow: '0 8px 24px rgba(0,0,0,0.18)' }}>
+              <div className="text-[10px] text-ink-soft px-1">editions on this page</div>
+              {allLangs.map((l) => {
+                const on = doc.languages.includes(l.code);
+                return (
+                  <button key={l.code} type="button"
+                          onClick={() => void toggleEdition(l.code)}
+                          disabled={savingLangs}
+                          className={`px-2 py-1 rounded text-left flex items-center gap-2 disabled:opacity-50 ${
+                            on ? 'bg-lapis text-cream-hi' : 'text-ink hover:bg-cream'}`}>
+                    <span className="w-6 font-mono">{l.code}</span>
+                    <span className="opacity-80">{l.name}</span>
+                  </button>
+                );
+              })}
+              {!allLangs.length && (
+                <div className="px-1 text-[11px] text-ink-soft">No languages configured.</div>
+              )}
+            </div>
+          )}
         </div>
         <button type="button" onClick={() => void requestSeed(true, 'user')} disabled={seeding || frozen}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"

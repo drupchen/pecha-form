@@ -26,6 +26,22 @@ export const STYLE_LANGS: Record<BoStyle, BoLang[]> = {
   lhasey: ['en'],
 };
 
+/**
+ * The style each booklet language opens on — the built-in floor an organization can override
+ * (see the phonetics settings store). Each of these is a style that actually HAS a variant for
+ * its language, which is the whole point: Lotsawa House carries en/fr/de, and Padmakara is the
+ * only one with Portuguese. A language with nothing of its own falls back to Padmakara, the
+ * house style the booklets were set in.
+ */
+export const DEFAULT_BO_STYLE: Record<string, BoStyle> = {
+  en: 'lotsawahouse',
+  fr: 'lotsawahouse',
+  de: 'lotsawahouse',
+  pt: 'padmakara',
+};
+
+export const defaultBoStyle = (lang: string): BoStyle => DEFAULT_BO_STYLE[lang] ?? 'padmakara';
+
 // Phonetics engines are stateful/heavy to build — cache one per (style, lang).
 const boCache = new Map<string, any>();
 function boEngine(style: BoStyle, lang: BoLang) {

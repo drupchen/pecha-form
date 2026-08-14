@@ -11,11 +11,13 @@ Anchoring rule (find-or-create), identical to ``translations._find_or_create_chu
 canonicalize at the OWNER text when both endpoints belong to it and the range
 resolves there (maximum reuse); else anchor at the booklet (context text).
 """
+import json
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from ..auth import active_org_id
 from ..db import get_db
 from ..derivation import base_tokens
 from ..manifest import syllable_ids_between
@@ -184,5 +186,127 @@ def delete_phonetic(payload: PhoneticDeleteIn):
             (origin, payload.start_syl_id, payload.end_syl_id, payload.kind, payload.lang))
         conn.commit()
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ─── Replacement rules ──────────────────────────────────────────────────────────
+# House spellings applied to every GENERATED string before it is stored, so the bench, the
+# booklet and the PDF all read the same text. Ordered top to bottom, per kind and per booklet
+# language, shared by the whole organization — the same scope as styles, fonts and the page
+# template. Generation itself is client-side, so this router only keeps the lists.
+
+
+class PhoneticRuleIn(BaseModel):
+    find: str = ""
+    replace: str = ""
+    regex: bool = False
+    note: str = ""
+
+
+class PhoneticRuleListIn(BaseModel):
+    kind: str
+    lang: str
+    rules: List[PhoneticRuleIn]
+
+
+class PhoneticRuleListOut(BaseModel):
+    kind: str
+    lang: str
+    rules: List[PhoneticRuleIn]
+
+
+@router.get("/phonetic-rules", response_model=List[PhoneticRuleListOut])
+def list_phonetic_rules(org_id: int = Depends(active_org_id)):
+    """Every list this org has stored. A (kind, lang) that is absent is not empty — it means
+    the org has never touched it, and the client applies its built-in floor."""
+    conn = get_db()
+    try:
+        out: List[PhoneticRuleListOut] = []
+        for row in conn.execute(
+                "SELECT kind, lang, rules FROM phonetic_rules WHERE org_id = ? "
+                "ORDER BY kind, lang", (org_id,)):
+            try:
+                stored = json.loads(row["rules"])
+            except (ValueError, TypeError):
+                stored = []
+            if not isinstance(stored, list):
+                stored = []
+            out.append(PhoneticRuleListOut(
+                kind=row["kind"], lang=row["lang"],
+                rules=[PhoneticRuleIn(**{k: v for k, v in r.items()
+                                         if k in PhoneticRuleIn.model_fields})
+                       for r in stored if isinstance(r, dict)]))
+        return out
+    finally:
+        conn.close()
+
+
+@router.put("/phonetic-rules", response_model=PhoneticRuleListOut)
+def put_phonetic_rules(payload: PhoneticRuleListIn, org_id: int = Depends(active_org_id)):
+    """Replace one (kind, lang) list. The whole list is written at once because ORDER IS THE
+    DATA: dragging a rule up is a new list, not a field update."""
+    if payload.kind not in ("bo", "skt"):
+        raise HTTPException(400, "kind must be 'bo' or 'skt'")
+    if not payload.lang:
+        raise HTTPException(400, "lang is required")
+    body = json.dumps([r.model_dump() for r in payload.rules], ensure_ascii=False)
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO phonetic_rules (org_id, kind, lang, rules) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(org_id, kind, lang) DO UPDATE SET rules = excluded.rules",
+            (org_id, payload.kind, payload.lang, body))
+        conn.commit()
+        return PhoneticRuleListOut(kind=payload.kind, lang=payload.lang, rules=payload.rules)
+    finally:
+        conn.close()
+
+
+# The styles the phonetics library actually offers. Duplicated from the client (`BoStyle`),
+# which owns the list — kept here only so a typo cannot be stored and then silently ignored
+# by every bench that reads it back.
+_BO_STYLES = ("padmakara", "thl", "lotsawahouse", "rigpa", "lhasey")
+
+
+class PhoneticStyleIn(BaseModel):
+    lang: str
+    style: str
+
+
+class PhoneticStyleOut(BaseModel):
+    lang: str
+    style: str
+
+
+@router.get("/phonetic-styles", response_model=List[PhoneticStyleOut])
+def list_phonetic_styles(org_id: int = Depends(active_org_id)):
+    """The org's chosen style per booklet language. A language that is absent takes the
+    client's built-in default."""
+    conn = get_db()
+    try:
+        return [PhoneticStyleOut(lang=r["lang"], style=r["style"])
+                for r in conn.execute(
+                    "SELECT lang, style FROM phonetic_styles WHERE org_id = ? ORDER BY lang",
+                    (org_id,))]
+    finally:
+        conn.close()
+
+
+@router.put("/phonetic-styles", response_model=PhoneticStyleOut)
+def put_phonetic_style(payload: PhoneticStyleIn, org_id: int = Depends(active_org_id)):
+    """Set the style one language opens on, for everyone in the organization."""
+    if not payload.lang:
+        raise HTTPException(400, "lang is required")
+    if payload.style not in _BO_STYLES:
+        raise HTTPException(400, f"unknown phonetics style: {payload.style}")
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO phonetic_styles (org_id, lang, style) VALUES (?, ?, ?) "
+            "ON CONFLICT(org_id, lang) DO UPDATE SET style = excluded.style",
+            (org_id, payload.lang, payload.style))
+        conn.commit()
+        return PhoneticStyleOut(lang=payload.lang, style=payload.style)
     finally:
         conn.close()

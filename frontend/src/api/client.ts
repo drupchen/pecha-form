@@ -1,5 +1,9 @@
 import { API_BASE, apiFetch, jfetch, J, withUrlAuth } from './http';
 export { API_BASE, ApiError, PermissionError, withUrlAuth } from './http';
+// A replacement rule is defined where it is APPLIED (`phonetics/rules.ts`, a pure module with
+// no imports so it stays testable in the node env). Type-only here: no runtime dependency.
+import type { PhoneticRule } from '../components/phonetics/rules';
+export type { PhoneticRule };
 
 export async function uploadText(file: File, title?: string) {
   const formData = new FormData();
@@ -331,6 +335,36 @@ export const deletePhonetic = (body: {
 }) =>
   jfetch<{ ok: boolean }>(`${API_BASE}/phonetics`,
     { method: 'DELETE', headers: J, body: JSON.stringify(body) });
+
+/** One org's replacement rules for a (kind, language), in the order they are applied. A
+ *  (kind, lang) the org has never touched is ABSENT from the list, not empty — that is what
+ *  lets the bench fall back to the built-in defaults (`DEFAULT_PHONETIC_RULES`). */
+export interface PhoneticRuleList {
+  kind: 'bo' | 'skt';
+  lang: string;
+  rules: PhoneticRule[];
+}
+
+export const getPhoneticRules = () =>
+  jfetch<PhoneticRuleList[]>(`${API_BASE}/phonetic-rules`);
+
+export const putPhoneticRules = (body: PhoneticRuleList) =>
+  jfetch<PhoneticRuleList>(`${API_BASE}/phonetic-rules`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
+
+/** The phonetics style one booklet language opens on. A language the org has not chosen for
+ *  is absent, and the bench uses its built-in default (`DEFAULT_BO_STYLE`). */
+export interface PhoneticStyleChoice {
+  lang: string;
+  style: string;
+}
+
+export const getPhoneticStyles = () =>
+  jfetch<PhoneticStyleChoice[]>(`${API_BASE}/phonetic-styles`);
+
+export const putPhoneticStyle = (body: PhoneticStyleChoice) =>
+  jfetch<PhoneticStyleChoice>(`${API_BASE}/phonetic-styles`,
+    { method: 'PUT', headers: J, body: JSON.stringify(body) });
 
 // --------------------------------------------------------------------------
 // Documents (Phase D1): booklets assembled from ordered pages, in a set of

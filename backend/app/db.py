@@ -831,6 +831,31 @@ CREATE TABLE IF NOT EXISTS style_samples (
     content TEXT NOT NULL DEFAULT ''
 );
 
+-- Replacement rules applied to GENERATED phonetics, per kind and per booklet language: the
+-- house spellings a reviewer would otherwise re-type on every line. Ordered — the array's
+-- order IS the order of application, so reordering is just saving the list (no position
+-- column, hence no unique-constraint to collide with). An org that has stored nothing gets
+-- the built-in floor from the client (`DEFAULT_PHONETIC_RULES`), the same arrangement as
+-- ORG_BASE for styles; saving replaces that floor wholesale.
+CREATE TABLE IF NOT EXISTS phonetic_rules (
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    kind   TEXT NOT NULL CHECK (kind IN ('bo', 'skt')),
+    lang   TEXT NOT NULL,
+    rules  TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (org_id, kind, lang)
+);
+
+-- Which phonetics style each booklet language opens on, per organization. The client carries
+-- the floor (`DEFAULT_BO_STYLE`: Lotsawa House for en/fr/de, Padmakara for pt — each a style
+-- that has a real variant for its language); a row here overrides it. No CHECK on `style`:
+-- the styles come from the phonetics library, and the client owns that list.
+CREATE TABLE IF NOT EXISTS phonetic_styles (
+    org_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    lang   TEXT NOT NULL,
+    style  TEXT NOT NULL,
+    PRIMARY KEY (org_id, lang)
+);
+
 -- ─── Accounts & access (multi-org platform) ────────────────────────────────────
 -- Users are PLATFORM-level; access to data is granted per organization through a
 -- membership carrying one or more roles. A role is an org-editable bundle of

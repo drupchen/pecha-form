@@ -165,6 +165,30 @@ translation still resolves by `rangeKey`.
 > Tibetan is read-only. The bench may rearrange the *reading order of the translation* freely;
 > it may never reorder, reflow or renumber the Tibetan.
 
+### Phonetics
+
+Phonetics rows are line-level (`kind` = `bo` Tibetan or `skt` Sanskrit), anchored at the text
+that owns the syllables and per booklet language, so they ripple exactly like translations.
+Generation is **client-side** (`phonetics/generate.ts`); the router only stores what the
+reviewer keeps.
+
+- **`origin_text_id` is not a transclusion test.** A recitation extract's syllables belong to
+  its parent, so its rows legitimately anchor there. What says "this line came from another
+  text" is the token's own provenance — `EditorToken.source === 'transclusion'`, keyed by
+  `(id, op_id)` because the same source may be transcluded twice. That is what "regenerate
+  all" uses to leave another text's reviewed wording alone.
+- **Replacement rules** (`phonetics/rules.ts`) run over every generated string, in table
+  order, at `generateOne` — the single choke point all three generate buttons pass through —
+  so what is STORED already carries them and the booklet prints the same text. Per org, per
+  kind, per booklet language, ordered (the array's order is the data; there is no `position`
+  column). A rule that cannot compile is skipped, never thrown: a half-typed regex must not
+  stop the bench.
+- **The French Sanskrit conventions live in that table, not in the code.** `sanskrit.ts` used
+  to hard-code them (`FR_WORD`, `frenchifyToken`); they are now `DEFAULT_PHONETIC_RULES`, the
+  built-in floor an org can edit — the same floor-then-override arrangement as `ORG_BASE` for
+  styles. Do not re-add them to `sanskrit.ts`: parity with the old code is asserted in
+  `rules.test.ts` and was checked over all 91 real Sanskrit strings in the live corpus.
+
 ---
 
 ## 7. Documents: text pages and booklets

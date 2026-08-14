@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Upload, Trash2, FileText, ChevronRight, GitBranch, CopyPlus,
   Pencil, Check, X, FolderInput, ChevronDown, Folder, Plus, FolderPlus,
@@ -52,14 +52,46 @@ export interface GroupedTextRegionProps {
   /** Permission-read on Texts: browse/open only — no rename, regroup, DnD,
    *  create/delete, derive or clone affordances. */
   readOnly?: boolean;
+  /** Names this region's folded-group memory. Region-unique, because the two regions have
+   *  independent trees whose paths (the root's `''` above all) would otherwise collide. */
+  collapseKey?: string;
 }
+
+/**
+ * Which groups are folded, remembered per browser.
+ *
+ * Filing a corpus this size means folding most of it away, and that arrangement was being
+ * rebuilt on every visit — the state died with the component on each tab switch. It is a
+ * view preference, not shared data, so it lives in localStorage next to the translate bench's
+ * type sizes rather than on the server.
+ */
+const collapseStore = {
+  key: (region: string) => `texts-collapsed:${region}`,
+  load(region?: string): Set<string> {
+    if (!region) return new Set();
+    try {
+      const raw = localStorage.getItem(collapseStore.key(region));
+      const paths = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(paths) ? paths.filter((p) => typeof p === 'string') : []);
+    } catch {
+      return new Set();   // unreadable or hand-edited: open everything, never crash the page
+    }
+  },
+  save(region: string | undefined, collapsed: Set<string>) {
+    if (!region) return;
+    try {
+      localStorage.setItem(collapseStore.key(region), JSON.stringify([...collapsed]));
+    } catch { /* private mode / quota: the fold just won't outlive the session */ }
+  },
+};
 
 export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   layout, texts, groups, titleById, groupMime, onSelectDoc, renameText, setTextGroup,
   removeText, createGroup, moveGroup, reorderGroup, deleteGroup, onDerive, onClone,
-  onAddText, title, emptyHint, readOnly = false,
+  onAddText, title, emptyHint, readOnly = false, collapseKey,
 }) => {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => collapseStore.load(collapseKey));
+  useEffect(() => { collapseStore.save(collapseKey, collapsed); }, [collapseKey, collapsed]);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
   const [dropTarget, setDropTarget] = useState<string | null>(null);

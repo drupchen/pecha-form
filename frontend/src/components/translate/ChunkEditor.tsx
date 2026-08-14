@@ -5,6 +5,7 @@ import { Mark, mergeAttributes } from '@tiptap/core';
 import { Fragment, Slice } from '@tiptap/pm/model';
 import { Bold, Italic, MessageSquarePlus } from 'lucide-react';
 import { sanitizeTranslationHtml } from './sanitize';
+import { blurOutcome } from './blur';
 import { useCan } from '../../store/usePermissions';
 
 /**
@@ -66,11 +67,16 @@ const InnerEditor: React.FC<{
   const [notePopover, setNotePopover] = useState<{ existing: string } | null>(null);
   const [noteText, setNoteText] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
+  // Did the user actually change anything in this editing session? `content:` does not fire
+  // `onUpdate`, so this is true only after a real keystroke, paste or formatting command. It
+  // is what tells a DELIBERATE clear apart from an editor that simply never received data.
+  const touched = useRef(false);
 
   const editor = useEditor({
     extensions: EXTENSIONS,
     content: sanitizeTranslationHtml(initial),
     autofocus: false,
+    onUpdate: () => { touched.current = true; },
     editorProps: {
       // A spreadsheet copy ships an HTML <table>; ProseMirror (no table extension) would
       // flatten it onto one line. Turn each row into a paragraph while KEEPING the cell's
@@ -129,10 +135,11 @@ const InnerEditor: React.FC<{
     editor?.commands.focus('end', { scrollIntoView: false });
   }, [editor]);
 
-  // Commit when focus leaves the editor+toolbar+popover entirely. An EMPTY result
-  // never commits: it is almost always an editor that mounted before the data
-  // loaded (a blur would silently wipe the stored translation). Clearing a
-  // translation is a deliberate action, not an empty blur.
+  // Commit when focus leaves the editor+toolbar+popover entirely. An empty result commits
+  // only when the user EMPTIED the box themselves: clearing a translation is a legitimate
+  // edit (a segment may be deliberately blank), while an empty box that was never touched is
+  // almost always an editor that mounted before its data arrived — committing that would
+  // silently wipe the stored translation.
   useEffect(() => {
     const onFocusOut = (e: FocusEvent) => {
       const wrap = wrapRef.current;
@@ -142,8 +149,12 @@ const InnerEditor: React.FC<{
       const html = sanitizeTranslationHtml(editor.getHTML());
       const div = document.createElement('div');
       div.innerHTML = html;
-      if (!(div.textContent ?? '').trim()) { onDone(sanitizeTranslationHtml(initial)); return; }
-      onDone(html);
+      onDone(blurOutcome({
+        blank: !(div.textContent ?? '').trim(),
+        touched: touched.current,
+        initial: sanitizeTranslationHtml(initial),
+        html,
+      }));
     };
     const wrap = wrapRef.current;
     wrap?.addEventListener('focusout', onFocusOut);
