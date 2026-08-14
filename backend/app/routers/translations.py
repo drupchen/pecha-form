@@ -19,6 +19,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ..auth import active_user_id
 from ..db import get_db
 from ..derivation import base_tokens
 from ..manifest import syllable_ids_between
@@ -129,6 +130,46 @@ def _sanitize_body(body: str) -> str:
         if closer:
             s.out.append(closer)
     return "".join(s.out)
+
+
+# ─── Provenance ─────────────────────────────────────────────────────────────────
+
+def _record_revision(conn, *, chunk_id: int, lang: str, body: str,
+                     scope: str = "canonical", text_id: Optional[int] = None,
+                     status: Optional[str] = None, source: str = "manual",
+                     note: Optional[str] = None) -> None:
+    """Append this wording to ``translation_revisions`` if it differs from what is
+    stored. Call BEFORE the upsert — it reads the row that is about to be replaced.
+
+    The log answers "who chose this expression, and when", so it records only genuine
+    wording changes: a status-only save, or re-saving identical text, adds nothing.
+    A first save with an empty body is not a wording either.
+    """
+    if scope == "override":
+        prev = conn.execute(
+            "SELECT body FROM translation_overrides WHERE text_id = ? AND chunk_id = ? AND lang = ?",
+            (text_id, chunk_id, lang)).fetchone()
+    else:
+        prev = conn.execute(
+            "SELECT body FROM translations WHERE chunk_id = ? AND lang = ?",
+            (chunk_id, lang)).fetchone()
+    if prev is not None and prev["body"] == body:
+        return
+    if prev is None and not body:
+        return
+    # author_id is a real FK, and foreign_keys is ON: an id with no users row (a fresh
+    # DB under the dev bridge, a test) would abort the INSERT and take the translation
+    # save down with it. Attribution is bookkeeping — it never breaks saving a wording.
+    author = active_user_id()
+    if author is not None and not conn.execute(
+            "SELECT 1 FROM users WHERE id = ?", (author,)).fetchone():
+        author = None
+    conn.execute(
+        "INSERT INTO translation_revisions "
+        "(chunk_id, lang, scope, text_id, body, status, author_id, source, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        (chunk_id, lang, scope, text_id, body, status, author, source, note),
+    )
 
 
 # ─── Languages ──────────────────────────────────────────────────────────────────
@@ -271,6 +312,8 @@ def upsert_translation(payload: TranslationUpsertIn):
             conn, payload.context_text_id, payload.start_syl_id,
             payload.end_syl_id, payload.kind)
         body = _sanitize_body(payload.body)
+        _record_revision(conn, chunk_id=chunk_id, lang=payload.lang, body=body,
+                         status=payload.status, source="manual")
         conn.execute(
             "INSERT INTO translations (chunk_id, lang, body, status, translated_from, updated_at) "
             "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
@@ -296,6 +339,55 @@ def upsert_translation(payload: TranslationUpsertIn):
             level=ch["level"], render_as=ch["render_as"],
             text="".join(by_id[i]["text"] for i in ids), translations=translations,
         )
+    finally:
+        conn.close()
+
+
+class TranslationRevisionOut(BaseModel):
+    id: int
+    lang: str
+    scope: str
+    text_id: Optional[int] = None
+    body: str
+    status: Optional[str] = None
+    author_id: Optional[int] = None
+    author_name: Optional[str] = None
+    source: str
+    note: Optional[str] = None
+    created_at: str
+
+
+@router.get("/translations/{chunk_id}/revisions", response_model=List[TranslationRevisionOut])
+def list_translation_revisions(chunk_id: int, lang: Optional[str] = None,
+                               text_id: Optional[int] = None):
+    """This chunk's wording history, newest first — who wrote what, and when.
+
+    ``lang`` narrows to one edition. ``text_id`` narrows to one booklet's overrides;
+    omitted, canonical and override revisions are interleaved by time, which is what
+    the editor wants when asking "where did this phrasing come from".
+    """
+    conn = get_db()
+    try:
+        sql = ("SELECT r.*, u.display_name, u.email FROM translation_revisions r "
+               "LEFT JOIN users u ON u.id = r.author_id WHERE r.chunk_id = ?")
+        args: list = [chunk_id]
+        if lang:
+            sql += " AND r.lang = ?"
+            args.append(lang)
+        if text_id is not None:
+            sql += " AND r.text_id = ?"
+            args.append(text_id)
+        sql += " ORDER BY r.id DESC"
+        return [
+            TranslationRevisionOut(
+                id=r["id"], lang=r["lang"], scope=r["scope"], text_id=r["text_id"],
+                body=r["body"], status=r["status"], author_id=r["author_id"],
+                # A deleted user leaves author_id NULL; the revision itself stands.
+                author_name=(r["display_name"] or r["email"]) if r["author_id"] else None,
+                source=r["source"], note=r["note"], created_at=str(r["created_at"]),
+            )
+            for r in conn.execute(sql, args).fetchall()
+        ]
     finally:
         conn.close()
 
@@ -424,6 +516,8 @@ def upsert_override(text_id: int, payload: OverrideIn):
             "SELECT updated_at FROM translations WHERE chunk_id = ? AND lang = ?",
             (payload.chunk_id, payload.lang)).fetchone()
         base_at = str(base["updated_at"]) if base else None
+        _record_revision(conn, chunk_id=payload.chunk_id, lang=payload.lang, body=body,
+                         scope="override", text_id=text_id, source="manual")
         conn.execute(
             "INSERT INTO translation_overrides (text_id, chunk_id, lang, body, base_updated_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
@@ -607,6 +701,13 @@ def resolve_suggestion(sug_id: int, payload: ResolveIn):
         if r["status"] != "pending":
             raise HTTPException(400, "Suggestion already resolved")
         if payload.accept:
+            # The accepting user is the author of record: they chose this wording for
+            # the canonical. `note` keeps the booklet it was suggested from.
+            _record_revision(
+                conn, chunk_id=r["chunk_id"], lang=r["lang"], body=r["body"],
+                status="draft", source="suggestion",
+                note=(f"accepted from text {r['from_text_id']}" if r["from_text_id"] else
+                      "accepted suggestion"))
             conn.execute(
                 "INSERT INTO translations (chunk_id, lang, body, status, updated_at) "
                 "VALUES (?, ?, ?, 'draft', CURRENT_TIMESTAMP) "

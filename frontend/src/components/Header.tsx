@@ -19,7 +19,7 @@ interface HeaderProps {
 const TABS: { route: Route; label: string; icon: React.ReactNode; needsText?: boolean;
               section: Section }[] = [
   { route: '/', label: 'Texts', icon: <FileText size={16} />, section: 'texts' },
-  { route: '/workspace', label: 'Workspace', icon: <Layout size={16} />, needsText: true, section: 'workspace' },
+  { route: '/workspace', label: 'Tibetan', icon: <Layout size={16} />, needsText: true, section: 'workspace' },
   { route: '/translate', label: 'Translate', icon: <Languages size={16} />, needsText: true, section: 'translate' },
   { route: '/phonetics', label: 'Phonetics', icon: <Volume2 size={16} />, needsText: true, section: 'phonetics' },
   { route: '/documents', label: 'Documents', icon: <Library size={16} />, section: 'documents' },

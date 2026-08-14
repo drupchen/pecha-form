@@ -28,6 +28,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [lines, setLines] = useState<DocLine[]>([]);
+  /** The same lines in the translation's reading order — the recto only. */
+  const [rectoSrc, setRectoSrc] = useState<DocLine[]>([]);
   const [titleByItem, setTitleByItem] = useState<Map<number, DocLine[]>>(new Map());
   const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
   const [ready, setReady] = useState(false);
@@ -47,7 +49,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
       setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn);
       setStyleCss(css);
       setOrgSeal(seal);
-      setLines(compiled.lines); setTitleByItem(compiled.titleByItem);
+      setLines(compiled.lines); setRectoSrc(compiled.rectoLines);
+      setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
     })();
     return () => { alive = false; };
@@ -78,6 +81,15 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
   const { lines: flowLines, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines,
           navOutline, hairlineSet } =
     deriveBooklet(doc.items, rows, lines, titleByItem, furniture, lang, false, headingsByItem);
+  // The recto's own order: the translator's arrangement, composed through the same derive so
+  // it matches line for line. The Tibetan (and the pagination measured on it) never moves —
+  // a stream of a different length would mean the page structure no longer describes it, so
+  // fall back rather than print a recto the breaks do not fit.
+  const rectoDerived = rectoSrc === lines || !rectoSrc.length ? null
+    : deriveBooklet(doc.items, rows, rectoSrc, titleByItem, furniture, lang, false,
+                    headingsByItem).lines;
+  const rectoFlow = rectoDerived && rectoDerived.length === flowLines.length
+    ? rectoDerived : flowLines;
   const vars = rootVars(config);
   const outlineJson = JSON.stringify(navOutline);
 
@@ -121,7 +133,7 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
     return (
       <>
         {opensWithRule && <div className="bk-hairline bk-atpagetop" />}
-        {flowLines.slice(s.start, s.end).map((l, k) => (
+        {(Comp === Verso ? flowLines : rectoFlow).slice(s.start, s.end).map((l, k) => (
           <Comp key={l.key} l={l} adj={adjFor(l, Comp === Verso ? 'verso' : 'recto')}
                 atPageTop={k === 0 && !opensWithRule}
                 noGap={Comp === Verso && versoGapSuppressed(flowLines, s.start + k)} />

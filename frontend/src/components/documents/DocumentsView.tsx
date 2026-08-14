@@ -8,10 +8,11 @@ import { useTextStore } from '../../store/useTextStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
-  getLanguages, getFurniture, putFurniture, getDocumentLayout,
+  getLanguages, getFurniture, putFurniture, getDocumentLayout, extractTextPage,
   getVersions,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize, withUrlAuth,
   type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
+  type DocumentSummary,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
 import { VersionsPanel } from './Versions';
@@ -19,7 +20,7 @@ import { useCan } from '../../store/usePermissions';
 import { compileDocument } from './compile';
 import {
   deriveBooklet, TIBETAN_LANG, TITLE_BLOCKS, TITLE_BLOCK_META,
-  type NavNode, type TitleBlock,
+  type TitleBlock,
 } from './bookletRender';
 import { cleanSpecimenHtml, stripAttrs } from './StyleStudio';
 
@@ -139,28 +140,19 @@ const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode
   text: { label: 'Text', icon: <FileText size={14} /> },
   image_page: { label: 'Image', icon: <ImageIcon size={14} /> },
   backcover: { label: 'Back cover', icon: <BookMarked size={14} /> },
+  textpage: { label: 'Aligned text', icon: <FileText size={14} /> },
 };
 const FURNITURE: DocumentItemKind[] = ['cover', 'blank', 'toc', 'image_page', 'backcover'];
 
+/** The rail's two lists. An ALIGNED TEXT carries one text and the alignment of its Tibetan
+ *  against its translations; a BOOKLET is what gets printed and reuses aligned texts. */
+const SECTIONS: [ 'textpage' | 'booklet', string, string ][] = [
+  ['textpage', 'Aligned texts', 'an aligned text'],
+  ['booklet', 'Booklets', 'a booklet'],
+];
+
 /** The booklet's navigation outline (what the PDF's bookmarks contain): each text with
  *  its translation-pane headings nested by level, translated labels + reader folio. */
-const NavOutline: React.FC<{ nodes: NavNode[]; depth?: number }> = ({ nodes, depth = 0 }) => (
-  <div>
-    {nodes.map((n, i) => (
-      <div key={i}>
-        <div style={{ paddingLeft: depth * 12 }} className="flex items-baseline gap-1 py-0.5">
-          <span className={depth === 0 ? 'font-medium text-lapis' : 'text-ink-soft'}>
-            {n.title || '—'}
-          </span>
-          <span className="flex-1 border-b border-dotted self-end mb-1"
-                style={{ borderColor: 'var(--cline)' }} />
-          <span className="text-ink-soft text-xs shrink-0">{n.folio}</span>
-        </div>
-        {n.children.length > 0 && <NavOutline nodes={n.children} depth={depth + 1} />}
-      </div>
-    ))}
-  </div>
-);
 
 /**
  * Documents bench (Phase D1). Compose a booklet: order pages (text pages + furniture),
@@ -191,15 +183,17 @@ export const DocumentsView: React.FC = () => {
 
   const [languages, setLangs] = useState<Language[]>([]);
   const [newTitle, setNewTitle] = useState('');
+  const [newKind, setNewKind] = useState<'textpage' | 'booklet'>('booklet');
   const [editingTitle, setEditingTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
-  const [pickingText, setPickingText] = useState(false);
+  const [pickingPage, setPickingPage] = useState(false);
   const [paginating, setPaginating] = useState(false);
+  /** The bench is in overview: it wants the whole screen. */
+  const [benchOverview, setBenchOverview] = useState(false);
   const [furniture, setFurniture] = useState<DocumentFurnitureRow[]>([]);
   const [editingItem, setEditingItem] = useState<number | null>(null);
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
-  const [navPreview, setNavPreview] = useState<NavNode[]>([]);
   // Per cover item: the Tibetan its text supplies. What the cover shows when the booklet has
   // no Tibetan of its own, and what the editor's field is seeded from.
   const [sourceTibetan, setSourceTibetan] = useState<Map<number, string>>(new Map());
@@ -215,10 +209,9 @@ export const DocumentsView: React.FC = () => {
   const [sourceSlots, setSourceSlots] = useState<Map<string, string[]>>(new Map());
   const [slotsFor, setSlotsFor] = useState<number | null>(null);   // which item they describe
   const [navLang, setNavLang] = useState<string>('');
-  const [navLoading, setNavLoading] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
   const [latestSemver, setLatestSemver] = useState<string | null>(null);
-  const pickRef = useRef<HTMLDivElement>(null);
+  const pickPageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchList();
@@ -245,16 +238,15 @@ export const DocumentsView: React.FC = () => {
   }, [current?.id]);
   useEffect(() => { refreshLatestVersion(); }, [refreshLatestVersion]);
 
-  // Compute the real navigation outline (what the PDF bookmarks contain) for the preview
-  // pane — same pipeline as the print page, so preview == PDF navigation.
+  // Seed the cover's Tibetan from the compiled title lines. (The navigation outline used to
+  // be built here too; it lives in the bench now, beside the pages it points at.)
   useEffect(() => {
-    if (!current) { setNavPreview([]); return; }
+    if (!current) return;
     const edition = current.languages.includes(navLang) ? navLang : (current.languages[0] ?? 'en');
     if (edition !== navLang) { setNavLang(edition); return; }
-    const hasText = current.items.some(i => i.kind === 'text' && i.text_id != null);
-    if (!hasText) { setNavPreview([]); return; }
+    const hasText = current.items.some(i => i.text_id != null);
+    if (!hasText) return;
     let alive = true;
-    setNavLoading(true);
     (async () => {
       try {
         const [compiled, layout, furn] = await Promise.all([
@@ -265,7 +257,6 @@ export const DocumentsView: React.FC = () => {
         if (!alive) return;
         const d = deriveBooklet(current.items, layout.rows, compiled.lines, compiled.titleByItem,
                                furn, edition, false, compiled.headingsByItem);
-        setNavPreview(d.navOutline);
         // The Tibetan the cover shows when this booklet has not been given its own — the
         // string the editor's field is SEEDED from, so an override starts as a copy of what
         // is already on the page rather than as an empty box to retype it into.
@@ -278,8 +269,7 @@ export const DocumentsView: React.FC = () => {
         setSourceTibetan(new Map(current.items
           .filter((it) => it.kind === 'cover')
           .map((it) => [it.id, tibOf(d.mainTitleLines)])));
-      } catch { if (alive) setNavPreview([]); }
-      finally { if (alive) setNavLoading(false); }
+      } catch { /* the cover simply keeps its own text */ }
     })();
     return () => { alive = false; };
     // The outline is the TRANSLATION pane's headings (tree depth still nests them), so
@@ -352,6 +342,45 @@ export const DocumentsView: React.FC = () => {
     const next = html.trim();
     await saveFurniture(itemId, langCode, next === seed ? '' : next, block);
   };
+  /**
+   * Fill a cover's zones from one of the booklet's aligned texts.
+   *
+   * A cover FOLLOWS the booklet's first text on its own — the slots seed from it live, and
+   * stay empty in the data while they agree. That is silent about two cases the user meets:
+   * a cover added after the texts, and a booklet holding several, where "the first" is not
+   * necessarily the one whose title belongs on the cover. So this writes the chosen text's
+   * title into the slots as an explicit copy, which can then be edited like any other.
+   */
+  const fillCoverFrom = async (coverId: number, textItem: DocumentItem) => {
+    if (!current) return;
+    const key = textItem.layout_item_id ?? textItem.id;
+    try {
+      for (const lg of current.languages) {
+        const c = await compileDocument(current.items, lg);
+        const tl = c.titleByItem.get(key) ?? [];
+        const paras = tl.find(t => t.paragraphs?.length)?.paragraphs
+                   ?? tl.map(t => t.translation).filter((x): x is string => !!x);
+        for (const block of TITLE_BLOCKS) {
+          // Only what the source actually has. An empty slot is not "blank" — `TitleContent`
+          // reads it as "follow the text" and prints the seed, which is the FIRST text's
+          // title. Writing '' would therefore both erase whatever was authored there and
+          // show the other text's words in its place.
+          const body = paras[TITLE_BLOCK_META[block].seed];
+          if (body && body.trim()) await saveFurniture(coverId, lg, body, block);
+        }
+        if (lg === current.languages[0]) {
+          // The Tibetan is one string for every edition (see `saveTibetan`), so it is written
+          // once, from whichever compile came first — the tokens are the same in all of them.
+          const tib = tl.map(l => l.tokens.map(t => t.render).join('').trim())
+                        .filter(Boolean).join('\n');
+          if (tib) await saveFurniture(coverId, TIBETAN_LANG, tib);
+        }
+      }
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not fill the cover' });
+    }
+  };
+
   const saveFurniture = async (
     itemId: number, langCode: string, body: string, block = '',
   ) => {
@@ -420,7 +449,7 @@ export const DocumentsView: React.FC = () => {
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (pickRef.current && !pickRef.current.contains(e.target as Node)) setPickingText(false);
+      if (pickPageRef.current && !pickPageRef.current.contains(e.target as Node)) setPickingPage(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
@@ -441,14 +470,42 @@ export const DocumentsView: React.FC = () => {
     setRenaming(false);
   };
 
-  // The pagination bench takes over the whole view for the current document.
-  if (paginating && current) {
-    return <PaginationBench documentId={current.id} onClose={() => setPaginating(false)} />;
-  }
+  /** Open a document from the rail. An aligned text renders as its layout by itself (see the
+   *  branch below); this only makes sure a booklet opened from a bench lands on its
+   *  composition page rather than inheriting the previous document's bench. */
+  const openDoc = async (d: DocumentSummary) => {
+    setPaginating(false);
+    await open(d.id);
+  };
+
+  /** Lift a booklet's own text page out into a reusable aligned text. The alignment travels
+   *  with it (the item keeps its id), so the booklet still prints the same and the aligned
+   *  text can now be added to other booklets already aligned. */
+  const extract = async (itemId: number) => {
+    if (!current) return;
+    try {
+      await extractTextPage(itemId);
+      await open(current.id);
+      await fetchList();
+    } catch (e: any) { useDocumentStore.setState({ error: e.message || 'Could not extract the aligned text' }); }
+  };
+
+  // What this document IS decides what it may hold: a booklet composes aligned texts and
+  // furniture; an aligned text carries its one text and nothing else.
+  const isBooklet = (current?.kind ?? 'booklet') === 'booklet';
+  const alignedTexts = list.filter(d => d.kind === 'textpage');
+  const isTextPage = !isBooklet;
+  /** The aligned texts a cover can take its title from, in page order. */
+  const coverSources = (current?.items ?? []).filter(i => i.text_id != null);
+  const hasOwnText = !!current?.items.some(i => i.text_id != null);
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* ── Left rail: documents list ── */}
+      {/* ── Left rail: documents list ──
+          It stays while a spread is being worked on, so moving between documents costs one
+          click. OVERVIEW is the exception: every edition needs a column across the screen, and
+          the rail is a column's worth of it. */}
+      {!benchOverview && (
       <div className="w-64 shrink-0 flex flex-col bg-cream-hi overflow-hidden"
            style={{ borderRight: '1px solid var(--cline)' }}>
         <div className="px-4 py-3 flex items-center gap-2 font-display text-lg text-lapis"
@@ -460,47 +517,118 @@ export const DocumentsView: React.FC = () => {
           <input
             value={newTitle}
             onChange={e => setNewTitle(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && newTitle.trim()) { void create(newTitle.trim()); setNewTitle(''); } }}
-            placeholder="New document…"
+            onKeyDown={e => { if (e.key === 'Enter' && newTitle.trim()) { void create(newTitle.trim(), newKind); setNewTitle(''); } }}
+            placeholder={newKind === 'textpage' ? 'New aligned text…' : 'New booklet…'}
             className="flex-1 min-w-0 px-2 py-1 rounded-md bg-white text-sm"
             style={{ border: '1px solid var(--cline)' }}
           />
           <button
             type="button"
-            onClick={() => { if (newTitle.trim()) { void create(newTitle.trim()); setNewTitle(''); } }}
+            onClick={() => { if (newTitle.trim()) { void create(newTitle.trim(), newKind); setNewTitle(''); } }}
             className="px-1.5 rounded-md text-lapis hover:bg-cream shrink-0"
             style={{ border: '1px solid var(--cline)' }}
-            title="Create document"
+            title={newKind === 'textpage' ? 'Create aligned text' : 'Create booklet'}
           >
             <Plus size={16} />
           </button>
         </div>
         )}
         <div className="flex-1 overflow-auto py-1">
-          {list.length === 0 && <div className="px-4 py-3 text-xs text-ink-soft">No documents yet.</div>}
-          {list.map(d => (
-            <button
-              key={d.id}
-              type="button"
-              onClick={() => void open(d.id)}
-              className={`w-full text-left px-4 py-2 transition-colors ${
-                current?.id === d.id ? 'bg-lapis/10 text-lapis' : 'hover:bg-cream text-ink'
-              }`}
-            >
-              <div className="text-sm font-medium truncate">{d.title}</div>
-              <div className="text-[11px] text-ink-soft">
-                {d.item_count} page{d.item_count === 1 ? '' : 's'}
-                {d.languages.length > 0 && ` · ${d.languages.join(' ')}`}
+          {/* Two sections, because they are two different things. An ALIGNED TEXT is where the
+              Tibetan and its translations are aligned once; a BOOKLET is what gets printed and
+              reuses those alignments. The same aligned text can sit in a booklet of its own and
+              inside a larger one without the work being done twice. */}
+          {SECTIONS.map(([kind, label, blurb]) => {
+            const rows = list.filter(d => (d.kind ?? 'booklet') === kind);
+            return (
+              <div key={kind} className="mb-1">
+                <div className="px-4 pt-2 pb-1 flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wide text-bronze">{label}</span>
+                  {canEditDocs && (
+                    <button
+                      type="button"
+                      onClick={() => setNewKind(kind)}
+                      className={`text-[10px] px-1.5 rounded ${
+                        newKind === kind ? 'bg-lapis/15 text-lapis' : 'text-ink-soft hover:bg-cream'
+                      }`}
+                      title={`The name box creates ${blurb}`}
+                    >
+                      + new
+                    </button>
+                  )}
+                </div>
+                {rows.length === 0 && (
+                  <div className="px-4 pb-2 text-[11px] text-ink-soft/70 italic">
+                    {kind === 'textpage' ? 'None yet — a booklet\'s text page can be extracted into one.'
+                                         : 'None yet.'}
+                  </div>
+                )}
+                {rows.map(d => (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => void openDoc(d)}
+                    className={`w-full text-left px-4 py-2 transition-colors ${
+                      current?.id === d.id ? 'bg-lapis/10 text-lapis' : 'hover:bg-cream text-ink'
+                    }`}
+                  >
+                    <div className="text-sm font-medium truncate">{d.title}</div>
+                    <div className="text-[11px] text-ink-soft">
+                      {/* PHYSICAL pages, recorded by the bench. The item count is a different
+                          number and, for an aligned text, a misleading one — one item, and as
+                          many pages as the text runs to. Rather than print a figure that is
+                          wrong, say nothing until the bench has laid it out once. */}
+                      {d.page_count != null
+                        ? `${d.page_count} page${d.page_count === 1 ? '' : 's'}`
+                        : d.kind === 'booklet'
+                          ? `${d.item_count} item${d.item_count === 1 ? '' : 's'}`
+                          : 'not laid out yet'}
+                      {d.languages.length > 0 && ` · ${d.languages.join(' ')}`}
+                    </div>
+                  </button>
+                ))}
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       </div>
+      )}
 
-      {/* ── Right: editor ── */}
-      {!current ? (
+      {/* ── Right: the bench, or the composition page ──
+          An ALIGNED TEXT is its layout: it has no pages to compose and no furniture to carry,
+          so it opens the bench and stays there. The composition page belongs to booklets. */}
+      {current && (paginating || (isTextPage && hasOwnText)) ? (
+        <PaginationBench
+          documentId={current.id}
+          onClose={() => setPaginating(false)}
+          onOverviewChange={setBenchOverview}
+          onPageCount={() => void fetchList()}
+        />
+      ) : !current ? (
         <div className="flex-1 flex items-center justify-center text-ink-soft">
           Select a document, or create one.
+        </div>
+      ) : isTextPage ? (
+        // An aligned text with no text yet: the one thing it needs, and nothing else.
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-sm">
+          <span className="text-ink-soft">Choose the text this aligned text carries.</span>
+          {canEditDocs && (
+            <div className="w-72 max-h-72 overflow-auto rounded-md bg-white shadow-sm"
+                 style={{ border: '1px solid var(--cline)' }}>
+              {pickable.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => void addItem('text', t.id)}
+                  className="w-full text-left px-3 py-1.5 hover:bg-cream flex items-center gap-2"
+                >
+                  <span className="tibetan-text-sm truncate flex-1">{t.title}</span>
+                  <span className="text-[10px] text-ink-soft">{t.text_type}</span>
+                </button>
+              ))}
+              {pickable.length === 0 && <div className="px-3 py-2 text-ink-soft">No texts.</div>}
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -554,13 +682,17 @@ export const DocumentsView: React.FC = () => {
             <button
               type="button"
               onClick={() => setPaginating(true)}
-              disabled={current.items.every(i => i.kind !== 'text')}
+              // Any page that CARRIES a text: the booklet's own, or an aligned text it
+              // reuses (kind 'textpage', resolved to its text by the API). Testing the kind
+              // left every booklet of aligned texts unopenable.
+              disabled={!current.items.some(i => i.text_id != null)}
               className="px-2 py-1 rounded-md text-lapis hover:bg-cream text-xs flex items-center gap-1 disabled:opacity-40"
               style={{ border: '1px solid var(--cline)' }}
               title="Open the pagination bench"
             >
               <LayoutTemplate size={13} /> layout
             </button>
+            {isBooklet && (
             <button
               type="button"
               onClick={() => setShowVersions(s => !s)}
@@ -571,6 +703,7 @@ export const DocumentsView: React.FC = () => {
             >
               <GitBranch size={13} /> versions
             </button>
+            )}
             <div className="flex-1" />
             {error && <span className="text-vermilion text-xs truncate max-w-xs" title={error}>{error}</span>}
             {canEditDocs && (
@@ -605,8 +738,28 @@ export const DocumentsView: React.FC = () => {
                       <span className="text-sm flex-1 truncate">
                         {it.kind === 'text'
                           ? (it.text_title ?? <span className="text-vermilion">missing text</span>)
-                          : <span className="text-ink-soft">{KIND_META[it.kind].label}</span>}
+                          : it.kind === 'textpage'
+                            ? <>
+                                {it.text_title ?? it.ref_title ?? <span className="text-vermilion">missing text page</span>}
+                                <span className="ml-2 text-[10px] px-1.5 rounded-full bg-jade/15 text-jade">
+                                  aligned text
+                                </span>
+                              </>
+                            : <span className="text-ink-soft">{KIND_META[it.kind].label}</span>}
                       </span>
+                      {/* A booklet's OWN text page can be lifted out into a reusable aligned text.
+                          The item is moved, not copied — its id is what its alignment is keyed by,
+                          so every break, split, gap and width comes along and this booklet prints
+                          exactly as before. */}
+                      {isTextItem && isBooklet && canEditDocs && (
+                        <button type="button"
+                                onClick={() => void extract(it.id)}
+                                className="text-[10px] px-1.5 py-0.5 rounded text-lapis hover:bg-cream shrink-0"
+                                style={{ border: '1px solid var(--cline)' }}
+                                title="Move this text page out into a reusable aligned text, keeping its alignment — then it can be used in other booklets too">
+                          extract
+                        </button>
+                      )}
                       {editable && canEditDocs && (
                         <button type="button"
                                 onClick={() => setEditingItem(editingItem === it.id ? null : it.id)}
@@ -717,6 +870,31 @@ export const DocumentsView: React.FC = () => {
                         {it.kind === 'cover' && current.languages.length > 0 && (
                           <div className="flex flex-col gap-2 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
+                            {/* A cover already follows the booklet's FIRST aligned text. This
+                                is for the two cases that leaves out: a cover added after the
+                                texts, and a booklet holding several — where the title that
+                                belongs on the cover is a choice, not a position. */}
+                            {canEditDocs && coverSources.length > 0 && (
+                              <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                                <span className="text-ink-soft">
+                                  fill {coverSources.length > 1 ? 'from' : 'from the aligned text'}
+                                </span>
+                                {coverSources.map(src => (
+                                  <button
+                                    key={src.id}
+                                    type="button"
+                                    onClick={() => void fillCoverFrom(it.id, src)}
+                                    className="px-1.5 py-0.5 rounded text-lapis hover:bg-cream"
+                                    style={{ border: '1px solid var(--cline)' }}
+                                    title={`Copy this text's title into the cover's zones — every edition, and the Tibetan`}
+                                  >
+                                    {coverSources.length > 1
+                                      ? (src.text_title ?? src.ref_title ?? `#${src.id}`)
+                                      : 'fill'}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                             {TITLE_BLOCKS.map(block => (
                               <div key={block} className="flex flex-col gap-1">
                                 <div className="text-[11px] text-ink-soft">
@@ -805,41 +983,48 @@ export const DocumentsView: React.FC = () => {
                 )}
               </div>
 
-              {/* Add-item bar */}
+              {/* Add-item bar. Only a booklet composes: an aligned text never reaches this
+                  page — it opens as its layout, and picks its text from its own panel. */}
               {canEditDocs && (
               <div className="mt-4 flex items-center gap-1.5 flex-wrap text-xs">
                 <span className="text-ink-soft mr-1">add</span>
-                <div className="relative" ref={pickRef}>
+                {/* Reuse an ALIGNED TEXT: the alignment travels with it, so the same text can
+                    stand in its own booklet and inside a larger one without being aligned twice.
+                    Only offered on a booklet — an aligned text holds one text and nothing else. */}
+                {isBooklet && (
+                <div className="relative" ref={pickPageRef}>
                   <button
                     type="button"
-                    onClick={() => setPickingText(v => !v)}
+                    onClick={() => setPickingPage(v => !v)}
                     className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream"
                     style={{ border: '1px solid var(--cline)' }}
                   >
-                    <FileText size={13} /> Text page…
+                    <FileText size={13} /> Aligned text…
                   </button>
-                  {pickingText && (
+                  {pickingPage && (
                     <div className="absolute z-10 mt-1 w-72 max-h-72 overflow-auto rounded-md bg-white shadow-lg"
                          style={{ border: '1px solid var(--cline)' }}>
-                      {pickable.map(t => (
+                      {alignedTexts.map(d => (
                         <button
-                          key={t.id}
+                          key={d.id}
                           type="button"
-                          onClick={() => { void addItem('text', t.id); setPickingText(false); }}
+                          onClick={() => { void addItem('textpage', null, d.id); setPickingPage(false); }}
                           className="w-full text-left px-3 py-1.5 hover:bg-cream flex items-center gap-2"
                         >
-                          <span className="tibetan-text-sm truncate flex-1">{t.title}</span>
-                          <span className={`text-[10px] px-1 rounded ${
-                            t.text_type === 'secondary' ? 'bg-jade/15 text-jade' : 'bg-cream text-ink-soft'}`}>
-                            {t.text_type}
-                          </span>
+                          <span className="tibetan-text-sm truncate flex-1">{d.title}</span>
+                          <span className="text-[10px] text-ink-soft">{d.languages.join(' ')}</span>
                         </button>
                       ))}
-                      {pickable.length === 0 && <div className="px-3 py-2 text-ink-soft">No texts.</div>}
+                      {alignedTexts.length === 0 && (
+                        <div className="px-3 py-2 text-ink-soft">
+                          None yet — extract one from a booklet's text page.
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
-                {FURNITURE.map(k => (
+                )}
+                {isBooklet && FURNITURE.map(k => (
                   <button
                     key={k}
                     type="button"
@@ -852,38 +1037,6 @@ export const DocumentsView: React.FC = () => {
                 ))}
               </div>
               )}
-            </div>
-
-            {/* Navigation-outline preview — what the PDF's bookmarks will contain. */}
-            <div className="w-80 shrink-0 overflow-auto px-4 py-4 bg-cream-hi"
-                 style={{ borderLeft: '1px solid var(--cline)' }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-ink-soft uppercase tracking-wide">PDF navigation</span>
-                {current.languages.length > 1 && (
-                  <div className="flex items-center gap-1">
-                    {current.languages.map(code => (
-                      <button key={code} type="button" onClick={() => setNavLang(code)}
-                              className={`px-1.5 py-0.5 rounded text-[11px] ${
-                                navLang === code ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}>
-                        {code}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {navLoading ? (
-                <div className="text-xs text-ink-soft">Building outline…</div>
-              ) : navPreview.length === 0 ? (
-                <div className="text-xs text-ink-soft">Add a text page to populate the contents.</div>
-              ) : (
-                <div className="text-sm">
-                  <NavOutline nodes={navPreview} />
-                </div>
-              )}
-              <div className="mt-4 text-[11px] text-ink-soft italic">
-                The printed TOC page lists one line per text; this full outline is the PDF’s
-                clickable navigation. Folios reflect the current pagination.
-              </div>
             </div>
 
             {showVersions && (

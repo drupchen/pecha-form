@@ -13,6 +13,7 @@ import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, inser
 import { usePassageStore } from '../../store/usePassageStore';
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
+import { ChunkHistory } from './ChunkHistory';
 import { sanitizeTranslationHtml } from './sanitize';
 import { splitParagraphs } from '../documents/compile';
 import { useCan } from '../../store/usePermissions';
@@ -156,6 +157,7 @@ export const TranslateView: React.FC = () => {
   const setTitleLevel = useTranslationStore(s => s.setTitleLevel);
   const setTitleRenderAs = useTranslationStore(s => s.setTitleRenderAs);
   const removeLayout = useTranslationStore(s => s.removeLayout);
+  const cancelMoveHere = useTranslationStore(s => s.cancelMoveHere);
 
   const [targetLang, setTargetLang] = useState('en');
   const [sourceLang, setSourceLang] = useState<'bo' | string>('bo');
@@ -680,6 +682,44 @@ export const TranslateView: React.FC = () => {
 
   const miniBtn = "px-1.5 py-0.5 rounded-md flex items-center gap-1 hover:bg-cream transition-colors";
   const miniStyle = { border: '1px solid var(--cline)' } as const;
+
+  /** The undo controls on a move badge.
+   *
+   *  A move made without ticking "this language only" is SHARED: it is the arrangement
+   *  every edition inherits, and it is what the booklet prints. Removing it therefore
+   *  un-arranges all of them, which is rarely what someone means while working in one
+   *  language — so a shared move also offers "here only", keeping the shared row and
+   *  shadowing it for this edition alone. A move that is already language-specific has
+   *  one scope, and plain undo says so. */
+  const moveUndo = (layoutId: number) => {
+    const row = layouts.find(l => l.id === layoutId);
+    const shared = !!row && row.lang == null;
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => void removeLayout(layoutId).catch((e: any) => setSaveError(e.message))}
+          className="underline underline-offset-2"
+          title={shared
+            ? 'Undo this move in every edition'
+            : `Undo this move (it applies to ${targetLang} only)`}
+        >
+          {shared ? 'undo everywhere' : 'undo'}
+        </button>
+        {shared && (
+          <button
+            type="button"
+            onClick={() => void cancelMoveHere(layoutId, targetLang)
+              .catch((e: any) => setSaveError(e.message))}
+            className="underline underline-offset-2"
+            title={`Keep the shared arrangement, but not in ${targetLang}`}
+          >
+            here only
+          </button>
+        )}
+      </>
+    );
+  };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1263,11 +1303,7 @@ export const TranslateView: React.FC = () => {
                             title="This segment was relocated here for the translation flow (display only — the Tibetan is untouched)"
                           >
                             moved here
-                            {canEditTranslate && (
-                            <button type="button" onClick={() => void removeLayout(u.movedLayoutId!)
-                              .catch((e: any) => setSaveError(e.message))}
-                              className="underline underline-offset-2" title="Undo the move">undo</button>
-                            )}
+                            {canEditTranslate && moveUndo(u.movedLayoutId!)}
                           </span>
                         )}
                         {[...new Set(u.tokens.filter(t => t.movedIn != null).map(t => t.movedIn!))]
@@ -1278,11 +1314,7 @@ export const TranslateView: React.FC = () => {
                               title="Text moved here from elsewhere for translation flow (display only — the Tibetan is untouched)"
                             >
                               moved in
-                              {canEditTranslate && (
-                              <button type="button" onClick={() => void removeLayout(layoutId)
-                                .catch((e: any) => setSaveError(e.message))}
-                                className="underline underline-offset-2" title="Undo the move">undo</button>
-                              )}
+                              {canEditTranslate && moveUndo(layoutId)}
                             </span>
                           ))}
                         {[...new Set(u.tokens.filter(t => t.movedAway != null).map(t => t.movedAway!))]
@@ -1293,11 +1325,7 @@ export const TranslateView: React.FC = () => {
                               title="Part of this segment was picked up and integrated elsewhere for translation"
                             >
                               moved out
-                              {canEditTranslate && (
-                              <button type="button" onClick={() => void removeLayout(layoutId)
-                                .catch((e: any) => setSaveError(e.message))}
-                                className="underline underline-offset-2" title="Undo the move">undo</button>
-                              )}
+                              {canEditTranslate && moveUndo(layoutId)}
                             </span>
                           ))}
                         {canEditTranslate && (u.tagType === 'small' || u.tagType === 'sapche') && !u.movedLayoutId && !armedMove && (
@@ -1412,6 +1440,14 @@ export const TranslateView: React.FC = () => {
                               </span>
                             )}
                             <div className="flex-1" />
+                            {match && (
+                              <ChunkHistory
+                                chunkId={match.id}
+                                lang={targetLang}
+                                className={miniBtn}
+                                style={miniStyle}
+                              />
+                            )}
                             {existing && !ov && existing.status !== 'final' && (
                               <button
                                 type="button"

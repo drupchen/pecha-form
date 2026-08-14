@@ -17,6 +17,13 @@ export interface TreeNode {
   updated_at: string;
   /** True when INHERITED from a source text — read-only here (edit on the owner). */
   inherited?: boolean;
+  /** The text that OWNS this row. `position` only orders siblings sharing an owner —
+   *  a secondary's own nodes are numbered independently of the inherited ones it
+   *  renders alongside — so every index computation must key on this. */
+  owner_text_id?: number | null;
+  /** Display order within the sibling level, composed across owners by the server
+   *  (an own node is spliced in where its anchor falls). Sort by this, not `position`. */
+  sort_index?: number;
 }
 
 export interface NestedTreeNode extends TreeNode {
@@ -24,6 +31,12 @@ export interface NestedTreeNode extends TreeNode {
 }
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+/** Editing an inherited section here used to fail silently — the click simply did
+ *  nothing, which reads as a broken button. Say where the section actually lives. */
+export const INHERITED_READ_ONLY =
+  'This section is inherited from another text — read-only here. To move, rename or '
+  + 'relink it, edit it in the text that owns it.';
 
 interface TreeNodeState {
   nodes: TreeNode[];
@@ -138,8 +151,8 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   updateNode: async (nodeId, params) => {
     const before = get().nodes.find(n => n.id === nodeId);
-    if (before?.inherited) return undefined;  // read-only; edit on the owning text
-    set({ saveStatus: 'saving' });
+    if (before?.inherited) { set({ error: INHERITED_READ_ONLY }); return undefined; }
+    set({ saveStatus: 'saving', error: null });
     try {
       const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}`, {
         method: 'PATCH',
@@ -148,11 +161,19 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
       });
       if (!res.ok) throw new Error(await res.text());
       const updated: TreeNode = await res.json();
+      // Optimistic patch, but KEEP the node's current index: a single-row response
+      // cannot know the level's composed order. Linking a section re-sorts the whole
+      // level (every sibling's sort_index shifts), and taking the response's index at
+      // face value sent a freshly linked section to the top of the outline.
       set(state => ({
-        nodes: state.nodes.map(n => n.id === nodeId ? updated : n),
+        nodes: state.nodes.map(n => n.id === nodeId
+          ? { ...updated, sort_index: updated.sort_index ?? n.sort_index }
+          : n),
         saveStatus: 'saved',
         version: state.version + 1,
       }));
+      // …then take the authoritative order from the server, as every other write does.
+      if (before) await get().fetchNodes(before.text_id);
       if (before) {
         useUndoStore.getState().push({
           description: `Edit tree node "${before.title || '#' + before.id}"`,
@@ -174,10 +195,10 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
   moveNode: async (nodeId, new_parent_id, new_position) => {
     const before = get().nodes.find(n => n.id === nodeId);
-    if (before?.inherited) return;  // read-only; edit on the owning text
+    if (before?.inherited) { set({ error: INHERITED_READ_ONLY }); return; }
     const oldParent = before?.parent_id ?? null;
     const oldPosition = before?.position ?? 0;
-    set({ saveStatus: 'saving' });
+    set({ saveStatus: 'saving', error: null });
     try {
       const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}/move`, {
         method: 'PATCH',
@@ -277,6 +298,26 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
 
 // ─── Helpers (pure) ───────────────────────────────────────────────────────────
 
+/** Does this sibling level mix owners (own nodes rendered beside inherited ones)? */
+export function levelIsMixed(siblings: TreeNode[], ownTextId: number): boolean {
+  return siblings.some(n => (n.owner_text_id ?? n.text_id) !== ownTextId);
+}
+
+/** The `position` a new node should take to land at rendered slot `renderedIndex`.
+ *
+ *  `position` orders siblings within ONE owner, while the rendered level may interleave
+ *  several. So the answer is "how many of MY nodes come before this slot" — sending the
+ *  rendered index instead is what made inserting a section into a secondary fail with
+ *  `position must be in [0, 0]`. */
+export function ownRunPosition(
+  siblings: TreeNode[], renderedIndex: number, ownTextId: number,
+): number {
+  return siblings
+    .slice(0, renderedIndex)
+    .filter(n => (n.owner_text_id ?? n.text_id) === ownTextId)
+    .length;
+}
+
 export function buildNestedTree(flat: TreeNode[]): NestedTreeNode[] {
   const byId = new Map<number, NestedTreeNode>();
   for (const n of flat) byId.set(n.id, { ...n, children: [] });
@@ -289,8 +330,11 @@ export function buildNestedTree(flat: TreeNode[]): NestedTreeNode[] {
     if (parent) parent.children.push(wrapped);
     else roots.push(wrapped);
   }
+  // Order comes from the server's `sort_index`: across owners it is composed from the
+  // nodes' anchors, which the browser cannot recompute (it holds no stream offsets).
+  // `position` is the fallback for rows that predate the field.
   const sortRec = (nodes: NestedTreeNode[]) => {
-    nodes.sort((a, b) => a.position - b.position);
+    nodes.sort((a, b) => (a.sort_index ?? a.position) - (b.sort_index ?? b.position));
     nodes.forEach(n => sortRec(n.children));
   };
   sortRec(roots);

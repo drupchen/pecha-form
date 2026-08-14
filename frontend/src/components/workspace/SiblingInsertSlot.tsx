@@ -8,8 +8,12 @@ import { TreeConsultContext } from './treeConsult';
 interface Props {
   /** parent_id for the inserted node; null inserts at root level */
   parentId: number | null;
-  /** index in the sibling list where the new node should land */
+  /** Where the new node lands among THIS TEXT'S OWN siblings (see `ownRunPosition`) —
+   *  not the rendered index, which may count inherited nodes this text cannot renumber. */
   position: number;
+  /** True when the level interleaves inherited nodes: the new section's final place is
+   *  then decided by the segment it gets linked to, not by this slot. */
+  mixed?: boolean;
 }
 
 /**
@@ -19,7 +23,7 @@ interface Props {
  * position (siblings >= `position` shift down by one, handled by the backend
  * via _shift_siblings).
  */
-export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position }) => {
+export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position, mixed }) => {
   const currentText = useTextStore(s => s.currentText);
   const createNode = useTreeNodeStore(s => s.createNode);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
@@ -47,7 +51,9 @@ export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position }) => {
       role="button"
       onClick={handleClick}
       className="group relative h-1.5 -my-0.5 cursor-pointer flex items-center"
-      title="Insert section here"
+      title={mixed
+        ? 'Add a section — link it to a segment and it settles where that segment sits'
+        : 'Insert section here'}
     >
       <div className="w-full h-px bg-gold opacity-0 group-hover:opacity-100 transition-opacity" />
       <span

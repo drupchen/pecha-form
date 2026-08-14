@@ -326,6 +326,15 @@ class TreeNodeOut(TreeNodeBase):
     updated_at: datetime
     # True when INHERITED from a source text — read-only here (edit on the owner).
     inherited: bool = False
+    # The text that actually owns this row. `position` only orders siblings sharing an
+    # owner, so this is what move/insert arithmetic must key on.
+    owner_text_id: Optional[int] = None
+    # Display order within the sibling level, composed across owners by the server
+    # (see tree_nodes._order_level). Clients sort by this, not by `position`.
+    # NULL on single-row write responses: linking one section re-sorts the whole level,
+    # so one row genuinely cannot say where it lands — the client refetches. A default
+    # of 0 here read as "I am first" and jumped freshly linked sections to the top.
+    sort_index: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 # ─── Suggestions ──────────────────────────────────────────────────────────────
@@ -542,10 +551,13 @@ class ReadingPositionOut(BaseModel):
 
 # ─── Documents (Phase D1: booklets assembled from ordered pages) ────────────────
 
-DocumentItemKind = Literal['cover', 'blank', 'toc', 'copyright', 'text', 'image_page', 'backcover']
+DocumentItemKind = Literal['cover', 'blank', 'toc', 'copyright', 'text', 'image_page',
+                          'backcover', 'textpage']
 
 class DocumentCreate(BaseModel):
     title: str
+    # 'textpage' = an aligned text to reuse; 'booklet' (default) = something to print.
+    kind: str = 'booklet'
 
 class DocumentUpdate(BaseModel):
     title: str
@@ -553,6 +565,7 @@ class DocumentUpdate(BaseModel):
 class DocumentItemIn(BaseModel):
     kind: DocumentItemKind
     text_id: Optional[int] = None      # required iff kind == 'text'
+    ref_document_id: Optional[int] = None   # required iff kind == 'textpage'
     caption: Optional[str] = None
     body: Optional[str] = None
 
@@ -567,6 +580,11 @@ class DocumentItemOut(BaseModel):
     position: int
     kind: str
     text_id: Optional[int] = None
+    # kind='textpage': the text page this booklet page reuses, and the id its alignment is
+    # keyed by. `text_id` above is resolved FROM it, so a consumer never special-cases the kind.
+    ref_document_id: Optional[int] = None
+    ref_title: Optional[str] = None
+    layout_item_id: Optional[int] = None
     # Resolved title of the linked text (kind='text'), for display; None otherwise.
     text_title: Optional[str] = None
     caption: Optional[str] = None
@@ -585,6 +603,11 @@ class ImageSizeIn(BaseModel):
 class DocumentOut(BaseModel):
     id: int
     title: str
+    # 'textpage' = an aligned text, the reusable ingredient; 'booklet' = what gets printed.
+    kind: str = 'booklet'
+    # Physical pages, as laid out. None until the bench has opened it once — an item count
+    # says nothing about it (one aligned text is one item and many pages).
+    page_count: Optional[int] = None
     created_at: datetime
     updated_at: datetime
     item_count: int = 0
@@ -689,6 +712,10 @@ class DocumentLayoutRow(BaseModel):
     char_offset: Optional[int] = None
     value: Optional[float] = None
     lang: Optional[str] = None
+    # True when the row comes from a reused TEXT PAGE rather than this booklet. The booklet
+    # may shadow it by storing its own row on the same (item, anchor, kind, lang); until it
+    # does, the text page's alignment is what prints.
+    inherited: bool = False
     model_config = ConfigDict(from_attributes=True)
 
 class DocumentLayoutIn(BaseModel):
@@ -719,6 +746,9 @@ class DocumentLayoutOut(BaseModel):
     pagination_fp: Optional[str] = None
     # True = pagination frozen: breaks held, automatic re-flow suppressed (see documents CREATE).
     pagination_frozen: bool = False
+
+class PageCountIn(BaseModel):
+    page_count: int
 
 class PaginationStampIn(BaseModel):
     """Written by the bench right after a successful flow — this is what those breaks fit."""

@@ -61,6 +61,8 @@ interface TranslationState {
   setTitleBody: (layoutId: number, lang: string, body: string) => Promise<void>;
   setTitleLevel: (layoutId: number, level: number) => Promise<void>;
   setTitleRenderAs: (layoutId: number, renderAs: string | null) => Promise<void>;
+  /** Cancel a SHARED move for one edition only, leaving the others arranged. */
+  cancelMoveHere: (layoutId: number, lang: string) => Promise<void>;
   removeLayout: (layoutId: number) => Promise<void>;
 }
 
@@ -229,6 +231,28 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
   setTitleRenderAs: async (layoutId, renderAs) => {
     const row = await patchLayout(layoutId, { render_as: renderAs });
     set(s => ({ layouts: s.layouts.map(l => l.id === layoutId ? row : l), version: s.version + 1 }));
+  },
+
+  /** Undo a shared move HERE only. The shared row stays — deleting it would un-arrange
+   *  every edition — and a language row on the same source range shadows it for this
+   *  edition, `disabled` so it contributes no placement (`moveDisplays`: language-specific
+   *  beats shared, and a disabled kept row places nothing). Two calls because the create
+   *  body has no `disabled` field. */
+  cancelMoveHere: async (layoutId, lang) => {
+    const src = get().layouts.find(l => l.id === layoutId);
+    if (!src || src.kind !== 'move') return;
+    const created = await createLayout({
+      text_id: src.text_id, kind: 'move',
+      src_start_syl_id: src.src_start_syl_id, src_end_syl_id: src.src_end_syl_id,
+      anchor_syl_id: src.anchor_syl_id, move_mode: src.move_mode,
+      anchor_after: src.anchor_after, lang,
+    });
+    const row = await patchLayout(created.id, { disabled: true });
+    set(s => ({ layouts: [...s.layouts, row], version: s.version + 1 }));
+    useUndoStore.getState().push({
+      description: `Keep the shared arrangement in ${lang}`,
+      undo: async () => { await get().removeLayout(row.id); },
+    });
   },
 
   removeLayout: async (layoutId) => {

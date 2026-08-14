@@ -2,7 +2,9 @@ import {
   API_BASE, getEditorTokens, getTextTranslations, getPhonetics, getLayouts,
   type DocumentItem,
 } from '../../api/client';
-import { deriveChunks, insertTitleChunks } from '../translate/chunks';
+import {
+  deriveChunks, insertTitleChunks, moveDisplays, type MovePlacement,
+} from '../translate/chunks';
 import { kindOf } from '../phonetics/lines';
 import { apiFetch } from '../../api/http';
 
@@ -64,6 +66,19 @@ export interface DocLine {
    *  muted placeholder (not blank, not another language's text) so the missing title is visible
    *  on the page. */
   missingTitle?: boolean;
+  /** Glosses the translator moved HERE from another row (the bench's move layer), printed
+   *  above this row's own text. Recto only — the Tibetan never follows a move. Each keeps the
+   *  face it had at its origin, so an instruction reads as an instruction wherever it lands. */
+  borrowed?: BorrowedGloss[];
+}
+
+/** A gloss printed on a row other than its own (see `applyMovesToRecto`). */
+export interface BorrowedGloss {
+  /** The donor row's key — a stable React key, and what says where this text really lives. */
+  fromKey: string;
+  html: string;
+  role: string;
+  smallKind?: string;
 }
 
 /** A fresh identity per EVALUATION of this module. In dev, a hot update replaces the
@@ -75,6 +90,74 @@ export const COMPILE_BUILD: object = {};
 
 const rk = (a: string, b: string) => `${a}-${b}`;
 
+/**
+ * Print the glosses the translator moved — and nothing else.
+ *
+ * Tibetan and Latin languages do not run in the same order, so a translator relocates a
+ * fragment (typically the small instruction that introduces a mantra) to read where it belongs.
+ * That is a decision about the TRANSLATION. The scripture prints in its own order, always.
+ *
+ * **Only a recto-only row may travel.** A row's `phonetics` are built from its OWN syllables
+ * (`phonFor`) — they are how you recite the Tibetan printed beside them — so text may never be
+ * shown against another row's Tibetan. A small-INSTRUCTIONS run has already had its Tibetan
+ * merged onto its host by the continuation rule below, leaving a row with no tokens and no
+ * phonetics: a gloss, and the only thing a move is allowed to pick up here.
+ *
+ * **And it is a lift, never a shift.** Exactly two rows change per move — the donor loses its
+ * translation, the destination gains it in `borrowed`. Every other row is returned untouched,
+ * by identity. An earlier version rotated the payloads between origin and destination instead;
+ * with a move spanning 208 syllables that left every row in between wearing its neighbour's
+ * phonetics, so a split on the Tibetan showed the wrong line on the facing page.
+ *
+ * Rows themselves are never reordered: the booklet addresses them by INDEX (page units are
+ * index ranges, sliced identically for every column) and by ANCHOR (`anchorOf`, which every
+ * stored break, split, gap and width is keyed by). Reordering one side breaks both.
+ */
+export function applyMovesToRecto(lines: DocLine[], placements: MovePlacement[]): DocLine[] {
+  if (!placements.length) return lines;
+
+  const borrowedBy = new Map<number, BorrowedGloss[]>();   // destination index → glosses
+  const emptied = new Set<number>();                       // donor indices
+
+  for (const pl of placements) {
+    const frag = new Set(pl.fragIds);
+    const donors = lines
+      .map((l, i) => [l, i] as const)
+      .filter(([l]) => l.startSylId && frag.has(l.startSylId));
+    if (!donors.length) continue;
+    // The guard: a row carrying Tibetan owns its phonetics and stays put, text and all.
+    if (donors.some(([l]) => l.tokens.length > 0 || l.phonetics)) continue;
+    const at = pl.anchorId == null ? -1 : lines.findIndex(
+      (l) => l.startSylId === pl.anchorId || l.tokens.some((t) => t.id === pl.anchorId));
+    if (at < 0) continue;
+
+    const glosses: BorrowedGloss[] = [];
+    for (const [l, i] of donors) {
+      if (i === at) continue;                              // already where it belongs
+      if (l.translation) {
+        glosses.push({
+          fromKey: l.key, html: l.translation, role: l.role,
+          ...(l.smallKind ? { smallKind: l.smallKind } : {}),
+        });
+      }
+      emptied.add(i);
+    }
+    if (!glosses.length) continue;
+    const here = borrowedBy.get(at) ?? [];
+    // `anchor_after` places the gloss under the destination's own text; the default is above,
+    // which is what "lands BEFORE the chunk starting here" means for a reader.
+    borrowedBy.set(at, pl.anchorAfter ? [...here, ...glosses] : [...glosses, ...here]);
+  }
+
+  if (!borrowedBy.size && !emptied.size) return lines;
+  return lines.map((l, i) => {
+    const got = borrowedBy.get(i);
+    if (got) return { ...l, borrowed: [...(l.borrowed ?? []), ...got] };
+    if (emptied.has(i)) return { ...l, translation: null };
+    return l;                                              // untouched, by identity
+  });
+}
+
 async function fetchJson(url: string): Promise<any> {
   const r = await apiFetch(url);
   if (!r.ok) throw new Error(await r.text());
@@ -83,8 +166,13 @@ async function fetchJson(url: string): Promise<any> {
 
 export async function compileTextItem(
   item: DocumentItem, lang: string,
-): Promise<{ lines: DocLine[]; headings: OutlineHeading[] }> {
+): Promise<{ lines: DocLine[]; rectoLines: DocLine[]; headings: OutlineHeading[] }> {
   const textId = item.text_id!;
+  // The id this page's ALIGNMENT is addressed by. A booklet page that reuses a text page
+  // carries the text page's own item id here, so every stored break, split, gap and width —
+  // all keyed by (item, anchor) — resolves exactly as it does on the text page itself. That
+  // is what makes an aligned text reusable instead of re-aligned.
+  const layoutItemId = item.layout_item_id ?? item.id;
   const [tokens, spans, breaks, markers, translations, phonetics, treeNodes, layouts] = await Promise.all([
     getEditorTokens(textId),
     fetchJson(`${API_BASE}/texts/${textId}/spans`),
@@ -137,6 +225,11 @@ export async function compileTextItem(
   // `splitInstructions` (last arg): keep small-INSTRUCTIONS runs as their own units so their
   // translation never rides inline into a neighbour — the continuation rule below appends only
   // their Tibetan. Passed to BOTH derives so the line stream and the chunk stream agree.
+  //
+  // NO MOVE is applied here, and none ever may be: this stream carries the TIBETAN and drives
+  // the page breaks. The translate bench's move layer rearranges the reading flow of the
+  // TRANSLATION, and the scripture does not follow it — the recto's own order is built from
+  // this same stream at the end of the compile (`applyMovesToRecto`).
   const lines = insertTitleChunks(
     deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true), layouts);
   const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, false, true);
@@ -283,7 +376,7 @@ export async function compileTextItem(
       // no level (no TOC entry), and the small/intro role + kind carry the small face.
       const gloss = ly.render_as === 'small_intro';
       out.push({
-        itemId: item.id, textId, key: `${item.id}:${l.key}`, role: gloss ? 'small' : 'title',
+        itemId: layoutItemId, textId, key: `${layoutItemId}:${l.key}`, role: gloss ? 'small' : 'title',
         startSylId: '', endSylId: '', opId: null, tokens: [],
         phonetics: '', translation: body || null, emptyAfter: false,
         level: gloss ? null : Math.max(0, (ly.level ?? 1) - 1),
@@ -305,9 +398,9 @@ export async function compileTextItem(
     const gloss = (l.tagType === 'sapche' || l.tagType === 'title')
       && renderAsBySyl.get(l.startSylId) === 'small_intro';
     out.push({
-      itemId: item.id,
+      itemId: layoutItemId,
       textId,
-      key: `${item.id}:${l.key}`,
+      key: `${layoutItemId}:${l.key}`,
       role: gloss ? 'small' : l.tagType,
       startSylId: l.startSylId,
       endSylId: l.endSylId,
@@ -380,10 +473,12 @@ export async function compileTextItem(
   // title) and INCLUDING the translation-only title chunks (scramble layer) that exist in
   // no other layer. Two sources, merged in stream order and nested by heading level:
   //   1. heading LINES — a line tagged sapche/title — labelled by its own translation;
-  //      skipped when it has none (an untranslated heading has no place in a translated
-  //      booklet's navigation — the string is the point).
+  //      skipped when it has none. NOT filled in with the Tibetan: this outline is read in one
+  //      language, and a Tibetan string in it is not a heading the reader can use.
   //   2. TITLE layout chunks — a per-language title anchored before a chunk; the nodes
-  //      "added in the translation pane that don't exist anywhere else".
+  //      "added in the translation pane that don't exist anywhere else". These exist only as
+  //      translations (there is no Tibetan behind them), so an untranslated one falls back to
+  //      whatever edition does have it rather than vanishing.
   // Level is 0-based: the sapche depth where the tree supplies one, else the chunk's /
   // layout's manual H-level minus one (H1 → 0), so both scales nest together.
   const headings: OutlineHeading[] = [];
@@ -410,8 +505,11 @@ export async function compileTextItem(
     if (ly.kind !== 'title' || ly.disabled) continue;
     // A title rendered as a gloss is body commentary, not a heading — no bookmark.
     if (ly.render_as === 'small_intro') continue;
-    // This edition's title text only — a title untranslated here has no bookmark here either.
-    const body = (ly.titles[lang] ?? '').trim();
+    // This edition's title, else any edition that has one: the node belongs in the outline
+    // either way, and a title chunk has no Tibetan to fall back on — it exists only in the
+    // translation pane.
+    const body = (ly.titles[lang] ?? '').trim()
+      || (Object.values(ly.titles).map((t) => (t ?? '').trim()).find(Boolean) ?? '');
     if (!body) continue;
     // A title chunk sits BEFORE the chunk starting at its anchor; the `-0.5` orders it
     // ahead of a heading line sharing that syllable. A null anchor rides at the end.
@@ -421,7 +519,11 @@ export async function compileTextItem(
                     order: at != null ? at - 0.5 : Infinity });
   }
   headings.sort((a, b) => a.order - b.order);
-  return { lines: out, headings };
+  // Moves resolve PER EDITION: a shared row (lang NULL) is the arrangement every edition
+  // inherits, a row for this `lang` overrides it here, a disabled one for this `lang` cancels
+  // it here. Only the recto's order is affected — `out` stays the Tibetan's.
+  const { placements } = moveDisplays(tokens, layouts, lang);
+  return { lines: out, rectoLines: applyMovesToRecto(out, placements), headings };
 }
 
 /** Split a translation body into its per-line `<p>` pieces. Parses via the DOM (not a
@@ -478,8 +580,12 @@ export interface OutlineHeading {
 }
 
 export interface CompiledDoc {
-  /** The document's body line stream (title lifted out), text pages in order. */
+  /** The document's body line stream (title lifted out), text pages in order. Source order
+   *  always — the Tibetan side, and what the page breaks are measured against. */
   lines: DocLine[];
+  /** The SAME lines in the translation's reading order (the bench's move layer). Identical to
+   *  `lines` when nothing is moved. The recto columns render this; nothing else may. */
+  rectoLines: DocLine[];
   /** Per text item: its lifted leading title line(s) (Tibetan + translated title),
    *  for the title/cover page. */
   titleByItem: Map<number, DocLine[]>;
@@ -491,15 +597,20 @@ export interface CompiledDoc {
  *  leading title (role `title`) out of the body so it can head a title page. */
 export async function compileDocument(items: DocumentItem[], lang: string): Promise<CompiledDoc> {
   const lines: DocLine[] = [];
+  const rectoLines: DocLine[] = [];
   const titleByItem = new Map<number, DocLine[]>();
   const headingsByItem = new Map<number, OutlineHeading[]>();
-  const textItems = items.filter((it) => it.kind === 'text' && it.text_id != null);
+  // A page that renders a text: the booklet's own ('text'), or an aligned TEXT PAGE it
+  // reuses ('textpage', resolved to that page's text by the API). Keying on `text_id`
+  // rather than on the kind is what makes the two interchangeable here.
+  const textItems = items.filter((it) => it.text_id != null
+    && (it.kind === 'text' || it.kind === 'textpage'));
   // Compile every text concurrently — serially, a multi-text booklet paid the sum of each
   // text's network round-trips before first paint. Assembly below keeps document order.
   const compiledItems = await Promise.all(textItems.map((it) => compileTextItem(it, lang)));
   for (let k = 0; k < textItems.length; k++) {
     const it = textItems[k];
-    const { lines: compiled, headings } = compiledItems[k];
+    const { lines: compiled, rectoLines: compiledRecto, headings } = compiledItems[k];
     let i = 0;
     const titleLines: DocLine[] = [];
     // Only a Tibetan title (real tokens) heads the title page; a translation-only title layout
@@ -507,9 +618,16 @@ export async function compileDocument(items: DocumentItem[], lang: string): Prom
     while (i < compiled.length && compiled[i].role === 'title' && compiled[i].tokens.length > 0) {
       titleLines.push(compiled[i]); i++;
     }
-    titleByItem.set(it.id, titleLines);
-    headingsByItem.set(it.id, headings);
+    // Keyed by the id the LINES carry (the aligned text page's item when reused), so the
+    // title lift and the line stream join on one id space — see bookletRender.layoutIdOf.
+    titleByItem.set(it.layout_item_id ?? it.id, titleLines);
+    headingsByItem.set(it.layout_item_id ?? it.id, headings);
     lines.push(...compiled.slice(i));
+    // The recto reads the same lines in the translator's order. The lifted title lines are
+    // the same objects, so drop them by identity rather than by count — a move cannot
+    // relocate a title, but it can shift what sits at index `i`.
+    const lifted = new Set<DocLine>(titleLines);
+    rectoLines.push(...compiledRecto.filter((l: DocLine) => !lifted.has(l)));
   }
-  return { lines, titleByItem, headingsByItem };
+  return { lines, rectoLines, titleByItem, headingsByItem };
 }

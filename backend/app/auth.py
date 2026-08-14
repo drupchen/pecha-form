@@ -357,6 +357,20 @@ def active_org_id() -> int:
     return ctx.org_id
 
 
+def active_user_id() -> int | None:
+    """Who is making this request, for attribution. None when nobody is identifiable —
+    a print token carries no user, and authorship is worth leaving NULL rather than
+    guessing. Under SAPCHE_AUTH_DISABLED the synthetic superuser (1) answers, so a
+    dev-bridge session attributes everything to that account.
+    """
+    ctx = _ctx.get()
+    if ctx is None:
+        return 1 if _auth_disabled() else None
+    if ctx.is_print_token:
+        return None
+    return ctx.user_id or None
+
+
 def current_user(request: Request) -> AuthContext:
     """Authentication only (no org, no section check) — for /api/auth and /api/orgs.
 

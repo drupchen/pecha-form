@@ -129,7 +129,12 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CHECK ((title IS NOT NULL) OR (segment_start_syl_id IS NOT NULL)),
-    UNIQUE(parent_id, position)
+    -- `position` orders siblings WITHIN ONE OWNER: a text that inherits sections renders
+    -- them beside its own but may not renumber them (the owner and every other booklet
+    -- share those rows), so two texts legitimately both use position 0 under the same
+    -- parent. Display order across owners is composed from anchors — see
+    -- routers/tree_nodes._order_level.
+    UNIQUE(parent_id, text_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent   ON tree_nodes(parent_id);
@@ -468,6 +473,33 @@ CREATE TABLE IF NOT EXISTS translation_suggestions (
 );
 CREATE INDEX IF NOT EXISTS idx_translation_suggestions_chunk ON translation_suggestions(chunk_id);
 
+-- ─── Translation provenance ─────────────────────────────────────────────────────
+-- Append-only log of every wording a chunk has held, and who wrote it. `translations`
+-- and `translation_overrides` keep ONE row per chunk × language, overwritten in place,
+-- so without this the previous wording and its author are lost on every save. This is
+-- the only place that answers "who chose this expression, and when".
+--
+-- Written alongside the upsert, in the same transaction, and ONLY when `body` actually
+-- changes — a status-only save or an identical re-save records nothing, or the log
+-- fills with noise. `scope` distinguishes the canonical translation from a booklet
+-- override (`text_id` says which booklet). Ripple/bake paths are deliberately not
+-- logged: they propagate wording someone else authored upstream.
+CREATE TABLE IF NOT EXISTS translation_revisions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id   INTEGER NOT NULL REFERENCES translation_chunks(id) ON DELETE CASCADE,
+    lang       TEXT NOT NULL,
+    scope      TEXT NOT NULL DEFAULT 'canonical' CHECK (scope IN ('canonical', 'override')),
+    text_id    INTEGER,                            -- the booklet, for scope='override'
+    body       TEXT NOT NULL,
+    status     TEXT,                               -- draft/final as of this writing
+    author_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    source     TEXT NOT NULL DEFAULT 'manual',     -- 'manual' | 'suggestion' | 'import'
+    note       TEXT,                               -- e.g. the booklet a suggestion came from
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_translation_revisions_chunk
+    ON translation_revisions(chunk_id, lang, id);
+
 -- Scramble layer: translator-driven DISPLAY arrangement of the chunk stream.
 -- kind='move': the small/sapche instruction fragment (src range) displays at
 -- anchor_syl_id instead of at its source position. Two intents, `move_mode`:
@@ -553,6 +585,17 @@ CREATE TABLE IF NOT EXISTS documents (
     -- automatic re-flow is suppressed, so hand-tuning is never reflowed away. Unfreezing
     -- (→ 0) re-enables the drift re-flow over the same automatic + manual break rows.
     pagination_frozen INTEGER NOT NULL DEFAULT 0,
+    -- 'textpage' = an ALIGNED TEXT, the reusable ingredient: one text item plus the layout
+    -- rows that align its Tibetan against its translations. 'booklet' = what gets printed:
+    -- furniture plus references to text pages. The split exists so the same aligned text can
+    -- appear in a booklet of its own AND inside a larger one without redoing the alignment —
+    -- see `document_items.ref_document_id`.
+    kind           TEXT NOT NULL DEFAULT 'booklet'
+                   CHECK (kind IN ('textpage', 'booklet')),
+    -- Physical pages this document lays out to, recorded by the bench (see the column
+    -- migration). NULL until it has been laid out once: an item count is not a page count —
+    -- one aligned text is a single item and a great many pages.
+    page_count     INTEGER,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -562,9 +605,13 @@ CREATE TABLE IF NOT EXISTS document_items (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     position    INTEGER NOT NULL DEFAULT 0,
     kind        TEXT NOT NULL CHECK (kind IN
-                    ('cover','blank','toc','text','image_page','backcover')),
+                    ('cover','blank','toc','text','image_page','backcover','textpage')),
     -- Set for kind='text' — the secondary (or primary) text this page renders.
     text_id     INTEGER REFERENCES texts(id) ON DELETE SET NULL,
+    -- Set for kind='textpage' — the TEXT-PAGE document this booklet page reuses. Its own
+    -- text item supplies the text, and its layout rows supply the alignment; rows this
+    -- booklet stores against that SAME item id shadow them (see the layout endpoint).
+    ref_document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
     -- Furniture params (styled at D2/D3): image caption, cover/copyright text, etc.
     caption     TEXT,
     body        TEXT
@@ -975,7 +1022,17 @@ _COLUMN_MIGRATIONS = {
     "documents": [("org_id", "INTEGER NOT NULL DEFAULT 1"),
                   ("layout_config", "TEXT"), ("pagination_sig", "TEXT"),
                   ("pagination_fp", "TEXT"),
-                  ("pagination_frozen", "INTEGER NOT NULL DEFAULT 0")],
+                  ("pagination_frozen", "INTEGER NOT NULL DEFAULT 0"),
+                  # Everything that existed before the split is a booklet; text pages are
+                  # made deliberately. Added without the CHECK a fresh DB carries — SQLite
+                  # cannot add a constrained column in place, and the router is the gate.
+                  ("kind", "TEXT NOT NULL DEFAULT 'booklet'"),
+                  # How many physical pages this document lays out to. Only the bench can
+                  # know it (it takes the whole line stream and the stored breaks to work
+                  # out), so the bench records it and the list reads it back.
+                  ("page_count", "INTEGER")],
+    # The text-page reference: set on a booklet item of kind 'textpage'.
+    "document_items": [("ref_document_id", "INTEGER REFERENCES documents(id)")],
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
     # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.
@@ -1129,6 +1186,107 @@ def _rebuild_text_groups_org(conn) -> None:
         "SELECT 1, path, position FROM text_groups")
     conn.execute("DROP TABLE text_groups")
     conn.execute("ALTER TABLE text_groups_new RENAME TO text_groups")
+
+
+def _rebuild_tree_nodes_position_unique(conn) -> None:
+    """Widen `tree_nodes`' UNIQUE(parent_id, position) to include `text_id`.
+
+    `position` numbers siblings within ONE owner. A secondary renders its parent's
+    sections and adds its own, and it may not renumber the inherited rows — so its own
+    numbering starts at 0 again and legitimately collides with the owner's under a
+    shared parent. The old constraint made that an IntegrityError, which is why a
+    subsection could not be added to a text that inherits its tree.
+
+    No-op once the widened constraint is in place (including fresh DBs from SCHEMA).
+    Must run OUTSIDE a transaction: it toggles PRAGMA foreign_keys.
+    """
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tree_nodes'"
+    ).fetchone()
+    if not sql or "UNIQUE(parent_id, text_id, position)" in (sql["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:
+            conn.execute("""
+                CREATE TABLE tree_nodes__new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text_id INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                    parent_id INTEGER REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    title TEXT,
+                    segment_start_syl_id TEXT,
+                    transparent INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    passage_id INTEGER,
+                    CHECK ((title IS NOT NULL) OR (segment_start_syl_id IS NOT NULL)),
+                    UNIQUE(parent_id, text_id, position)
+                )""")
+            conn.execute(
+                "INSERT INTO tree_nodes__new (id, text_id, parent_id, position, title, "
+                "segment_start_syl_id, transparent, created_at, updated_at, passage_id) "
+                "SELECT id, text_id, parent_id, position, title, segment_start_syl_id, "
+                "transparent, created_at, updated_at, passage_id FROM tree_nodes")
+            conn.execute("DROP TABLE tree_nodes")
+            conn.execute("ALTER TABLE tree_nodes__new RENAME TO tree_nodes")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id)")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _rebuild_document_items_kinds(conn) -> None:
+    """Let `document_items.kind` carry 'textpage' — a booklet page that reuses an aligned
+    TEXT PAGE instead of naming a text directly.
+
+    SQLite cannot alter a CHECK in place, so the table is rebuilt when the one on disk does
+    not list the kind. Rows keep their ids: `document_layout.item_id` points at them, and an
+    item id is what a whole booklet's alignment is addressed by — 960 rows on one item, in
+    the live data. No-op on a fresh DB (SCHEMA already lists it).
+
+    Must run OUTSIDE a transaction: it toggles PRAGMA foreign_keys.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='document_items'"
+    ).fetchone()
+    if not row or "'textpage'" in (row["sql"] or ""):
+        return
+
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(document_items)")]
+    carried = [c for c in cols if c != "ref_document_id"]
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:
+            conn.execute("""
+                CREATE TABLE document_items__new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                    position    INTEGER NOT NULL DEFAULT 0,
+                    kind        TEXT NOT NULL CHECK (kind IN
+                                    ('cover','blank','toc','text','image_page','backcover',
+                                     'textpage')),
+                    text_id     INTEGER REFERENCES texts(id) ON DELETE SET NULL,
+                    ref_document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+                    caption     TEXT,
+                    body        TEXT
+                )""")
+            names = ", ".join(carried)
+            conn.execute(
+                f"INSERT INTO document_items__new ({names}) SELECT {names} FROM document_items")
+            if "ref_document_id" in cols:
+                conn.execute(
+                    "UPDATE document_items__new SET ref_document_id = "
+                    "(SELECT ref_document_id FROM document_items o WHERE o.id = document_items__new.id)")
+            conn.execute("DROP TABLE document_items")
+            conn.execute("ALTER TABLE document_items__new RENAME TO document_items")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_items_doc "
+                         "ON document_items(document_id)")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 # The roles every organization starts with. Ordinary editable rows — org admins can
@@ -1688,4 +1846,11 @@ def init_db():
     # Part 9: split the `small` tag into its named family. Runs after the tags rebuilds so
     # it sees the final table.
     _split_small_tag_family(conn)
+    # Sapche on inherited trees: position is per (owner, parent), so the UNIQUE has to
+    # carry text_id. After the offset drop, which also rebuilds tree_nodes; own
+    # foreign_keys-OFF transaction.
+    _rebuild_tree_nodes_position_unique(conn)
+    # Text pages: `document_items.kind` gains 'textpage'. Own foreign_keys-OFF
+    # transaction, and after the additive column pass so `ref_document_id` exists.
+    _rebuild_document_items_kinds(conn)
     conn.close()

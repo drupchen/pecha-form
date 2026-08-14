@@ -16,6 +16,8 @@ router = APIRouter(prefix="/api", tags=["tree_nodes"])
 def _row_to_node(row: sqlite3.Row, id2start: dict) -> dict:
     d = dict(row)
     d["transparent"] = bool(d["transparent"])
+    # Who owns the row, before a gathered read rewrites `text_id` to the reading text.
+    d["owner_text_id"] = d["text_id"]
     # Part 6, Phase 3: segment_start is DERIVED from the syllable anchor (the stored
     # segment_start offset column was dropped) — a frontend render aid.
     syl = d.get("segment_start_syl_id")
@@ -23,15 +25,20 @@ def _row_to_node(row: sqlite3.Row, id2start: dict) -> dict:
     return d
 
 
-def _validate_parent(cursor, text_id: int, parent_id: Optional[int]) -> None:
+def _validate_parent(conn, text_id: int, parent_id: Optional[int]) -> None:
+    """The parent must be a node this text actually SHOWS — its own or an inherited
+    one (see ``_gathered_tree_rows``).
+
+    Scoping this to ``text_id`` used to make the composed tree unbuildable: a secondary
+    inherits its parent's sections, so hanging a new subsection under one was rejected
+    with a 404 even though the read path composes exactly that hierarchy (node ids are
+    global, and children of a shared parent already share one position space).
+    """
     if parent_id is None:
         return
-    cursor.execute(
-        "SELECT id FROM tree_nodes WHERE id = ? AND text_id = ?",
-        (parent_id, text_id),
-    )
-    if not cursor.fetchone():
-        raise HTTPException(404, f"Parent tree node {parent_id} not found in this text")
+    if any(n["id"] == parent_id for n in _gathered_tree_rows(conn, text_id)):
+        return
+    raise HTTPException(404, f"Parent tree node {parent_id} not found in this text")
 
 
 def _validate_segment_start(cursor, text_id: int, segment_start: Optional[int]) -> None:
@@ -50,8 +57,15 @@ def _validate_segment_start(cursor, text_id: int, segment_start: Optional[int]) 
         raise HTTPException(400, "segment_start exceeds text length")
 
 
+# `position` numbers siblings WITHIN ONE OWNER. A text inheriting sections renders them
+# alongside its own, but it may not renumber them: the owning text and every other
+# booklet share those rows. So all three helpers below scope to (owner text, parent),
+# including under an inherited parent — otherwise adding a subsection to a secondary
+# would silently shift the primary's children. Display order across owners is composed
+# separately, by `_order_level`.
+
 def _max_sibling_position(cursor, parent_id: Optional[int], text_id: int) -> int:
-    """Return the next free position among siblings of `parent_id` in this text."""
+    """Return the next free position among this text's own siblings of `parent_id`."""
     if parent_id is None:
         cursor.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS next_pos "
@@ -61,8 +75,8 @@ def _max_sibling_position(cursor, parent_id: Optional[int], text_id: int) -> int
     else:
         cursor.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS next_pos "
-            "FROM tree_nodes WHERE parent_id = ?",
-            (parent_id,),
+            "FROM tree_nodes WHERE parent_id = ? AND text_id = ?",
+            (parent_id, text_id),
         )
     return cursor.fetchone()["next_pos"]
 
@@ -75,8 +89,8 @@ def _sibling_count(cursor, parent_id: Optional[int], text_id: int) -> int:
         )
     else:
         cursor.execute(
-            "SELECT COUNT(*) AS c FROM tree_nodes WHERE parent_id = ?",
-            (parent_id,),
+            "SELECT COUNT(*) AS c FROM tree_nodes WHERE parent_id = ? AND text_id = ?",
+            (parent_id, text_id),
         )
     return cursor.fetchone()["c"]
 
@@ -124,13 +138,13 @@ def _shift_siblings(
     else:
         cursor.execute(
             "UPDATE tree_nodes SET position = position + ? "
-            "WHERE parent_id = ? AND position >= ?",
-            (HIGH, parent_id, from_pos),
+            "WHERE parent_id = ? AND text_id = ? AND position >= ?",
+            (HIGH, parent_id, text_id, from_pos),
         )
         cursor.execute(
             "UPDATE tree_nodes SET position = position - ? + ? "
-            "WHERE parent_id = ? AND position >= ?",
-            (HIGH, delta, parent_id, from_pos + HIGH),
+            "WHERE parent_id = ? AND text_id = ? AND position >= ?",
+            (HIGH, delta, parent_id, text_id, from_pos + HIGH),
         )
 
 
@@ -167,6 +181,9 @@ def _gathered_tree_rows(conn, text_id: int) -> list[dict]:
             if r["id"] in gathered:
                 continue
             d = _row_to_node(r, id2start)
+            # `text_id` is rewritten to the READING text (the row is presented as part
+            # of this text's tree); `owner_text_id` (set in _row_to_node) keeps who
+            # actually owns it — what ordering and position arithmetic key on.
             d["text_id"] = text_id
             d["inherited"] = inherited
             gathered[r["id"]] = d
@@ -210,15 +227,81 @@ def _gathered_tree_rows(conn, text_id: int) -> list[dict]:
     return [d for nid, d in gathered.items() if keep[nid]]
 
 
+def _order_level(nodes: list[dict], own_text_id: int) -> list[dict]:
+    """One sibling level in display order.
+
+    `position` is only meaningful among siblings of the SAME owner: a secondary's own
+    nodes are numbered independently of the inherited ones it renders alongside, and
+    renumbering the inherited ones is not an option (their text owns them and other
+    booklets share them). So:
+
+    * a level owned by ONE text keeps pure `position` order — unchanged behaviour, and
+      deliberately so: a text whose own nodes sit in a different order than their anchors
+      is expressing an intent we must not silently "correct";
+    * a MIXED level keeps the inherited nodes in their own order and splices the own
+      nodes in at the point their anchor falls, which is where the reader sees the
+      corresponding text.
+
+    An own node with no anchor (a free-form title, or a passage-linked one) follows the
+    last own node placed, or lands at the end of the level.
+    """
+    if len({n.get("owner_text_id") for n in nodes}) <= 1:
+        return sorted(nodes, key=lambda n: n["position"])
+
+    base = sorted((n for n in nodes if n.get("owner_text_id") != own_text_id),
+                  key=lambda n: n["position"])
+    own = sorted((n for n in nodes if n.get("owner_text_id") == own_text_id),
+                 key=lambda n: n["position"])
+
+    # Offset carried forward, so an unanchored inherited node counts as "still at" the
+    # last anchored one before it rather than as a gap of unknown position.
+    out, offsets, last = list(base), [], None
+    for n in base:
+        if n.get("segment_start") is not None:
+            last = n["segment_start"]
+        offsets.append(last)
+
+    after = len(out)  # default landing spot for an unanchored own node: the end
+    for n in own:
+        o = n.get("segment_start")
+        if o is None:
+            idx = after
+        else:
+            idx = 0
+            for i, bo in enumerate(offsets):
+                if bo is not None and bo <= o:
+                    idx = i + 1
+        out.insert(idx, n)
+        offsets.insert(idx, o if o is not None else (offsets[idx - 1] if idx else None))
+        after = idx + 1
+    return out
+
+
+def _with_sort_index(rows: list[dict], text_id: int) -> list[dict]:
+    """Stamp each node with its `sort_index` within its sibling level. The clients sort
+    by this, so the flat and nested shapes cannot drift apart (and the browser does not
+    have to re-derive an ordering that depends on stream offsets it does not hold)."""
+    by_parent: dict[Optional[int], list[dict]] = {}
+    present = {r["id"] for r in rows}
+    for r in rows:
+        pid = r["parent_id"] if r["parent_id"] in present else None
+        by_parent.setdefault(pid, []).append(r)
+    for level in by_parent.values():
+        for i, n in enumerate(_order_level(level, text_id)):
+            n["sort_index"] = i
+    return rows
+
+
 @router.get("/texts/{text_id}/tree-nodes", response_model=List[TreeNodeOut])
 def list_tree_nodes(text_id: int):
     """Flat list of the text's own + inherited tree nodes (see _gathered_tree_rows)."""
     conn = get_db()
     try:
-        rows = _gathered_tree_rows(conn, text_id)
+        rows = _with_sort_index(_gathered_tree_rows(conn, text_id), text_id)
     finally:
         conn.close()
-    rows.sort(key=lambda n: (n["parent_id"] is not None, n["parent_id"] or 0, n["position"]))
+    rows.sort(key=lambda n: (n["parent_id"] is not None, n["parent_id"] or 0,
+                             n["sort_index"]))
     return rows
 
 
@@ -227,7 +310,7 @@ def get_nested_tree(text_id: int):
     """Convenience: nested tree shape for read-only consumption."""
     conn = get_db()
     try:
-        rows = _gathered_tree_rows(conn, text_id)
+        rows = _with_sort_index(_gathered_tree_rows(conn, text_id), text_id)
     finally:
         conn.close()
 
@@ -241,7 +324,7 @@ def get_nested_tree(text_id: int):
 
     def build(parent_id: Optional[int]) -> list[dict]:
         children = by_parent.get(parent_id, [])
-        children.sort(key=lambda n: n["position"])
+        children.sort(key=lambda n: n["sort_index"])
         return [{**n, "children": build(n["id"])} for n in children]
 
     return {"text_id": text_id, "roots": build(None)}
@@ -272,7 +355,7 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
         seg_syl_id = payload.segment_start_syl_id
 
     try:
-        _validate_parent(cursor, text_id, payload.parent_id)
+        _validate_parent(conn, text_id, payload.parent_id)
         if not from_syl:
             _validate_segment_start(cursor, text_id, payload.segment_start)
     except HTTPException:
@@ -426,7 +509,7 @@ def move_tree_node(node_id: int, payload: TreeNodeMove):
     new_parent = payload.new_parent_id
 
     try:
-        _validate_parent(cursor, text_id, new_parent)
+        _validate_parent(conn, text_id, new_parent)
     except HTTPException:
         conn.close()
         raise
@@ -567,7 +650,7 @@ def reorder_siblings(text_id: int, payload: TreeNodeReorder):
 
     # Validate parent
     try:
-        _validate_parent(cursor, text_id, payload.parent_id)
+        _validate_parent(conn, text_id, payload.parent_id)
     except HTTPException:
         conn.close()
         raise
@@ -579,9 +662,10 @@ def reorder_siblings(text_id: int, payload: TreeNodeReorder):
             (text_id,),
         )
     else:
+        # Own siblings only: a reorder may not renumber rows another text owns.
         cursor.execute(
-            "SELECT id FROM tree_nodes WHERE parent_id = ?",
-            (payload.parent_id,),
+            "SELECT id FROM tree_nodes WHERE parent_id = ? AND text_id = ?",
+            (payload.parent_id, text_id),
         )
     actual_ids = {r["id"] for r in cursor.fetchall()}
     if set(payload.ordered_ids) != actual_ids:

@@ -16,6 +16,7 @@ from ..auth import active_org_id, mint_print_token
 from ..db import get_db
 import gzip
 import io
+import logging
 import json
 import os
 import queue as _queue
@@ -31,6 +32,7 @@ from ..schemas import (
     DocumentReorderIn, DocumentLanguagesIn, TocEntry, TocSection,
     DocumentLayoutRow, DocumentLayoutIn, DocumentLayoutDeleteIn,
     DocumentLayoutConfigIn, DocumentLayoutOut, PaginationStampIn, PaginationFrozenIn,
+    PageCountIn,
     DocumentFurnitureRow, DocumentFurnitureIn, ImageSizeIn,
     TitlePageFieldRow, TitleFieldIn, TitleShiftIn,
     DocumentVersionCreate, DocumentVersionOut,
@@ -65,9 +67,26 @@ def _doc_languages(conn, document_id: int) -> List[str]:
 
 
 def _item_out(conn, row) -> DocumentItemOut:
+    # A 'textpage' item names no text of its own: it REUSES an aligned text page. Resolve it to
+    # that page's text item, and carry `layout_item_id` — the id every one of its layout rows is
+    # keyed by. The compile anchors its lines on that id, so the alignment done once on the text
+    # page applies in every booklet that reuses it, with nothing copied.
+    ref_title = None
+    text_id = row["text_id"]
+    layout_item_id = None
+    ref_doc = row["ref_document_id"] if "ref_document_id" in row.keys() else None
+    if row["kind"] == "textpage" and ref_doc is not None:
+        d = conn.execute("SELECT title FROM documents WHERE id = ?", (ref_doc,)).fetchone()
+        ref_title = d["title"] if d else None
+        inner = conn.execute(
+            "SELECT id, text_id FROM document_items WHERE document_id = ? AND kind = 'text' "
+            "ORDER BY position, id LIMIT 1", (ref_doc,)).fetchone()
+        if inner is not None:
+            text_id = inner["text_id"]
+            layout_item_id = inner["id"]
     title = None
-    if row["text_id"] is not None:
-        t = conn.execute("SELECT title FROM texts WHERE id = ?", (row["text_id"],)).fetchone()
+    if text_id is not None:
+        t = conn.execute("SELECT title FROM texts WHERE id = ?", (text_id,)).fetchone()
         title = t["title"] if t else None
     has_image = False
     w_mm = h_mm = None
@@ -79,7 +98,8 @@ def _item_out(conn, row) -> DocumentItemOut:
             w_mm, h_mm = img["width_mm"], img["height_mm"]
     return DocumentItemOut(
         id=row["id"], document_id=row["document_id"], position=row["position"],
-        kind=row["kind"], text_id=row["text_id"], text_title=title,
+        kind=row["kind"], text_id=text_id, text_title=title,
+        ref_document_id=ref_doc, ref_title=ref_title, layout_item_id=layout_item_id,
         caption=row["caption"], body=row["body"], has_image=has_image,
         image_width_mm=w_mm, image_height_mm=h_mm)
 
@@ -95,9 +115,15 @@ def _doc_out(conn, row) -> DocumentOut:
     n = conn.execute("SELECT COUNT(*) c FROM document_items WHERE document_id = ?",
                      (row["id"],)).fetchone()["c"]
     return DocumentOut(
-        id=row["id"], title=row["title"],
+        id=row["id"], title=row["title"], kind=_kind_of(row),
+        page_count=(row["page_count"] if "page_count" in row.keys() else None),
         created_at=row["created_at"], updated_at=row["updated_at"],
         item_count=n, languages=_doc_languages(conn, row["id"]))
+
+
+def _kind_of(row) -> str:
+    """'textpage' or 'booklet'. Pre-split rows have no column and are booklets."""
+    return (row["kind"] if "kind" in row.keys() and row["kind"] else "booklet")
 
 
 def _require_doc(conn, document_id: int):
@@ -133,8 +159,9 @@ def create_document(payload: DocumentCreate):
         raise HTTPException(400, "Title required")
     conn = get_db()
     try:
-        cur = conn.execute("INSERT INTO documents (org_id, title) VALUES (?, ?)",
-                           (active_org_id(), title))
+        kind = payload.kind if payload.kind in ("textpage", "booklet") else "booklet"
+        cur = conn.execute("INSERT INTO documents (org_id, title, kind) VALUES (?, ?, ?)",
+                           (active_org_id(), title, kind))
         conn.commit()
         return _doc_out(conn, _require_doc(conn, cur.lastrowid))
     finally:
@@ -189,6 +216,10 @@ def add_item(document_id: int, payload: DocumentItemIn):
             raise HTTPException(400, "A text page needs a text_id")
     elif payload.text_id is not None:
         raise HTTPException(400, "text_id only applies to a text page")
+    if payload.kind == "textpage" and payload.ref_document_id is None:
+        raise HTTPException(400, "A reused text page needs a ref_document_id")
+    if payload.kind != "textpage" and payload.ref_document_id is not None:
+        raise HTTPException(400, "ref_document_id only applies to a reused text page")
     conn = get_db()
     try:
         _require_doc(conn, document_id)
@@ -198,14 +229,86 @@ def add_item(document_id: int, payload: DocumentItemIn):
         pos = conn.execute(
             "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM document_items WHERE document_id = ?",
             (document_id,)).fetchone()["p"]
+        if payload.ref_document_id is not None:
+            ref = conn.execute("SELECT kind FROM documents WHERE id = ?",
+                               (payload.ref_document_id,)).fetchone()
+            if ref is None:
+                raise HTTPException(404, "Text page not found")
+            if _kind_of(ref) != "textpage":
+                raise HTTPException(400, "Only a text page can be reused as a booklet page")
         cur = conn.execute(
-            "INSERT INTO document_items (document_id, position, kind, text_id, caption, body) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (document_id, pos, payload.kind, payload.text_id, payload.caption, payload.body))
+            "INSERT INTO document_items "
+            "(document_id, position, kind, text_id, ref_document_id, caption, body) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (document_id, pos, payload.kind, payload.text_id, payload.ref_document_id,
+             payload.caption, payload.body))
         _touch(conn, document_id)
         conn.commit()
         row = conn.execute("SELECT * FROM document_items WHERE id = ?", (cur.lastrowid,)).fetchone()
         return _item_out(conn, row)
+    finally:
+        conn.close()
+
+
+@router.post("/document-items/{item_id}/extract-text-page", response_model=DocumentItemOut)
+def extract_text_page(item_id: int):
+    """Turn a booklet's own text page into a reusable TEXT PAGE, keeping its alignment.
+
+    The item is MOVED, not copied: its id never changes, and `document_layout` addresses an
+    alignment by `item_id` — 960 rows on one item in the live data — so every page break,
+    mid-line split, gap and width survives by construction. What changes is which document
+    OWNS them (`document_id`), and the booklet keeps a `'textpage'` reference in the item's
+    place, at the same position.
+
+    Its languages and page geometry are copied across, since the alignment was measured
+    against them. Afterwards the booklet renders exactly as before, and the same text page can
+    be added to any other booklet already aligned.
+    """
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM document_items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Item not found")
+        if row["kind"] != "text" or row["text_id"] is None:
+            raise HTTPException(400, "Only a text page can be extracted")
+        src = _require_doc(conn, row["document_id"])
+        if _kind_of(src) == "textpage":
+            raise HTTPException(400, "This document is already a text page")
+
+        t = conn.execute("SELECT title FROM texts WHERE id = ?", (row["text_id"],)).fetchone()
+        title = (t["title"] if t else None) or src["title"]
+
+        cur = conn.execute(
+            "INSERT INTO documents (org_id, title, kind, layout_config) VALUES (?, ?, 'textpage', ?)",
+            (active_org_id(), title,
+             src["layout_config"] if "layout_config" in src.keys() else None))
+        page_id = cur.lastrowid
+        # The alignment was measured against these — carry them, or the text page opens in a
+        # geometry its own rows were never flowed for.
+        conn.executemany(
+            "INSERT INTO document_languages (document_id, lang, position) VALUES (?, ?, ?)",
+            [(page_id, lg, i) for i, lg in enumerate(_doc_languages(conn, src["id"]))])
+
+        # Move the item and its rows. Same ids throughout: nothing is rewritten but ownership.
+        conn.execute("UPDATE document_items SET document_id = ?, position = 0 WHERE id = ?",
+                     (page_id, item_id))
+        moved = conn.execute(
+            "UPDATE document_layout SET document_id = ? WHERE item_id = ? AND document_id = ?",
+            (page_id, item_id, src["id"])).rowcount
+        # Furniture stays with the BOOKLET: a text page's per-language furniture row is its
+        # entry in that booklet's table of contents, and the booklet is what has a TOC. The
+        # rows keep pointing at this item id, which the reference resolves to.
+
+        cur = conn.execute(
+            "INSERT INTO document_items (document_id, position, kind, ref_document_id) "
+            "VALUES (?, ?, 'textpage', ?)",
+            (src["id"], row["position"], page_id))
+        _touch(conn, src["id"])
+        conn.commit()
+        logging.getLogger("uvicorn.error").info(
+            "extracted item %s into text page %s (%s layout rows moved)", item_id, page_id, moved)
+        ref = conn.execute("SELECT * FROM document_items WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return _item_out(conn, ref)
     finally:
         conn.close()
 
@@ -374,18 +477,49 @@ def _effective_config(conn, row) -> dict:
     return cfg
 
 
+def _referenced_textpages(conn, document_id: int) -> List[int]:
+    """The text-page documents this booklet reuses, in page order."""
+    return [r["ref_document_id"] for r in conn.execute(
+        "SELECT ref_document_id FROM document_items WHERE document_id = ? "
+        "AND kind = 'textpage' AND ref_document_id IS NOT NULL ORDER BY position, id",
+        (document_id,)).fetchall()]
+
+
+def _gathered_layout_rows(conn, document_id: int) -> List[DocumentLayoutRow]:
+    """This document's alignment: its own rows, plus those of every text page it reuses.
+
+    A text page owns the alignment of the text it holds; a booklet that reuses it starts from
+    that and may tune it locally. Both store rows against the SAME `item_id` — the text page's
+    item — so a booklet's row simply SHADOWS the inherited one on the same
+    (item, anchor, kind, lang). Nothing is copied: fix the alignment on the text page and every
+    booklet that has not overridden that exact row follows.
+    """
+    inherited: dict[tuple, DocumentLayoutRow] = {}
+    for ref in _referenced_textpages(conn, document_id):
+        for r in conn.execute(
+                "SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
+                (ref,)).fetchall():
+            d = dict(r)
+            inherited[(d["item_id"], d["anchor_syl_id"], d["kind"], d["lang"])] = \
+                DocumentLayoutRow(**d, inherited=True)
+    own = conn.execute("SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
+                       (document_id,)).fetchall()
+    for r in own:
+        d = dict(r)
+        inherited.pop((d["item_id"], d["anchor_syl_id"], d["kind"], d["lang"]), None)
+    return [*inherited.values(), *(DocumentLayoutRow(**dict(r)) for r in own)]
+
+
 @router.get("/documents/{document_id}/layout", response_model=DocumentLayoutOut)
 def get_layout(document_id: int):
     conn = get_db()
     try:
         row = _require_doc(conn, document_id)
-        rows = conn.execute(
-            "SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
-            (document_id,)).fetchall()
+        rows = _gathered_layout_rows(conn, document_id)
         keys = row.keys()
         return DocumentLayoutOut(
             config=_effective_config(conn, row),
-            rows=[DocumentLayoutRow(**dict(r)) for r in rows],
+            rows=rows,
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
             pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None,
             pagination_frozen=bool(row["pagination_frozen"]) if "pagination_frozen" in keys else False)
@@ -407,6 +541,28 @@ def put_pagination_stamp(document_id: int, payload: PaginationStampIn):
             "UPDATE documents SET pagination_sig = ?, pagination_fp = ?, "
             "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (payload.pagination_sig, payload.pagination_fp, document_id))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@router.put("/documents/{document_id}/page-count")
+def put_page_count(document_id: int, payload: PageCountIn):
+    """Record how many physical pages this document lays out to.
+
+    The bench is the only thing that can know: it takes the whole line stream, the stored
+    breaks and the furniture to work out. It reports the number whenever it changes, and the
+    documents list reads it back — because an ITEM count answers a different question, and for
+    an aligned text (one item, many pages) it answers it wrongly.
+    """
+    conn = get_db()
+    try:
+        _require_doc(conn, document_id)
+        # No `updated_at` bump: this is an observation of what the document already is, not an
+        # edit of it, and it must not reorder a list sorted by when things were last touched.
+        conn.execute("UPDATE documents SET page_count = ? WHERE id = ?",
+                     (max(0, payload.page_count), document_id))
         conn.commit()
         return {"ok": True}
     finally:
@@ -456,12 +612,32 @@ def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
         keys = row.keys()
         return DocumentLayoutOut(
             config=_effective_config(conn, row),
-            rows=[DocumentLayoutRow(**dict(r)) for r in rows],
+            rows=rows,
             pagination_sig=row["pagination_sig"] if "pagination_sig" in keys else None,
             pagination_fp=row["pagination_fp"] if "pagination_fp" in keys else None,
             pagination_frozen=bool(row["pagination_frozen"]) if "pagination_frozen" in keys else False)
     finally:
         conn.close()
+
+
+def _item_belongs(conn, document_id: int, item_id: int) -> bool:
+    """Can this document store a layout row against this item?
+
+    Its own items, of course — and the items of every TEXT PAGE it reuses, because that is how
+    a booklet tunes an inherited alignment: it writes its own row on the text page's item id,
+    which then shadows the inherited one. Without this the override could only ever be
+    inherited, never placed.
+    """
+    if conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                    (item_id, document_id)).fetchone():
+        return True
+    refs = _referenced_textpages(conn, document_id)
+    if not refs:
+        return False
+    marks = ",".join("?" * len(refs))
+    return conn.execute(
+        f"SELECT 1 FROM document_items WHERE id = ? AND document_id IN ({marks})",
+        (item_id, *refs)).fetchone() is not None
 
 
 @router.put("/documents/{document_id}/layout", response_model=DocumentLayoutRow)
@@ -470,8 +646,7 @@ def upsert_layout_row(document_id: int, payload: DocumentLayoutIn):
     conn = get_db()
     try:
         _require_doc(conn, document_id)
-        if not conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
-                            (payload.item_id, document_id)).fetchone():
+        if not _item_belongs(conn, document_id, payload.item_id):
             raise HTTPException(404, "Item not in this document")
         # '' = shared across editions (SQLite UNIQUE treats NULLs as distinct, which
         # would defeat the upsert — normalise the shared case to an empty string).

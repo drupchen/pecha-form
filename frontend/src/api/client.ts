@@ -125,6 +125,37 @@ export async function upsertTranslation(body: {
   return res.json();
 }
 
+/** One past wording of a chunk, with whoever wrote it. Append-only on the server:
+ *  `translations` holds only the current text, so this is the record of who chose
+ *  a given expression. */
+export interface TranslationRevision {
+  id: number;
+  lang: string;
+  scope: 'canonical' | 'override';
+  /** The booklet, for scope='override'. */
+  text_id: number | null;
+  body: string;
+  status: string | null;
+  author_id: number | null;
+  /** Display name (or email) at read time; null when the account is gone. */
+  author_name: string | null;
+  source: 'manual' | 'suggestion' | 'import';
+  note: string | null;
+  created_at: string;
+}
+
+/** Newest first. Omit `textId` to interleave the shared translation's history with
+ *  this booklet's overrides — usually what you want when tracing a phrasing. */
+export async function getTranslationRevisions(
+  chunkId: number, lang: string, textId?: number,
+): Promise<TranslationRevision[]> {
+  const q = new URLSearchParams({ lang });
+  if (textId != null) q.set('text_id', String(textId));
+  const res = await apiFetch(`${API_BASE}/translations/${chunkId}/revisions?${q}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 // ── Phase T2: booklet overrides, watermarks, suggestions, scramble layouts ──
 
 export interface TranslationOverride {
@@ -307,7 +338,7 @@ export const deletePhonetic = (body: {
 // --------------------------------------------------------------------------
 
 export type DocumentItemKind =
-  'cover' | 'blank' | 'toc' | 'text' | 'image_page' | 'backcover';
+  'cover' | 'blank' | 'toc' | 'text' | 'image_page' | 'backcover' | 'textpage';
 
 export interface DocumentItem {
   id: number;
@@ -316,6 +347,12 @@ export interface DocumentItem {
   kind: DocumentItemKind;
   text_id: number | null;
   text_title: string | null;
+  /** kind='textpage': the aligned TEXT PAGE this booklet page reuses. `text_id` above is
+   *  resolved from it, and `layout_item_id` is the id its alignment is keyed by — the compile
+   *  anchors on that, so the work done once on the text page applies here too. */
+  ref_document_id?: number | null;
+  ref_title?: string | null;
+  layout_item_id?: number | null;
   caption: string | null;
   body: string | null;
   /** image-carrying furniture (cover/copyright/image_page/backcover): whether an image
@@ -479,6 +516,11 @@ export const putStyleSample = (content: string) =>
 export interface DocumentSummary {
   id: number;
   title: string;
+  /** 'textpage' = an aligned text, reusable in any booklet; 'booklet' = what gets printed. */
+  kind: 'textpage' | 'booklet';
+  /** Physical pages, as laid out. null until the bench has opened it once — the item count
+   *  answers a different question (one aligned text is one item and many pages). */
+  page_count?: number | null;
   created_at: string;
   updated_at: string;
   item_count: number;
@@ -493,9 +535,18 @@ export interface TocSection { title: string | null; level: number | null; childr
 export interface TocEntry { item_id: number; text_id: number; text_title: string; sections: TocSection[] }
 
 export const getDocuments = () => jfetch<DocumentSummary[]>(`${API_BASE}/documents`);
-export const createDocument = (title: string) =>
+export const createDocument = (title: string, kind: 'textpage' | 'booklet' = 'booklet') =>
   jfetch<DocumentSummary>(`${API_BASE}/documents`,
-    { method: 'POST', headers: J, body: JSON.stringify({ title }) });
+    { method: 'POST', headers: J, body: JSON.stringify({ title, kind }) });
+/** Move a booklet's own text page out into a reusable TEXT PAGE, alignment and all — the item
+ *  keeps its id, so every layout row it owns survives untouched. */
+/** Tell the server how many pages this document lays out to — only the bench can know. */
+export const putPageCount = (id: number, pageCount: number) =>
+  jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}/page-count`,
+    { method: 'PUT', headers: J, body: JSON.stringify({ page_count: pageCount }) });
+export const extractTextPage = (itemId: number) =>
+  jfetch<DocumentItem>(`${API_BASE}/document-items/${itemId}/extract-text-page`,
+    { method: 'POST' });
 export const getDocument = (id: number) => jfetch<DocumentDetail>(`${API_BASE}/documents/${id}`);
 export const renameDocument = (id: number, title: string) =>
   jfetch<DocumentSummary>(`${API_BASE}/documents/${id}`,
@@ -504,7 +555,8 @@ export const deleteDocument = (id: number) =>
   jfetch<{ ok: boolean }>(`${API_BASE}/documents/${id}`, { method: 'DELETE' });
 
 export const addDocumentItem = (id: number, body: {
-  kind: DocumentItemKind; text_id?: number | null; caption?: string | null; body?: string | null;
+  kind: DocumentItemKind; text_id?: number | null; ref_document_id?: number | null;
+  caption?: string | null; body?: string | null;
 }) =>
   jfetch<DocumentItem>(`${API_BASE}/documents/${id}/items`,
     { method: 'POST', headers: J, body: JSON.stringify(body) });

@@ -5,7 +5,7 @@ import {
   ArrowUp, ArrowDown, Indent, Outdent, Plus, EyeOff, Eye, Unlink,
 } from 'lucide-react';
 import type { NestedTreeNode } from '../../store/useTreeNodeStore';
-import { useTreeNodeStore } from '../../store/useTreeNodeStore';
+import { useTreeNodeStore, levelIsMixed, ownRunPosition } from '../../store/useTreeNodeStore';
 import { useTextStore } from '../../store/useTextStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
 import { useLinkStore, scrollToLinkPartner } from '../../store/useLinkStore';
@@ -130,12 +130,21 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
   // Label = parent's own component + this node's own component (max two parts);
   // roots show just `N.`.
   const ownComponent = depth % 2 === 0 ? String(idx + 1) : toLetters(idx);
-  const canMoveUp = idx > 0;
-  const canMoveDown = idx >= 0 && idx < parentChildren.length - 1;
-  const canIndent = idx > 0; // a previous sibling exists to nest under
-  const canOutdent = parentNode !== null; // not at the root
 
   const docId = currentText!.id;
+
+  // `position` orders siblings within ONE owner. On a level that interleaves inherited
+  // sections, an own node's place among them comes from its anchor (the server splices
+  // it where its segment sits), so up/down is not a thing it can do — offering arrows
+  // that then 400 was the bug. Reordering stays available among this text's OWN nodes.
+  const ownRun = parentChildren.filter(c => (c.owner_text_id ?? c.text_id) === docId);
+  const ownIdx = ownRun.findIndex(c => c.id === node.id);
+  const levelMixed = ownRun.length !== parentChildren.length;
+  const orderIsDerived = levelMixed && (node.segment_start != null || node.passage_id != null);
+  const canMoveUp = !orderIsDerived && ownIdx > 0;
+  const canMoveDown = !orderIsDerived && ownIdx >= 0 && ownIdx < ownRun.length - 1;
+  const canIndent = idx > 0; // a previous sibling exists to nest under
+  const canOutdent = parentNode !== null; // not at the root
 
   const handleRenameSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -153,20 +162,26 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
     if (activeNodeId === node.id) setActiveNode(null);
   };
 
+  // Target the neighbour's OWN-run index rather than doing arithmetic on `position`:
+  // the two coincide on a single-owner level and diverge once inherited nodes are
+  // interleaved, and only the former is a position the server will accept.
   const handleMoveUp = async () => {
     if (!canMoveUp) return;
-    await moveNode(node.id, node.parent_id, node.position - 1);
+    await moveNode(node.id, node.parent_id, ownRun[ownIdx - 1].position);
   };
   const handleMoveDown = async () => {
     if (!canMoveDown) return;
-    await moveNode(node.id, node.parent_id, node.position + 1);
+    await moveNode(node.id, node.parent_id, ownRun[ownIdx + 1].position);
   };
 
   const handleIndent = async () => {
     if (!canIndent) return;
     const prev = parentChildren[idx - 1];
-    // Move to end of prev sibling's children.
-    await moveNode(node.id, prev.id, prev.children.length);
+    // Move to the end of the previous sibling's OWN children (a shared parent's other
+    // children belong to the text that owns them and are not ours to renumber).
+    const prevOwnKids = prev.children.filter(
+      c => (c.owner_text_id ?? c.text_id) === docId).length;
+    await moveNode(node.id, prev.id, prevOwnKids);
   };
 
   const handleOutdent = async () => {
@@ -561,7 +576,9 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
             onClick={(e) => { e.stopPropagation(); handleMoveUp(); }}
             disabled={!canMoveUp}
             className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title="Move up"
+            title={orderIsDerived
+              ? 'This section follows the segment it is linked to — link it elsewhere to move it'
+              : 'Move up'}
           >
             <ArrowUp size={13} />
           </button>
@@ -569,7 +586,9 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
             onClick={(e) => { e.stopPropagation(); handleMoveDown(); }}
             disabled={!canMoveDown}
             className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title="Move down"
+            title={orderIsDerived
+              ? 'This section follows the segment it is linked to — link it elsewhere to move it'
+              : 'Move down'}
           >
             <ArrowDown size={13} />
           </button>
@@ -673,7 +692,11 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
       {/* Children */}
       {hasChildren && isOpen && (
         <div style={{ paddingLeft: 16 }}>
-          <SiblingInsertSlot parentId={node.id} position={0} />
+          <SiblingInsertSlot
+            parentId={node.id}
+            position={ownRunPosition(node.children, 0, docId)}
+            mixed={levelIsMixed(node.children, docId)}
+          />
           {node.children.map((child, i) => (
             <React.Fragment key={child.id}>
               <TreeNodeCard
@@ -684,7 +707,11 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
                 depth={depth + 1}
                 parentComponent={ownComponent}
               />
-              <SiblingInsertSlot parentId={node.id} position={i + 1} />
+              <SiblingInsertSlot
+                parentId={node.id}
+                position={ownRunPosition(node.children, i + 1, docId)}
+                mixed={levelIsMixed(node.children, docId)}
+              />
             </React.Fragment>
           ))}
         </div>

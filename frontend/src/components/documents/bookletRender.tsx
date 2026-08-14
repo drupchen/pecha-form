@@ -944,6 +944,22 @@ export const Recto: React.FC<{
   // small line — never appended to the host's translation.
   return (
     <div className={lineCls}>
+      {/* Glosses the translator moved here from another row. They print ABOVE this row's own
+          text and keep the face they had at their origin — an instruction stays an instruction
+          — because only the TEXT travelled: the Tibetan, and the phonetics that transliterate
+          it, never leave their own row. */}
+      {l.borrowed?.map((b) => (
+        // Wrapped in the DONOR's role classes so the existing cascade dresses it: an
+        // instruction gloss matches `.bk-role-small .bk-translation` here exactly as it did on
+        // its own row. No new rule, and the studio's per-kind cards keep reaching it.
+        <div key={b.fromKey}
+             className={`bk-borrowed bk-role-${b.role}`
+                        + (b.role === 'small' && b.smallKind ? ` bk-smallkind-${b.smallKind}` : '')}>
+          <WidthLine className="bk-translation" {...widthProps(adj, 'translation', false)}>
+            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(b.html) }} />
+          </WidthLine>
+        </div>
+      ))}
       {isSection ? (
         l.translation != null ? (
           <WidthLine className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}
@@ -1573,6 +1589,9 @@ function splitDocLine(
   const tail: DocLine = {
     ...l, key: `${l.key}#t`, tokens: l.tokens.slice(k), startSylId: l.tokens[k].id,
     phonetics: tPhon, translation: tTrans, emptyAfter: l.emptyAfter, splitAnchor: anchor,
+    // A gloss moved onto this row prints above the row's text, so it belongs to the HEAD —
+    // the spread above would otherwise hand it to both halves and print it twice.
+    borrowed: undefined,
   };
   return [head, tail];
 }
@@ -1607,6 +1626,28 @@ function navFromHeadings(
 /** Pure composition of a document's page structure from its items, stored layout rows,
  *  compiled line stream and lifted per-text titles. Deterministic → the bench and the
  *  print/PDF path lay out identically. */
+/** The booklet's navigation, as a reader's contents list: each aligned text a top-level
+ *  entry, its sapche sections nested underneath, every line ending in its folio. Shared by
+ *  the bench's sidebar and anything else that shows the outline. */
+export const NavOutline: React.FC<{ nodes: NavNode[]; depth?: number }> = ({ nodes, depth = 0 }) => (
+  <div>
+    {nodes.map((n, i) => (
+      <div key={i}>
+        <div style={{ paddingLeft: depth * 12 }} className="flex items-baseline gap-1 py-0.5">
+          <span className={depth === 0 ? 'font-medium text-lapis' : 'text-ink-soft'}>
+            {n.title || '—'}
+          </span>
+          <span className="flex-1 border-b border-dotted self-end mb-1"
+                style={{ borderColor: 'var(--cline)' }} />
+          <span className="text-ink-soft text-xs shrink-0">{n.folio}</span>
+        </div>
+        {n.children.length > 0 && <NavOutline nodes={n.children} depth={depth + 1} />}
+      </div>
+    ))}
+  </div>
+);
+
+
 export function deriveBooklet(
   items: DocumentItem[],
   rows: DocumentLayoutRow[],
@@ -1722,11 +1763,19 @@ export function deriveBooklet(
     starts.forEach((s, i) => spreads.push({ start: s, end: i + 1 < starts.length ? starts[i + 1] : lines.length }));
   }
 
-  const textItems = items.filter((it) => it.kind === 'text' && it.text_id != null);
+  // A page that renders a text: the booklet's own ('text'), or an aligned TEXT PAGE it
+  // reuses ('textpage', resolved to that page's text by the API). Keying on `text_id`
+  // rather than on the kind is what makes the two interchangeable here.
+  const textItems = items.filter((it) => it.text_id != null
+    && (it.kind === 'text' || it.kind === 'textpage'));
   const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
   const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
+  // The id a text page's LINES carry: its own item, or — when the booklet reuses an aligned
+  // text — that text page's item, which is what its alignment is keyed by. Every join between
+  // a line and its item goes through this, so the two never drift into separate id spaces.
+  const layoutIdOf = (it: DocumentItem) => it.layout_item_id ?? it.id;
   const firstTextItemId = firstTextPos !== Infinity
-    ? textItems.find((i) => i.position === firstTextPos)!.id : null;
+    ? layoutIdOf(textItems.find((i) => i.position === firstTextPos)!) : null;
   const frontMatter = items
     .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
     .sort((a, b) => a.position - b.position);
@@ -1742,7 +1791,7 @@ export function deriveBooklet(
     const startItemId = lines[s.start]?.itemId;
     const startsText = startItemId != null && itemStartLine.get(startItemId) === s.start;
     if (startsText && startItemId !== firstTextItemId) {
-      const item = textItems.find((i) => i.id === startItemId);
+      const item = textItems.find((i) => layoutIdOf(i) === startItemId);
       const tl = titleByItem.get(startItemId) ?? [];
       if (item && tl.length) bodyUnits.push({ kind: 'title', item, titleLines: tl });
     }
@@ -1769,13 +1818,13 @@ export function deriveBooklet(
     if (custom && custom.trim()) {
       title = inlineHtml(custom);
     } else {
-      const tl = titleByItem.get(it.id) ?? [];
+      const tl = titleByItem.get(layoutIdOf(it)) ?? [];
       const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
       title = main ? inlineHtml(main) : (it.text_title || '');
     }
     // The text's start folio: its internal title page (2nd+ texts) or its first body page.
     const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
-    const startLine = itemStartLine.get(it.id);
+    const startLine = itemStartLine.get(layoutIdOf(it));
     const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
     return { title, page, level: 0, itemId: it.id };
   });
@@ -1808,21 +1857,24 @@ export function deriveBooklet(
     let titleSrc: string;
     if (custom && custom.trim()) titleSrc = custom;
     else {
-      const tl = titleByItem.get(it.id) ?? [];
+      const tl = titleByItem.get(layoutIdOf(it)) ?? [];
       titleSrc = (tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation) || it.text_title || '';
     }
     const titleUnitIdx = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
-    const startLine = itemStartLine.get(it.id);
+    const startLine = itemStartLine.get(layoutIdOf(it));
     const pageIndex = titleUnitIdx >= 0 ? unitBase[titleUnitIdx]
       : (startLine != null ? rectoPageOfLine(startLine) : F);
     const folio = startLine != null ? folioOfLine(startLine) : 1;
     const resolve = (syl: string | null) => {
       if (!syl) return null;
-      const i = lineOfSyl.get(`${it.id}:${syl}`);
+      // `lineOfSyl` is keyed by the id the LINES carry — the aligned text page's item when
+      // this page reuses one. Joining on `it.id` here left a reused text's outline with no
+      // resolvable page, so every one of its sections pointed nowhere.
+      const i = lineOfSyl.get(`${layoutIdOf(it)}:${syl}`);
       if (i == null) return null;
       return { pageIndex: rectoPageOfLine(i), folio: folioOfLine(i) };
     };
-    const children = navFromHeadings(headingsByItem?.get(it.id) ?? [], resolve, { pageIndex, folio });
+    const children = navFromHeadings(headingsByItem?.get(layoutIdOf(it)) ?? [], resolve, { pageIndex, folio });
     return { title: plainTextOf(titleSrc), pageIndex, folio, children };
   });
 
@@ -1847,7 +1899,11 @@ export function furnitureBodyOf(
 ): string | null {
   // `block ?? ''` tolerates a row that predates the column (an older API, a cached
   // response): it meant the free-form body, which is exactly what '' means now.
-  return furniture.find((f) => f.item_id === item.id && f.lang === lang
+  // A page that REUSES an aligned text answers to two ids: its own, and the text page's item
+  // (`layout_item_id`) — which is what rows written before the text was extracted carry. Both
+  // resolve, so extracting a text page never drops its table-of-contents title.
+  const ids = [item.id, item.layout_item_id].filter((x): x is number => x != null);
+  return furniture.find((f) => ids.includes(f.item_id) && f.lang === lang
                             && (f.block ?? '') === block)?.body ?? null;
 }
 

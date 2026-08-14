@@ -20,11 +20,12 @@ interface DocumentState {
 
   fetchList: () => Promise<void>;
   open: (id: number) => Promise<void>;
-  create: (title: string) => Promise<number | null>;
+  create: (title: string, kind?: 'textpage' | 'booklet') => Promise<number | null>;
   rename: (id: number, title: string) => Promise<void>;
   remove: (id: number) => Promise<void>;
 
-  addItem: (kind: DocumentItemKind, textId?: number | null) => Promise<void>;
+  addItem: (kind: DocumentItemKind, textId?: number | null,
+            refDocumentId?: number | null) => Promise<void>;
   removeItem: (itemId: number) => Promise<void>;
   reorder: (orderedIds: number[]) => Promise<void>;
   moveItem: (itemId: number, dir: -1 | 1) => Promise<void>;
@@ -49,9 +50,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     } catch (e: any) { set({ error: e.message }); }
   },
 
-  create: async (title) => {
+  create: async (title, kind = 'booklet') => {
     try {
-      const doc = await createDocument(title);
+      const doc = await createDocument(title, kind);
       await get().fetchList();
       await get().open(doc.id);
       return doc.id;
@@ -74,11 +75,15 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     } catch (e: any) { set({ error: e.message }); }
   },
 
-  addItem: async (kind, textId) => {
+  addItem: async (kind, textId, refDocumentId) => {
     const id = get().current?.id;
     if (id == null) return;
     try {
-      await addDocumentItem(id, { kind, text_id: kind === 'text' ? textId : undefined });
+      await addDocumentItem(id, {
+        kind,
+        text_id: kind === 'text' ? textId : undefined,
+        ref_document_id: kind === 'textpage' ? refDocumentId : undefined,
+      });
       await get().open(id);
       await get().fetchList();
     } catch (e: any) { set({ error: e.message }); }

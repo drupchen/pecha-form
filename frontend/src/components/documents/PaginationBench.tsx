@@ -1,7 +1,8 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, RotateCw, Scissors, Minus, FileDown, Type, Columns3, CornerDownRight, FileText, Lock, Unlock, Ruler } from 'lucide-react';
 import {
   API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
+  putPageCount,
   getOrgSeal, putPaginationStamp, setPaginationFrozen, putLayoutConfig, setItemImageSize, getVersions,
   PAGE_GEOMETRY_FIELDS, PAGE_PRESETS,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
@@ -10,6 +11,7 @@ import {
 import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
   MM_PX, rootVars, Verso, Recto, FurniturePage, FurnitureContent, InternalTitlePage,
+  NavOutline,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   PageGround, shiftHostOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
@@ -41,6 +43,8 @@ interface EditionStream { lang: string; lines: DocLine[] }
  *  cache clears on treeVersion/trVersion/documentId, never on the edition on screen). */
 interface CompiledEdition {
   lines: DocLine[];
+  /** The same lines in this edition's translation order (the move layer). */
+  rectoLines: DocLine[];
   titleByItem: Map<number, DocLine[]>;
   headingsByItem: Map<number, OutlineHeading[]>;
 }
@@ -50,6 +54,9 @@ interface CompiledEdition {
  *  silent omission. `lines: null` with neither flag set = still compiling. */
 interface OverviewEdition {
   lang: string; lines: DocLine[] | null; outOfStep: boolean; error: boolean;
+  /** The same lines in this edition's translation order — what the recto column
+   *  renders. `lines` stays the Tibetan's order for the verso and the measurements. */
+  rectoLines: DocLine[] | null;
   /** This edition's TOC rows and cover title lines — furniture (the TOC page, the cover's
    *  translated title) renders per edition in the overview, not just the on-screen one. */
   tocRows: TocRow[];
@@ -83,8 +90,14 @@ interface OverviewEdition {
  *    before them, so the line streams shorten wherever the user has tagged instructions.
  * 9: the merged small run flows inline (the forced break at the join was stripped), so a
  *    merged line takes fewer wrapped rows — a height change the signature can't see.
+ * 10: the recto prints the translate bench's MOVE layer — a relocated fragment's TEXT is
+ *    read at its destination (the rows themselves never move, and the Tibetan is untouched),
+ *    so recto heights change wherever a move lands.
+ * 11: a move now LIFTS one gloss (its donor row keeps its place and goes empty; the
+ *    destination gains a block above its own text) instead of shifting every payload in
+ *    between — heights change at both ends, and everywhere in between they change back.
  */
-const RENDER_EPOCH = 9;
+const RENDER_EPOCH = 11;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
@@ -230,14 +243,25 @@ function parseSigStamp(raw: string | null): Record<string, string> | null {
  * and switch editions to check the fit. Empty-line spacing, wrap-extend and mid-line
  * hairline splits build on this next.
  */
-export const PaginationBench: React.FC<{ documentId: number; onClose: () => void }> = ({
-  documentId, onClose,
-}) => {
+export const PaginationBench: React.FC<{
+  documentId: number;
+  onClose: () => void;
+  /** Told whenever OVERVIEW turns on or off. The host hides its own chrome for it: every
+   *  edition's column has to fit across the screen, and 256px of rail is a column's worth. */
+  onOverviewChange?: (on: boolean) => void;
+  /** Told when this document's page count is recorded, so a list showing it can catch up
+   *  without waiting for the bench to be closed. */
+  onPageCount?: () => void;
+}> = ({ documentId, onClose, onOverviewChange, onPageCount }) => {
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [config, setConfig] = useState<LayoutConfig | null>(null);
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
   const [lang, setLang] = useState<string>('en');
   const [lines, setLines] = useState<DocLine[]>([]);
+  // The same lines in the TRANSLATION's reading order (the bench's move layer). The
+  // Tibetan never follows a move, so the recto columns render this and `lines` stays the
+  // scripture's order — and the page structure's, since the breaks are measured on it.
+  const [rectoSrc, setRectoSrc] = useState<DocLine[]>([]);
   // Which edition `lines` was compiled for. Switching editions flips `lang` at once but the
   // recompile is async, so for a moment the stream on hand is the PREVIOUS edition's —
   // long enough for the drift counter to compare `en`'s stream against `de`'s signature and
@@ -260,7 +284,16 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // Overview: every edition side by side — the shared Tibetan verso plus one recto per
   // edition, scaled to fit. `lang` is untouched by it: the detailed view comes back exactly
   // where it was.
-  const [overview, setOverview] = useState(false);
+  const [overview, setOverviewState] = useState(false);
+  const setOverview = useCallback((next: boolean | ((v: boolean) => boolean)) => {
+    setOverviewState((v) => {
+      const on = typeof next === 'function' ? next(v) : next;
+      if (on !== v) onOverviewChange?.(on);
+      return on;
+    });
+  }, [onOverviewChange]);
+  // Leaving the bench leaves overview: the host must not be left with its rail hidden.
+  useEffect(() => () => onOverviewChange?.(false), [onOverviewChange]);
   // Every edition's compile, for the overview columns; null until the overview first asks.
   const [allCompiles, setAllCompiles] =
     useState<Map<string, CompiledEdition | 'error'> | null>(null);
@@ -366,6 +399,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       const compiled = await compileEdition(d.items, edition);
       if (!alive) return;
       setLines(compiled.lines);
+      setRectoSrc(compiled.rectoLines);
       setLinesLang(edition);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -381,6 +415,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       const compiled = await compileEdition(doc.items, lang);
       if (!alive) return;
       setLines(compiled.lines);
+      setRectoSrc(compiled.rectoLines);
       setLinesLang(lang);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -418,6 +453,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       setLang(edition);
       const compiled = await compileEdition(d.items, edition);
       setLines(compiled.lines);
+      setRectoSrc(compiled.rectoLines);
       setLinesLang(edition);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -481,12 +517,47 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   // computed by the SHARED `deriveBooklet` so the bench and the print/PDF page lay out
   // identically. The bench layers interactive break/balancing controls on top.
   const { lines: renderLines, breakSet, hairlineSet, forcedStarts, manualBreaks,
-          spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines } = useMemo(
+          spreads, bodyUnits, frontMatter, backMatter, tocRows, mainTitleLines,
+          navOutline } = useMemo(
     () => deriveBooklet(doc?.items ?? [], rows, lines, titleByItem, furniture, lang, splitMode,
                         headingsByItem),
     [doc, rows, lines, titleByItem, headingsByItem, furniture, lang, splitMode],
   );
 
+  // The recto's own stream, composed through the SAME `deriveBooklet` so furniture, splits
+  // and TOC match line for line. It differs from `renderLines` only in the order of the body
+  // lines a translator moved — never in their number, so page k holds indices [i, j) in both
+  // and the shared break set governs the two sides alike. Anything else means a move produced
+  // a stream the page structure cannot describe: fall back to the Tibetan order rather than
+  // print a mismatched recto.
+  const rectoRenderLines = useMemo(() => {
+    if (rectoSrc === lines || !rectoSrc.length) return renderLines;
+    const d = deriveBooklet(doc?.items ?? [], rows, rectoSrc, titleByItem, furniture, lang,
+                            splitMode, headingsByItem);
+    return d.lines.length === renderLines.length ? d.lines : renderLines;
+  }, [doc, rows, rectoSrc, lines, titleByItem, headingsByItem, furniture, lang, splitMode,
+      renderLines]);
+
+  // How many physical pages this lays out to, counted exactly as the print page renders them:
+  // one sheet per front/back-matter item, two per spread, one per internal title page. Only
+  // the bench can work this out — it needs the whole line stream and the stored breaks — so it
+  // tells the server, and the documents list reads it back. An ITEM count cannot stand in: an
+  // aligned text is a single item and a great many pages.
+  const pageCount = frontMatter.length + backMatter.length
+    + bodyUnits.reduce((n, u) => n + (u.kind === 'spread' ? 2 : 1), 0);
+  useEffect(() => {
+    if (!doc || loading || !bodyUnits.length) return;      // nothing laid out yet: say nothing
+    if (doc.page_count === pageCount) return;
+    void putPageCount(doc.id, pageCount)
+      .then(() => {
+        setDoc((d) => (d && d.id === doc.id ? { ...d, page_count: pageCount } : d));
+        onPageCount?.();
+      })
+      .catch(() => { /* a count is a nicety; never interrupt the bench for it */ });
+  }, [doc, loading, bodyUnits.length, pageCount, onPageCount]);
+
+  /** An aligned text: one text and its alignment, with no composition page behind it. */
+  const isTextPage = (doc?.kind ?? 'booklet') === 'textpage';
   const hasStoredBreaks = rows.some((r) => r.kind === 'page_break');
 
   // The overview's derived streams — pure, so a break edit re-derives without recompiling.
@@ -498,19 +569,27 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
     const empty = { tocRows: [] as TocRow[], mainTitleLines: [] as DocLine[] };
     if (!overview || !doc || !allCompiles) {
       return overview && doc
-        ? doc.languages.map((lg) => ({ lang: lg, lines: null, outOfStep: false, error: false, ...empty }))
+        ? doc.languages.map((lg) => ({ lang: lg, lines: null, rectoLines: null, outOfStep: false, error: false, ...empty }))
         : [];
     }
     return doc.languages.map((lg) => {
       const c = allCompiles.get(lg);
-      if (!c) return { lang: lg, lines: null, outOfStep: false, error: false, ...empty };  // compiling
-      if (c === 'error') return { lang: lg, lines: null, outOfStep: false, error: true, ...empty };
+      if (!c) return { lang: lg, lines: null, rectoLines: null, outOfStep: false, error: false, ...empty };  // compiling
+      if (c === 'error') return { lang: lg, lines: null, rectoLines: null, outOfStep: false, error: true, ...empty };
       const d = deriveBooklet(doc.items, rows, c.lines, c.titleByItem, furniture, lg,
                               splitMode, c.headingsByItem);
       const outOfStep = d.lines.length !== renderLines.length;
+      // This edition's recto order: its own moves, which resolve per language. Same length
+      // by construction (a move permutes the body lines); anything else falls back to the
+      // Tibetan order rather than desync the column from the page structure.
+      const r = c.rectoLines === c.lines ? d
+        : deriveBooklet(doc.items, rows, c.rectoLines, c.titleByItem, furniture, lg,
+                        splitMode, c.headingsByItem);
+      const rectoLines = r.lines.length === d.lines.length ? r.lines : d.lines;
       // The TOC and cover title are this edition's own. Furniture bodies are independent of
       // the stream, so an out-of-step edition still shows its furniture.
-      return { lang: lg, lines: outOfStep ? null : d.lines, outOfStep, error: false,
+      return { lang: lg, lines: outOfStep ? null : d.lines,
+               rectoLines: outOfStep ? null : rectoLines, outOfStep, error: false,
                tocRows: d.tocRows, mainTitleLines: d.mainTitleLines };
     });
   }, [overview, doc, allCompiles, rows, furniture, splitMode, renderLines]);
@@ -2082,15 +2161,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
   ) ?? null;
 
   const spreadCols: SpreadCol[] = overview
+    // The verso column takes the Tibetan's order, every recto column its own translation
+    // order — the same lines, and the same count, so one break set still governs the spread.
     ? [{ side: 'verso' as PageSide, colLang: '', lines: renderLines },
        ...overviewEditions.map((e) => ({
-         side: 'recto' as PageSide, colLang: e.lang, lines: e.lines,
+         side: 'recto' as PageSide, colLang: e.lang, lines: e.rectoLines,
          note: e.error ? 'compile failed'
              : e.outOfStep ? `out of step with ${lang} — re-flow to realign`
              : 'compiling…',
        }))]
     : [{ side: 'verso' as PageSide, colLang: '', lines: renderLines },
-       { side: 'recto' as PageSide, colLang: lang, lines: renderLines }];
+       { side: 'recto' as PageSide, colLang: lang, lines: rectoRenderLines }];
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden booklet-root bk-guides"
@@ -2099,11 +2180,17 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
       {styleCss && <style dangerouslySetInnerHTML={{ __html: styleCss }} />}
       <div className="px-5 py-2.5 shrink-0 flex items-center gap-4 bg-cream-hi text-xs"
            style={{ borderBottom: '1px solid var(--cline)' }}>
-        <button type="button" onClick={onClose}
-                className="px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream"
-                style={{ border: '1px solid var(--cline)' }}>
-          <X size={13} /> back
-        </button>
+        {/* An ALIGNED TEXT has nowhere to go back TO — this bench is the whole of it, and the
+            rail beside it already switches documents. The one exception is OVERVIEW, which
+            hides the rail: there `back` means leave the full-screen view. A booklet keeps its
+            back throughout: it returns to the composition page. */}
+        {(!isTextPage || overview) && (
+          <button type="button" onClick={() => (isTextPage ? setOverview(false) : onClose())}
+                  className="px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream"
+                  style={{ border: '1px solid var(--cline)' }}>
+            <X size={13} /> back
+          </button>
+        )}
         <h2 className="font-display text-lg text-lapis truncate max-w-xs">{doc.title}</h2>
         <div className="flex items-center gap-1">
           <span className="text-ink-soft mr-1">edition</span>
@@ -2233,7 +2320,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           <Scissors size={12} /> split
         </button>
         {doc.languages.length > 1 && (
-          <button type="button" onClick={() => setOverview(v => !v)}
+          <button type="button" onClick={() => setOverview((v: boolean) => !v)}
                   className={`px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream ${overview ? 'text-lapis' : 'text-ink-soft'}`}
                   style={{ border: '1px solid var(--cline)' }}
                   title="Overview: every edition side by side — the shared Tibetan page and one translation page per edition, all live. Every control works from any column; a column's label opens that edition in the detailed view.">
@@ -2383,6 +2470,21 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           </div>
         )}
       </div>
+
+      {/* ── Contents, beside the pages it points at ──
+          The outline belongs to the TEXT, not to the composition: each aligned text is a
+          top-level entry with its own sapche sections nested under it, so a booklet holding
+          several reads as several. It is the same `navOutline` the PDF's bookmarks are built
+          from, so what is listed here is what a reader will navigate.
+          Not in OVERVIEW: that view puts every edition side by side across the screen, and a
+          sidebar would cost it a column. */}
+      {!overview && navOutline.length > 0 && (
+        <div className="w-72 shrink-0 overflow-auto px-4 py-3 bg-cream-hi"
+             style={{ borderLeft: '1px solid var(--cline)' }}>
+          <div className="text-[11px] uppercase tracking-wide text-bronze mb-2">contents</div>
+          <div className="text-sm"><NavOutline nodes={navOutline} /></div>
+        </div>
+      )}
       </div>
 
       {/* Measurement container — mounted only during a seed/re-flow pass.
@@ -2441,6 +2543,7 @@ export const PaginationBench: React.FC<{ documentId: number; onClose: () => void
           </div>
         </div>
       )}
+
     </div>
   );
 };

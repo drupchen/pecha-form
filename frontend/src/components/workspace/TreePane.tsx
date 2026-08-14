@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Focus, ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
-import { useTreeNodeStore, buildNestedTree, type NestedTreeNode } from '../../store/useTreeNodeStore';
+import {
+  useTreeNodeStore, buildNestedTree, levelIsMixed, ownRunPosition,
+  type NestedTreeNode,
+} from '../../store/useTreeNodeStore';
 import { useUIStore } from '../../store/useUIStore';
 import { TreeNodeCard } from './TreeNodeCard';
 import { TreeConsultContext } from './treeConsult';
@@ -134,7 +137,11 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
               </p>
             ) : (
               <>
-                <SiblingInsertSlot parentId={null} position={0} />
+                <SiblingInsertSlot
+                  parentId={null}
+                  position={ownRunPosition(roots, 0, currentText.id)}
+                  mixed={levelIsMixed(roots, currentText.id)}
+                />
                 {roots.map((root, i) => (
                   <React.Fragment key={root.id}>
                     <TreeNodeCard
@@ -145,7 +152,11 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
                       depth={0}
                       parentComponent={null}
                     />
-                    <SiblingInsertSlot parentId={null} position={i + 1} />
+                    <SiblingInsertSlot
+                      parentId={null}
+                      position={ownRunPosition(roots, i + 1, currentText.id)}
+                      mixed={levelIsMixed(roots, currentText.id)}
+                    />
                   </React.Fragment>
                 ))}
               </>
