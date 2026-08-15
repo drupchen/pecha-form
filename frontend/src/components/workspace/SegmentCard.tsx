@@ -13,6 +13,7 @@ import { usePassageStore } from '../../store/usePassageStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
 import { partitionAnchorPassages } from './passageGroups';
 import type { Passage } from '../../api/client';
+import { deleteDerivationOp } from '../../api/client';
 import { useLinkStore, scrollToLinkPartner } from '../../store/useLinkStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
@@ -642,6 +643,36 @@ export const SegmentCard = React.memo(function SegmentCard({ segment, nextSegmen
       const nextTok = tokens.slice(ti + 1).find(x => x.text !== '');
       const brk = breakFor(t.id, t.text, t.end_offset, anns, verseSuppress.has(t.id),
                            nextTok != null && sapcheStarts.has(nextTok.id));
+      // The START of a transcluded run gets a remove control. A transclusion brings in a
+      // whole text at once, and the only way to undo one used to be a hover-revealed trash in
+      // a sidebar section nobody had open — so the affordance goes where the run is.
+      if (!consultMode && t.source === 'transclusion' && t.op_id != null
+          && (ti === 0 || tokens[ti - 1].source !== 'transclusion'
+              || tokens[ti - 1].op_id !== t.op_id)) {
+        const opId = t.op_id;
+        const srcTitle = texts.find(x => x.id === t.src_text_id)?.title ?? '';
+        out.push(
+          <span
+            key={`tx-${t.idx}`}
+            role="button"
+            tabIndex={0}
+            title={srcTitle ? `Remove this transclusion of “${srcTitle}”` : 'Remove this transclusion'}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!confirm(srcTitle
+                ? `Remove the transcluded “${srcTitle}” from this text?`
+                : 'Remove this transclusion?')) return;
+              void deleteDerivationOp(opId)
+                .then(() => loadText(currentText.id))
+                .catch((err: any) => alert('Could not remove it: ' + (err?.message || err)));
+            }}
+            className="align-super text-[9px] px-0.5 mx-0.5 rounded cursor-pointer select-none"
+            style={{ color: PROVENANCE_COLOR.transclusion, border: '1px solid currentColor' }}
+          >
+            ✕
+          </span>,
+        );
+      }
       const renderText = brk.isReal && brk.show ? '' : t.text;
       out.push(
         <span

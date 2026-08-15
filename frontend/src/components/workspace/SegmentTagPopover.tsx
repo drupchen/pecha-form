@@ -13,7 +13,10 @@ import { usePassageStore } from '../../store/usePassageStore';
 import { useEditorTokenStore } from '../../store/useEditorTokenStore';
 import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import type { Passage } from '../../api/client';
-import { editRange, suggestUpstream, transclude } from '../../api/client';
+import {
+  editRange, suggestUpstream, transclude, listDerivationOps, deleteDerivationOp,
+} from '../../api/client';
+import { useUndoStore } from '../../store/useUndoStore';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
 import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, BookPlus, FileText } from 'lucide-react';
 
@@ -200,15 +203,29 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   };
 
   // Transclude a whole other text AFTER the selection: a range LINK (no copy), so
-  // corrections baked into the source ripple in. Undone from the Edits panel.
+  // corrections baked into the source ripple in. Undoable from the toolbar as well as from
+  // the Edits panel — a transclusion inserts a lot of text at once, and the first thing
+  // anyone reaches for after a mistaken one is Undo.
   const handleTransclude = async (srcTextId: number) => {
     setError(null);
     try {
       const { anchorId, anchorOpId } = anchorAfterSelection();
-      await transclude(currentText.id, {
+      const textId = currentText.id;
+      await transclude(textId, {
         anchor_syl_id: anchorId, src_text_id: srcTextId, anchor_op_id: anchorOpId,
       });
-      await loadText(currentText.id);
+      // The endpoint answers with the recomposed text, not the op it created, so the row is
+      // read back: the newest transclude op of this text is the one just made.
+      const ops = await listDerivationOps(textId).catch(() => []);
+      const mine = ops.filter(o => o.op_kind === 'transclude');
+      const op = mine.length ? mine[mine.length - 1] : null;
+      if (op) {
+        useUndoStore.getState().push({
+          description: op.summary || 'Transclusion',
+          undo: async () => { await deleteDerivationOp(op.id); await loadText(textId); },
+        });
+      }
+      await loadText(textId);
       onClose();
     } catch (e: any) {
       setError(e.message || 'Could not insert the text');

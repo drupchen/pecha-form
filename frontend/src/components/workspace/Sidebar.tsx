@@ -1154,7 +1154,9 @@ export const Sidebar: React.FC = () => {
                           </div>
                           <p className="tibetan-text-sm text-xs text-ink break-words line-clamp-2">{o.summary}</p>
                         </button>
-                        <div className="flex gap-0.5 px-1.5 pb-1 justify-end opacity-0 group-hover:opacity-100">
+                        {/* Always visible: this list IS how an edit is undone, and a control
+                            that only appears on hover reads as no control at all. */}
+                        <div className="flex gap-0.5 px-1.5 pb-1 justify-end">
                           <button onClick={() => handleDeleteOp(o.id)} title="Undo this edit" className="text-bronze hover:text-vermilion-deep p-0.5 rounded">
                             <Trash2 size={12} />
                           </button>
