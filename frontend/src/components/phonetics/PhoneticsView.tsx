@@ -89,12 +89,14 @@ export const PhoneticsView: React.FC = () => {
   const [rulesOpen, setRulesOpen] = useState(false);
   // Set when the popup is opened from a LINE rather than the toolbar: which table governs that
   // line, and the string to try the rules on.
-  const [rulesSeed, setRulesSeed] = useState<{ kind: 'bo' | 'skt'; sample: string } | null>(null);
+  const [rulesSeed, setRulesSeed] =
+    useState<{ line: PhoneticLine; kind: 'bo' | 'skt'; sample: string } | null>(null);
 
   // The org's phonetics settings — the replacement rules applied to everything this bench
   // generates, and the style each language opens on. Fetched once: they are small, shared by
   // every text, and the popup keeps the store in step.
-  const ruleLists = usePhoneticSettingsStore(s => s.lists);
+  // (The rule lists are read from the store AT GENERATION TIME — see `generateOne` — so this
+  // view deliberately does not subscribe to them: nothing here renders from them.)
   const orgStyles = usePhoneticSettingsStore(s => s.styles);
   const settingsLoaded = usePhoneticSettingsStore(s => s.loaded);
   const fetchSettings = usePhoneticSettingsStore(s => s.fetchSettings);
@@ -381,7 +383,11 @@ export const PhoneticsView: React.FC = () => {
   const generateOne = (l: PhoneticLine) => {
     const raw = rawOne(l);
     if (l.kind === 'skt' && iast) return raw;
-    return applyPhoneticRules(raw, rulesFor(ruleLists, l.kind, docLang));
+    // Read the rules from the store rather than this render's copy: generation only ever runs
+    // from an event handler, and one of those fires right after the popup saves — where the
+    // render still holds the list as it was BEFORE the edit.
+    const lists = usePhoneticSettingsStore.getState().lists;
+    return applyPhoneticRules(raw, rulesFor(lists, l.kind, docLang));
   };
 
   /** Open the replacements on the list that governs THIS line, with the line in the try-it
@@ -390,7 +396,7 @@ export const PhoneticsView: React.FC = () => {
    *  without touching any data. A line whose engine gives nothing falls back to what it
    *  currently reads. */
   const openRulesFor = (l: PhoneticLine) => {
-    setRulesSeed({ kind: l.kind, sample: rawOne(l) || bodyOf(l, matchFor(l)) });
+    setRulesSeed({ line: l, kind: l.kind, sample: rawOne(l) || bodyOf(l, matchFor(l)) });
     setRulesOpen(true);
   };
 
@@ -735,6 +741,10 @@ export const PhoneticsView: React.FC = () => {
           kind={rulesSeed?.kind ?? tab}
           lang={docLang}
           sample={rulesSeed?.sample}
+          // Saving a list from a LINE re-applies it to that line at once: the rules were
+          // opened to fix THAT string, so leaving it reading the old text would make the save
+          // look like it had done nothing. Same path as the row's own generate button.
+          onSaved={rulesSeed ? () => handleGenerate(rulesSeed.line) : undefined}
           langs={DOC_LANGS}
           langName={(l) => LANG_NAME[l as DocLang] ?? l}
           onClose={() => { setRulesOpen(false); setRulesSeed(null); }}

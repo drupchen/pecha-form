@@ -28,8 +28,11 @@ export const RulesModal: React.FC<{
   /** What to put in the try-it box. Set when the popup is opened from a LINE: the raw string
    *  the rules are handed for that line, so the box reproduces what generation did to it. */
   sample?: string;
+  /** Called after a list is saved. Set when the popup was opened from a LINE: the bench
+   *  re-applies the rules to that line, so the save shows where it was asked for. */
+  onSaved?: () => void;
   onClose: () => void;
-}> = ({ kind: kind0, lang: lang0, langs, langName, sample, onClose }) => {
+}> = ({ kind: kind0, lang: lang0, langs, langName, sample, onSaved, onClose }) => {
   const lists = usePhoneticSettingsStore(s => s.lists);
   const saveList = usePhoneticSettingsStore(s => s.saveList);
 
@@ -46,6 +49,8 @@ export const RulesModal: React.FC<{
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [targets, setTargets] = useState<Set<string>>(new Set());
   const [copyReport, setCopyReport] = useState<string | null>(null);
+  // Shown after a save that re-applied the rules to the line the popup was opened from.
+  const [applied, setApplied] = useState(false);
 
   // Switching list discards nothing silently: an edited list is saved on the way out.
   const stored = rulesFor(lists, kind, lang);
@@ -95,6 +100,7 @@ export const RulesModal: React.FC<{
   const edit = (i: number, patch: Partial<PhoneticRule>) => {
     setDraft(d => d.map((r, j) => (j === i ? { ...r, ...patch } : r)));
     setDirty(true);
+    setApplied(false);
   };
   const removeAt = (i: number) => { setDraft(d => d.filter((_, j) => j !== i)); setDirty(true); };
   const add = () => { setDraft(d => [...d, emptyRule()]); setDirty(true); };
@@ -119,6 +125,8 @@ export const RulesModal: React.FC<{
       await saveList(kind, lang, draft.filter(r => r.find));
       setDirty(false);
       setSaveError(null);
+      onSaved?.();
+      setApplied(true);
     } catch (e: any) {
       setSaveError(e.message || 'Could not save the rules');
     } finally {
@@ -292,7 +300,11 @@ export const RulesModal: React.FC<{
 
         <div className="flex items-center gap-3 pt-1">
           <span className="text-[11px] text-ink-soft flex-1">
-            Lines already written keep their text — use <em>regenerate all</em> to apply these.
+            {applied && onSaved
+              ? <span className="text-lapis">saved, and re-applied to the line you came from —
+                  the rest keep their text until <em>regenerate all</em>.</span>
+              : <>Lines already written keep their text — use <em>regenerate all</em> to apply
+                  these.</>}
           </span>
           {saveError && <span className="text-[11px] text-red-700">{saveError}</span>}
           <button type="button" onClick={onClose}
