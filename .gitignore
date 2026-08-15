@@ -164,6 +164,10 @@ cython_debug/
 # --- pecha-form sapche stack (backend/ + frontend/) ---
 # Local SQLite DB (schema is recreated by db.init_db on first run) and any backups.
 backend/sapche.db
+# SQLite's write-ahead sidecars: they appear whenever the database is open, and they are the
+# database — never let them ride along in a commit.
+backend/sapche.db-wal
+backend/sapche.db-shm
 backend/sapche.db.backup*
 backend/sapche.db.bak*
 backend/sapche.db.*bak*

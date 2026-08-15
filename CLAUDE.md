@@ -25,6 +25,19 @@ the regression that taught it.
 8. **Never test against `backend/sapche.db`.** Copy it, serve the copy on its own port, verify
    there, delete the copy. See the harness in `docs/ARCHITECTURE.md` §9.
 
+## Finishing a piece of work
+
+**Commit and push it — always, without being asked.** Once the change is verified (typecheck,
+both suites, and the browser check when it touches the UI), commit it and push to `main`. Do
+not leave finished work sitting uncommitted, and do not ask first.
+
+- Split it by strand rather than dumping a session into one commit: separate commits for
+  separate features or fixes, even when that means staging a shared file hunk by hunk.
+- The commit message says WHY, and records what was measured — the numbers that prove it
+  (page counts, corpus parity, test totals), so a later reader can tell verification from
+  assertion.
+- Never commit `backend/sapche.db` or a scratch copy of it (it is gitignored; keep it so).
+
 ## Commands
 
 ```bash
