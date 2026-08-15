@@ -57,9 +57,26 @@ function boEngine(style: BoStyle, lang: BoLang) {
 let _ewts: EwtsConverter | null = null;
 const ewtsConv = () => (_ewts ??= new EwtsConverter());
 
+/**
+ * ཿ (U+0F7F, རྣམ་བཅད) CLOSES a syllable, exactly as a tsek does.
+ *
+ * The corpus already knows this — botok tokenizes ཛཿཛཿ as two syllables, `ཛཿ` and `ཛཿ` — but
+ * the EWTS converter reads the run after the last tsek as ONE word (`dzaHdzaH`), and the
+ * romanizer splits on whitespace, so the two came out fused: "Dzahdzah" instead of
+ * "Dzah Dzah". Writing the tsek the script leaves implicit puts the generators back in step
+ * with the text model.
+ *
+ * Only before a Tibetan letter: ཿ at the end of a line, or before a shad or a space, is
+ * already a boundary and is left exactly as it is. (ཾ, the anusvara, does NOT close a
+ * syllable — ཨོཾ is one — so it is not touched.)
+ */
+const VISARGA_BEFORE_LETTER = /ཿ(?=[ཀ-ྼ])/g;
+
+export const tsekAfterVisarga = (s: string) => s.replace(VISARGA_BEFORE_LETTER, 'ཿ་');
+
 /** Tibetan verse/prose line → romanized phonetics. */
 export function generateBo(tibetan: string, style: BoStyle, lang: BoLang): string {
-  const clean = tibetan.replace(/\n+/g, ' ').trim();
+  const clean = tsekAfterVisarga(tibetan.replace(/\n+/g, ' ').trim());
   if (!clean) return '';
   try {
     return boEngine(style, lang).phonetics(clean, { autosplit: true }).trim();
@@ -74,7 +91,7 @@ export function generateBo(tibetan: string, style: BoStyle, lang: BoLang): strin
  *  the scholarly form). A first-approximation fallback for lines the imported
  *  reviewed sheet strings don't cover. */
 export function generateSkt(tibetan: string, lang: SktLang): string {
-  const clean = tibetan.replace(/\n+/g, ' ').trim();
+  const clean = tsekAfterVisarga(tibetan.replace(/\n+/g, ' ').trim());
   if (!clean) return '';
   try {
     const ewts = ewtsConv().to_ewts(clean);
