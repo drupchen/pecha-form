@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, GripVertical, HelpCircle, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../ui/Modal';
+import { AutoGrowTextarea } from '../ui/AutoGrowTextarea';
 import { usePhoneticSettingsStore, rulesFor } from '../../store/usePhoneticSettingsStore';
 import {
   applyPhoneticRules, compileRule, emptyRule, mergeRules, type PhoneticRule,
@@ -429,13 +430,18 @@ const RegexHelp: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 const Preview: React.FC<{ rules: PhoneticRule[]; initial?: string }> = ({ rules, initial }) => {
   const [sample, setSample] = useState(initial || 'Om Benza Guru Pema Siddhi Hung');
   return (
-    <div className="flex items-center gap-2 text-xs rounded-md px-2 py-1.5 bg-cream">
-      <span className="text-ink-soft shrink-0">try it</span>
-      <input value={sample} onChange={e => setSample(e.target.value)}
-             className="px-1.5 py-1 rounded bg-white flex-1 font-mono text-xs"
-             style={{ border: '1px solid var(--cline)' }} />
-      <span className="text-ink-soft shrink-0">→</span>
-      <span className="flex-1 font-mono">{applyPhoneticRules(sample, rules)}</span>
+    // A whole recited line goes in here, so both sides WRAP: the box grows to fit what is
+    // typed (a one-line input clipped the end of the string it was meant to test) and the
+    // result beside it has always wrapped.
+    <div className="flex items-start gap-2 text-xs rounded-md px-2 py-1.5 bg-cream">
+      <span className="text-ink-soft shrink-0 pt-1.5">try it</span>
+      <AutoGrowTextarea value={sample} onChange={e => setSample(e.target.value)} rows={1}
+                        className="px-1.5 py-1 rounded bg-white flex-1 font-mono text-xs resize-none overflow-hidden leading-relaxed"
+                        style={{ border: '1px solid var(--cline)' }} />
+      <span className="text-ink-soft shrink-0 pt-1.5">→</span>
+      <span className="flex-1 font-mono pt-1.5 leading-relaxed whitespace-pre-wrap break-words">
+        {applyPhoneticRules(sample, rules)}
+      </span>
     </div>
   );
 };
