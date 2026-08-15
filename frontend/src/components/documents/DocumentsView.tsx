@@ -187,6 +187,8 @@ export const DocumentsView: React.FC = () => {
   const [editingTitle, setEditingTitle] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [pickingPage, setPickingPage] = useState(false);
+  const [pickingNew, setPickingNew] = useState(false);
+  const newPageRef = useRef<HTMLDivElement>(null);
   const [paginating, setPaginating] = useState(false);
   /** The bench is in overview: it wants the whole screen. */
   const [benchOverview, setBenchOverview] = useState(false);
@@ -450,6 +452,7 @@ export const DocumentsView: React.FC = () => {
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (pickPageRef.current && !pickPageRef.current.contains(e.target as Node)) setPickingPage(false);
+      if (newPageRef.current && !newPageRef.current.contains(e.target as Node)) setPickingNew(false);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
@@ -473,6 +476,15 @@ export const DocumentsView: React.FC = () => {
   /** Open a document from the rail. An aligned text renders as its layout by itself (see the
    *  branch below); this only makes sure a booklet opened from a bench lands on its
    *  composition page rather than inheriting the previous document's bench. */
+  /** Create an aligned text FROM a text: one action — the document takes the text's title,
+   *  carries it, and opens on its layout, which is all an aligned text ever is. */
+  const createAlignedText = async (t: { id: number; title: string }) => {
+    const id = await create(t.title, 'textpage');
+    if (id == null) return;
+    await addItem('text', t.id);
+    setPaginating(true);
+  };
+
   const openDoc = async (d: DocumentSummary) => {
     setPaginating(false);
     await open(d.id);
@@ -512,22 +524,57 @@ export const DocumentsView: React.FC = () => {
              style={{ borderBottom: '1px solid var(--cline)' }}>
           <Library size={18} /> Documents
         </div>
-        {canEditDocs && (
+        {/* An ALIGNED TEXT is one text plus its alignment, so it is created by CHOOSING that
+            text — naming it separately was a step that could only introduce a mismatch. A
+            BOOKLET is named: its name is its own, not a text's. */}
+        {canEditDocs && newKind === 'textpage' && (
+        <div className="px-3 py-2 flex flex-col gap-1 relative" style={{ borderBottom: '1px solid var(--cline)' }}
+             ref={newPageRef}>
+          <button
+            type="button"
+            onClick={() => setPickingNew(v => !v)}
+            className="px-2 py-1 rounded-md text-sm text-lapis hover:bg-cream flex items-center gap-1"
+            style={{ border: '1px solid var(--cline)' }}
+          >
+            <Plus size={14} /> New aligned text from a text…
+          </button>
+          {pickingNew && (
+            <div className="absolute top-full left-3 right-3 z-30 max-h-72 overflow-auto rounded-md bg-white shadow-lg"
+                 style={{ border: '1px solid var(--cline)' }}>
+              {pickable.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => { setPickingNew(false); void createAlignedText(t); }}
+                  className="w-full text-left px-3 py-1.5 hover:bg-cream flex items-center gap-2 text-sm"
+                >
+                  <span className="tibetan-text-sm truncate flex-1">{t.title}</span>
+                  <span className="text-[10px] text-ink-soft">{t.text_type}</span>
+                </button>
+              ))}
+              {pickable.length === 0 && (
+                <div className="px-3 py-2 text-ink-soft text-xs">No texts.</div>
+              )}
+            </div>
+          )}
+        </div>
+        )}
+        {canEditDocs && newKind === 'booklet' && (
         <div className="px-3 py-2 flex gap-1" style={{ borderBottom: '1px solid var(--cline)' }}>
           <input
             value={newTitle}
             onChange={e => setNewTitle(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && newTitle.trim()) { void create(newTitle.trim(), newKind); setNewTitle(''); } }}
-            placeholder={newKind === 'textpage' ? 'New aligned text…' : 'New booklet…'}
+            onKeyDown={e => { if (e.key === 'Enter' && newTitle.trim()) { void create(newTitle.trim(), 'booklet'); setNewTitle(''); } }}
+            placeholder="New booklet…"
             className="flex-1 min-w-0 px-2 py-1 rounded-md bg-white text-sm"
             style={{ border: '1px solid var(--cline)' }}
           />
           <button
             type="button"
-            onClick={() => { if (newTitle.trim()) { void create(newTitle.trim(), newKind); setNewTitle(''); } }}
+            onClick={() => { if (newTitle.trim()) { void create(newTitle.trim(), 'booklet'); setNewTitle(''); } }}
             className="px-1.5 rounded-md text-lapis hover:bg-cream shrink-0"
             style={{ border: '1px solid var(--cline)' }}
-            title={newKind === 'textpage' ? 'Create aligned text' : 'Create booklet'}
+            title="Create booklet"
           >
             <Plus size={16} />
           </button>
@@ -547,11 +594,13 @@ export const DocumentsView: React.FC = () => {
                   {canEditDocs && (
                     <button
                       type="button"
-                      onClick={() => setNewKind(kind)}
+                      onClick={() => { setNewKind(kind); setPickingNew(kind === 'textpage'); }}
                       className={`text-[10px] px-1.5 rounded ${
                         newKind === kind ? 'bg-lapis/15 text-lapis' : 'text-ink-soft hover:bg-cream'
                       }`}
-                      title={`The name box creates ${blurb}`}
+                      title={kind === 'textpage'
+                        ? 'Choose a text to align'
+                        : `The name box creates ${blurb}`}
                     >
                       + new
                     </button>
