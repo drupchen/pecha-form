@@ -282,7 +282,9 @@ function titleIndex(chunks: DerivedChunk[], l: ChunkLayout): number {
   // No op stored, or a stale one (the derivation was rebuilt under it): fall back to the id,
   // which is where this title has always landed.
   if (at < 0) at = chunks.findIndex(c => holds(c, false));
-  if (at < 0) at = chunks.findIndex(c => c.sylIds.includes(syl));   // synthetic rows, last resort
+  // Last resort, still only over REAL chunks: a passage row repeats its source's syllables, so
+  // letting it match here would anchor a title to a repeat instead of the text it belongs to.
+  if (at < 0) at = chunks.findIndex(c => isRealChunk(c) && c.sylIds.includes(syl));
   // The anchor names a syllable this stream does not have: the title belongs to another text
   // and must not be shown here. (`-2`, not `-1` — see `insertTitleChunks`: a NULL anchor is
   // the end-of-stream gesture and still lands at the end, but an anchor that resolves nowhere

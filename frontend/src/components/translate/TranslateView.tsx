@@ -345,10 +345,16 @@ export const TranslateView: React.FC = () => {
     // this `targetLang` only (see `moveDisplays`), so switching the edition re-arranges.
     const { movedAway, placements } = moveDisplays(tokens, layouts, targetLang);
     const moved = applyMoveDisplays(derived, movedAway, placements);
+    // PASSAGES FIRST, then titles. A passage block is spliced at the index of the chunk it
+    // repeats before, so inserting titles first put the passage rows BETWEEN a title and the
+    // chunk it was anchored to — the title floated to the top of the gap and read as belonging
+    // to the segment above. Titles go in last and land immediately before their chunk, below
+    // whatever repeats precede it (`insertTitleChunks` skips synthetic rows when matching).
     return {
-      chunks: insertPassageChunks(
-        insertTitleChunks(moved, layouts), passages,
-        tokens, markerOffsets, spans, breakOverrides, lineBreakGroups),
+      chunks: insertTitleChunks(
+        insertPassageChunks(moved, passages,
+          tokens, markerOffsets, spans, breakOverrides, lineBreakGroups),
+        layouts),
       streamIds: tokens.map(t => t.id),
     };
   }, [tokens, markers, spans, breakOverrides, lineBreakGroups, layouts, passages, targetLang]);

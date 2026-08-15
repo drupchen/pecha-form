@@ -153,6 +153,47 @@ describe('a chunk that holds BORROWED tokens', () => {
   });
 });
 
+/**
+ * A repeated PASSAGE sits in the gap where the title was clicked.
+ *
+ * The bench used to splice titles before passages, and a passage block is inserted at the index
+ * of the chunk it precedes — so the passage rows landed between a title and its chunk, floating
+ * the title to the top of the gap where it read as belonging to the segment above. Passages now
+ * go in first; these cases pin the placement that results.
+ */
+describe('a title anchored past a passage block', () => {
+  const passageRow = (ids: string[]): DerivedChunk => ({
+    ...chunk({ ids, op: 1 }),
+    key: `passage-${ids[0]}`,
+    passage: { id: 1 } as unknown as DerivedChunk['passage'],
+  });
+
+  it('lands immediately before its chunk, BELOW the repeats', () => {
+    const stream = [
+      chunk({ ids: ['a1'], op: 1 }),          // #68 — the segment above the gap
+      passageRow(['p1']),                     // repeated content, synthetic
+      passageRow(['p2']),
+      chunk({ ids: ['b1'], op: 1 }),          // #72 — what the title was anchored to
+    ];
+    const out = insertTitleChunks(stream, [
+      title({ id: 30, anchor_syl_id: 'b1', anchor_op_id: 1 } as Partial<ChunkLayout> & { id: number }),
+    ]);
+    expect(keys(out)).toEqual(['c-a1-1', 'passage-p1', 'passage-p2', 'T30', 'c-b1-1']);
+  });
+
+  it('never anchors to a passage row, which only repeats another chunk’s syllables', () => {
+    const stream = [
+      chunk({ ids: ['a1'], op: 1 }),
+      passageRow(['a1']),                     // the repeat carries the SAME ids as a1
+      chunk({ ids: ['b1'], op: 1 }),
+    ];
+    const out = insertTitleChunks(stream, [
+      title({ id: 31, anchor_syl_id: 'a1', anchor_op_id: 1 } as Partial<ChunkLayout> & { id: number }),
+    ]);
+    expect(keys(out)).toEqual(['T31', 'c-a1-1', 'passage-a1', 'c-b1-1']);
+  });
+});
+
 describe('the unchanged rules', () => {
   it('DROPS a title whose anchor names nothing in this stream', () => {
     // It belongs to another text. Appending it is what put ten of a compilation's section
