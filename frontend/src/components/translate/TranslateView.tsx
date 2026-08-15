@@ -87,8 +87,25 @@ const RenderAsPill: React.FC<{
   value: string | null;                       // null/'title' = title, 'small_intro' = gloss
   onSet: (v: string) => void;
   miniStyle: React.CSSProperties;
-}> = ({ value, onSet, miniStyle }) => {
+  /** A small-INSTRUCTIONS run: the pill promotes it to a heading instead of demoting one.
+   *  Same column, mirrored — 'heading' prints it as a section title, null leaves it small. */
+  promote?: boolean;
+}> = ({ value, onSet, miniStyle, promote = false }) => {
   const gloss = value === 'small_intro';
+  const heading = value === 'heading';
+  const cellP = (active: boolean) =>
+    `px-1.5 rounded-full transition-colors ${active
+      ? 'bg-lapis text-cream-hi' : 'text-ink-soft/60 hover:text-ink'}`;
+  if (promote) {
+    return (
+      <span className="flex items-center rounded-full overflow-hidden" style={miniStyle}>
+        <button type="button" onClick={() => onSet('title')} className={cellP(!heading)}
+                title="Prints as a small instruction, folded onto the line above (the default).">Small</button>
+        <button type="button" onClick={() => onSet('heading')} className={cellP(heading)}
+                title="Prints as a section heading: its own line, a level, and an entry in the navigation and the table of contents.">Title</button>
+      </span>
+    );
+  }
   const cell = (active: boolean, accent: boolean) =>
     `px-1.5 rounded-full transition-colors ${active
       ? (accent ? 'bg-vermilion text-cream-hi' : 'bg-cream text-ink')
@@ -1316,11 +1333,19 @@ export const TranslateView: React.FC = () => {
                         >
                           {u.tagType}
                         </span>
-                        {(u.tagType === 'sapche' || u.tagType === 'title') && (() => {
+                        {/* A small-INSTRUCTIONS run can be PROMOTED to a heading — the mirror
+                            of demoting a heading to a gloss, on the same `render_as`. Nothing
+                            else may be: a verse or a mantra is recited text, and the promotion
+                            takes the line out of the continuation rule, which only instructions
+                            are subject to. */}
+                        {(u.tagType === 'sapche' || u.tagType === 'title'
+                          || (u.tagType === 'small' && u.smallKind === 'instructions')) && (() => {
                           // Render mode (title vs gloss) is per-heading and always editable —
                           // it has no upstream source to inherit. A gloss has no section level,
                           // so the level control greys out (kept, not removed → no reflow).
                           const gloss = match?.render_as === 'small_intro';
+                          const isSmall = u.tagType === 'small';
+                          const promoted = match?.render_as === 'heading';
                           const inherited = sapcheDepthBySyl.get(u.startSylId);
                           const levelCtl = inherited != null ? (
                             <span
@@ -1355,13 +1380,17 @@ export const TranslateView: React.FC = () => {
                                   renderAs: v,
                                 }).catch((e: any) => setSaveError(e.message || 'Render mode save failed'))}
                                 miniStyle={miniStyle}
+                                promote={isSmall}
                               />
-                              <span
-                                className={gloss ? 'opacity-40 pointer-events-none' : ''}
-                                title={gloss ? 'A gloss has no section level' : undefined}
-                              >
-                                {levelCtl}
-                              </span>
+                              {/* A small run only has a level once it IS a heading. */}
+                              {(!isSmall || promoted) && (
+                                <span
+                                  className={gloss ? 'opacity-40 pointer-events-none' : ''}
+                                  title={gloss ? 'A gloss has no section level' : undefined}
+                                >
+                                  {levelCtl}
+                                </span>
+                              )}
                             </>
                           );
                         })()}

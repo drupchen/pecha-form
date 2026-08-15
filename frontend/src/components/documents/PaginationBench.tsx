@@ -97,8 +97,12 @@ interface OverviewEdition {
  * 11: a move now LIFTS one gloss (its donor row keeps its place and goes empty; the
  *    destination gains a block above its own text) instead of shifting every payload in
  *    between — heights change at both ends, and everywhere in between they change back.
+ * 12: a small-INSTRUCTIONS run can be promoted to a section heading (`render_as: 'heading'`),
+ *    which takes it OUT of the continuation rule — its Tibetan stops folding onto the line
+ *    above and it stands as its own heading line. Any booklet holding a promoted run has one
+ *    more line than its stored measurements know about.
  */
-const RENDER_EPOCH = 11;
+const RENDER_EPOCH = 12;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.

@@ -229,6 +229,14 @@ export const PhoneticsView: React.FC = () => {
     for (const c of trChunks) if (c.level != null) m.set(c.start_syl_id, c.level);
     return m;
   }, [trChunks]);
+  /** Small-INSTRUCTIONS runs the editor promoted to headings (`render_as: 'heading'`). They
+   *  print as section titles, so this bench must show them as landmarks too — and NOT as
+   *  recited lines, which is what they would otherwise be. */
+  const promotedSyls = useMemo(() => {
+    const s2 = new Set<string>();
+    for (const c of trChunks) if (c.render_as === 'heading') s2.add(c.start_syl_id);
+    return s2;
+  }, [trChunks]);
 
   // The tab's rows, with the sapche/title headings folded IN at their stream positions: the
   // same full unit stream `deriveLines` walks, but keeping the heading units (not just the
@@ -259,7 +267,8 @@ export const PhoneticsView: React.FC = () => {
         const label = raw ? stripHtml(raw) : '';
         if (!label) continue;
         out.push({ kind: 'heading', key: u.key, label, depth: Math.max(0, (u.titleLayout.level ?? 1) - 1), offset: null });
-      } else if (u.tagType === 'sapche' || u.tagType === 'title') {
+      } else if (u.tagType === 'sapche' || u.tagType === 'title'
+                 || (u.tagType === 'small' && promotedSyls.has(u.startSylId))) {
         const raw = transByRange.get(`${u.startSylId}-${u.endSylId}`);
         const label = (raw ? stripHtml(raw) : '') || u.text.trim();
         const depth = depthBySyl.get(u.startSylId)
@@ -272,7 +281,8 @@ export const PhoneticsView: React.FC = () => {
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tokens, markers, spans, breakOverrides, tab, transByRange, depthBySyl, levelBySyl, layouts, docLang]);
+  }, [tokens, markers, spans, breakOverrides, tab, transByRange, depthBySyl, levelBySyl,
+      promotedSyls, layouts, docLang]);
 
   const shown = useMemo(
     () => rendered.filter((r): r is Extract<Row, { kind: 'line' }> => r.kind === 'line').map(r => r.line),

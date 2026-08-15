@@ -442,10 +442,18 @@ class ChunkRenderAsIn(BaseModel):
 
 @router.put("/translation-chunks/render-as", response_model=ChunkOut)
 def set_chunk_render_as(payload: ChunkRenderAsIn):
-    """How a heading chunk renders in the booklet: 'small_intro' = a small-face gloss,
-    NULL/'title' = a section heading. Language-independent; whole chunk. Created if absent."""
-    if payload.render_as not in (None, "title", "small_intro"):
-        raise HTTPException(400, "render_as must be 'small_intro', 'title', or null")
+    """How a chunk renders in the booklet, against what its TAG would give it. Two
+    departures, mirror images of each other:
+
+      'small_intro' — a sapche/title heading printed as a small-face gloss instead;
+      'heading'     — a small-INSTRUCTIONS run printed as a section heading instead: it stops
+                      folding its Tibetan onto the line above (the continuation rule), takes a
+                      level, and enters the outline, the TOC and the PDF bookmarks.
+
+    NULL (or 'title', its old spelling) means "whatever the tag says". Language-independent;
+    whole chunk. Created if absent."""
+    if payload.render_as not in (None, "title", "small_intro", "heading"):
+        raise HTTPException(400, "render_as must be 'small_intro', 'heading', 'title', or null")
     value = None if payload.render_as == "title" else payload.render_as
     conn = get_db()
     try:

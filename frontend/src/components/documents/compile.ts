@@ -397,11 +397,18 @@ export async function compileTextItem(
     // section title. (A sapche that reads as commentary, not a Western-style heading.)
     const gloss = (l.tagType === 'sapche' || l.tagType === 'title')
       && renderAsBySyl.get(l.startSylId) === 'small_intro';
+    // The mirror image: a small-INSTRUCTIONS run the editor promoted to a section heading. It
+    // is one word here and everything follows from it — the continuation rule below tests
+    // `role === 'small'`, so the promoted line stops folding its Tibetan onto the line above
+    // (a heading must stand alone); the outline gate tests `role`, so it joins the navigation,
+    // the TOC and the bookmarks with its level; and the page styles it by role.
+    const promoted = l.tagType === 'small' && l.smallKind === 'instructions'
+      && renderAsBySyl.get(l.startSylId) === 'heading';
     out.push({
       itemId: layoutItemId,
       textId,
       key: `${layoutItemId}:${l.key}`,
-      role: gloss ? 'small' : l.tagType,
+      role: gloss ? 'small' : (promoted ? 'sapche' : l.tagType),
       startSylId: l.startSylId,
       endSylId: l.endSylId,
       // The op of the token the line ANCHORS on — its first substantial one — not of
@@ -411,8 +418,16 @@ export async function compileTextItem(
       phonetics: phonFor(l),
       translation: translationByLine.get(i) ?? null,
       emptyAfter: lastOfChunk,
-      level: gloss ? null : (depthBySyl.get(l.startSylId) ?? null),
-      ...(gloss ? { smallKind: 'intro' } : (l.smallKind ? { smallKind: l.smallKind } : {})),
+      // A promoted instruction is not in the sapche tree, so its depth comes from the level
+      // the editor gave it (H1-based, like any heading the outline does not supply).
+      level: gloss ? null : (depthBySyl.get(l.startSylId)
+        ?? (promoted && levelBySyl.has(l.startSylId)
+              ? Math.max(0, levelBySyl.get(l.startSylId)! - 1) : null)),
+      // A promoted line sheds `smallKind`: it is a heading now, and anything keying on the
+      // small family (the inline face, the continuation rule's cousins) must not still see an
+      // instruction here.
+      ...(gloss ? { smallKind: 'intro' }
+                : (l.smallKind && !promoted ? { smallKind: l.smallKind } : {})),
       ...(paragraphs && paragraphs.length ? { paragraphs } : {}),
     });
   });
