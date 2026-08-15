@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { GripVertical, HelpCircle, Plus, Trash2 } from 'lucide-react';
+import { Copy, GripVertical, HelpCircle, Plus, Trash2 } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { usePhoneticSettingsStore, rulesFor } from '../../store/usePhoneticSettingsStore';
 import {
-  applyPhoneticRules, compileRule, emptyRule, type PhoneticRule,
+  applyPhoneticRules, compileRule, emptyRule, mergeRules, type PhoneticRule,
 } from './rules';
 
 /**
@@ -24,8 +24,11 @@ export const RulesModal: React.FC<{
   lang: string;
   langs: readonly string[];
   langName: (l: string) => string;
+  /** What to put in the try-it box. Set when the popup is opened from a LINE: the raw string
+   *  the rules are handed for that line, so the box reproduces what generation did to it. */
+  sample?: string;
   onClose: () => void;
-}> = ({ kind: kind0, lang: lang0, langs, langName, onClose }) => {
+}> = ({ kind: kind0, lang: lang0, langs, langName, sample, onClose }) => {
   const lists = usePhoneticSettingsStore(s => s.lists);
   const saveList = usePhoneticSettingsStore(s => s.saveList);
 
@@ -37,12 +40,49 @@ export const RulesModal: React.FC<{
   const [saveError, setSaveError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const dragFrom = useRef<number | null>(null);
+  // Copying to the other languages: which rows are picked, which languages they go to, and
+  // what the last copy did.
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [targets, setTargets] = useState<Set<string>>(new Set());
+  const [copyReport, setCopyReport] = useState<string | null>(null);
 
   // Switching list discards nothing silently: an edited list is saved on the way out.
   const stored = rulesFor(lists, kind, lang);
-  useEffect(() => { setDraft(stored); setDirty(false); setSaveError(null); },
+  useEffect(() => {
+    setDraft(stored); setDirty(false); setSaveError(null);
+    setPicked(new Set()); setTargets(new Set()); setCopyReport(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [kind, lang]);
+  }, [kind, lang]);
+
+  /**
+   * Copy the picked rules into other languages' lists of the SAME kind — English, German and
+   * Portuguese want near-identical tables, and retyping them is how they drift apart.
+   *
+   * What is copied is what is ON SCREEN, so an edit made just before copying travels with it.
+   * `mergeRules` appends and skips what the target already has; each target is one save.
+   */
+  const copyToTargets = async () => {
+    const rules = [...picked].sort((a, b) => a - b)
+      .map(i => draft[i]).filter((r): r is PhoneticRule => !!r && !!r.find);
+    if (!rules.length || !targets.size) return;
+    setSaving(true);
+    try {
+      const done: string[] = [];
+      for (const to of targets) {
+        const { rules: merged, added, skipped } = mergeRules(rulesFor(lists, kind, to), rules);
+        if (added) await saveList(kind, to, merged);
+        done.push(`${langName(to)} (${added ? `+${added}` : 'nothing new'}${
+          skipped ? `, ${skipped} already there` : ''})`);
+      }
+      setCopyReport(`copied to ${done.join(', ')}`);
+      setPicked(new Set());
+      setTargets(new Set());
+    } catch (e: any) {
+      setCopyReport(e.message || 'Could not copy the rules');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const errors = useMemo(
     () => draft.map(r => { const c = compileRule(r); return 'error' in c ? c.error : null; }),
@@ -125,6 +165,11 @@ export const RulesModal: React.FC<{
 
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 text-[10px] text-ink-soft px-1">
+            <input type="checkbox" className="w-3 shrink-0" title="Select every rule"
+                   checked={picked.size > 0 && picked.size === draft.filter(r => r.find).length}
+                   onChange={e => setPicked(e.target.checked
+                     ? new Set(draft.map((r, i) => (r.find ? i : -1)).filter(i => i >= 0))
+                     : new Set())} />
             <span className="w-4 shrink-0" />
             <span className="flex-1">find</span>
             <span className="flex-1">replace with</span>
@@ -140,6 +185,14 @@ export const RulesModal: React.FC<{
               onDragOver={e => { e.preventDefault(); }}
               onDrop={e => { e.preventDefault(); dropOn(i); }}
             >
+              <input type="checkbox" className="w-3 shrink-0 mt-2" checked={picked.has(i)}
+                     disabled={!r.find}
+                     title="Pick this rule to copy to another language"
+                     onChange={() => setPicked(prev => {
+                       const next = new Set(prev);
+                       next.has(i) ? next.delete(i) : next.add(i);
+                       return next;
+                     })} />
               <div
                 draggable
                 onDragStart={() => { dragFrom.current = i; }}
@@ -194,7 +247,45 @@ export const RulesModal: React.FC<{
           </button>
         </div>
 
-        <Preview rules={draft} />
+        {/* Ticked rules travel to the other languages of the SAME kind — they arrive at the
+            END of the target's table, the only placement that cannot change what its own
+            rules already do. */}
+        {picked.size > 0 && (
+          <div className="flex items-center gap-2 flex-wrap text-xs rounded-md px-3 py-2 bg-cream">
+            <Copy size={12} className="text-lapis" />
+            <span>copy {picked.size} rule{picked.size === 1 ? '' : 's'} to</span>
+            {langs.filter(l => l !== lang).map(l => {
+              const on = targets.has(l);
+              return (
+                <button key={l} type="button"
+                        onClick={() => setTargets(prev => {
+                          const next = new Set(prev);
+                          next.has(l) ? next.delete(l) : next.add(l);
+                          return next;
+                        })}
+                        className={`px-2 py-0.5 rounded-full transition-colors ${
+                          on ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-white'}`}
+                        style={on ? undefined : cellStyle}>
+                  {langName(l)}
+                </button>
+              );
+            })}
+            <button type="button" onClick={() => void copyToTargets()}
+                    disabled={!targets.size || saving}
+                    className={`px-2 py-1 rounded-md font-semibold ${
+                      targets.size && !saving ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}
+                    style={targets.size && !saving ? undefined : cellStyle}
+                    title="Append these rules to the chosen languages, skipping any they already have">
+              copy
+            </button>
+            <span className="text-ink-soft">
+              they arrive at the end of that table — drag them where they belong
+            </span>
+          </div>
+        )}
+        {copyReport && <div className="text-[11px] text-lapis px-1">{copyReport}</div>}
+
+        <Preview rules={draft} initial={sample} />
 
         {helpOpen && <RegexHelp onClose={() => setHelpOpen(false)} />}
 
@@ -335,8 +426,8 @@ const RegexHelp: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
 /** Try the table on a string without touching any data — the fastest way to see what an
  *  order change actually does. */
-const Preview: React.FC<{ rules: PhoneticRule[] }> = ({ rules }) => {
-  const [sample, setSample] = useState('Om Benza Guru Pema Siddhi Hung');
+const Preview: React.FC<{ rules: PhoneticRule[]; initial?: string }> = ({ rules, initial }) => {
+  const [sample, setSample] = useState(initial || 'Om Benza Guru Pema Siddhi Hung');
   return (
     <div className="flex items-center gap-2 text-xs rounded-md px-2 py-1.5 bg-cream">
       <span className="text-ink-soft shrink-0">try it</span>

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyPhoneticRules, compileRule, defaultRulesFor, type PhoneticRule,
+  applyPhoneticRules, compileRule, defaultRulesFor, mergeRules, type PhoneticRule,
 } from './rules';
 import { defaultBoStyle, STYLE_LANGS } from './generate';
 
@@ -82,6 +82,72 @@ describe('the built-in French Sanskrit rules reproduce what the code used to do'
   it('has no built-in rules for the other languages', () => {
     expect(defaultRulesFor('skt', 'en')).toEqual([]);
     expect(defaultRulesFor('bo', 'fr')).toEqual([]);
+  });
+});
+
+/**
+ * Copying rules between languages. English, German and Portuguese behave almost identically,
+ * so their tables want to be near-copies — but a copy must not disturb the table it joins.
+ */
+describe('bringing rules from another language', () => {
+  const target = [
+    rule({ find: 'j', replace: 'dj', regex: true }),
+    rule({ find: 'Pema', replace: 'Péma' }),
+  ];
+
+  it('appends at the END, where they cannot change what the target already does', () => {
+    const { rules, added, skipped } = mergeRules(target, [
+      rule({ find: 'u', replace: 'ou', regex: true }),
+      rule({ find: 'Hung', replace: 'Houng' }),
+    ]);
+    expect(rules.map(r => r.find)).toEqual(['j', 'Pema', 'u', 'Hung']);
+    expect([added, skipped]).toEqual([2, 0]);
+  });
+
+  it('skips a rule the target already has', () => {
+    const { rules, added, skipped } = mergeRules(target, [
+      rule({ find: 'Pema', replace: 'Péma' }),
+      rule({ find: 'Soha', replace: 'Soha' }),
+    ]);
+    expect(rules.map(r => r.find)).toEqual(['j', 'Pema', 'Soha']);
+    expect([added, skipped]).toEqual([1, 1]);
+  });
+
+  it('tells a string rule from a regex one with the same text', () => {
+    // `u → ou` as a literal is not the regex `u → ou`: they match different things.
+    const { added } = mergeRules([rule({ find: 'u', replace: 'ou', regex: true })],
+                                 [rule({ find: 'u', replace: 'ou', regex: false })]);
+    expect(added).toBe(1);
+  });
+
+  it('ignores the note when deciding what is a duplicate', () => {
+    const { added, skipped } = mergeRules(
+      [rule({ find: 'Pema', replace: 'Péma', note: 'house spelling' })],
+      [rule({ find: 'Pema', replace: 'Péma', note: '' })]);
+    expect([added, skipped]).toEqual([0, 1]);
+  });
+
+  it('dedupes the batch against itself and drops empty rows', () => {
+    const { rules, added } = mergeRules([], [
+      rule({ find: 'Hung', replace: 'Houng' }),
+      rule({ find: 'Hung', replace: 'Houng' }),
+      rule({ find: '', replace: 'x' }),          // an abandoned "add rule"
+    ]);
+    expect(rules.map(r => r.find)).toEqual(['Hung']);
+    expect(added).toBe(1);
+  });
+
+  it('leaves the target untouched when it already has everything', () => {
+    const { rules, added, skipped } = mergeRules(target, target);
+    expect(rules).toEqual(target);
+    expect([added, skipped]).toEqual([0, 2]);
+  });
+
+  it('copies rules as values, so editing one afterwards cannot reach back', () => {
+    const incoming = [rule({ find: 'Hung', replace: 'Houng' })];
+    const { rules } = mergeRules([], incoming);
+    rules[0].replace = 'CHANGED';
+    expect(incoming[0].replace).toBe('Houng');
   });
 });
 

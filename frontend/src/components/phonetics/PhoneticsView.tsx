@@ -116,6 +116,9 @@ export const PhoneticsView: React.FC = () => {
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
+  // Set when the popup is opened from a LINE rather than the toolbar: which table governs that
+  // line, and the string to try the rules on.
+  const [rulesSeed, setRulesSeed] = useState<{ kind: 'bo' | 'skt'; sample: string } | null>(null);
 
   // The org's phonetics settings — the replacement rules applied to everything this bench
   // generates, and the style each language opens on. Fetched once: they are small, shared by
@@ -401,10 +404,23 @@ export const PhoneticsView: React.FC = () => {
    *  by the generation dialect: Padmakara has no German, so `boLang` falls back to English
    *  and the German fixes are exactly what the rules are for. IAST is exempt — that mode is
    *  the scholarly form, not a language flavour. */
+  const rawOne = (l: PhoneticLine) =>
+    l.kind === 'bo' ? generateBo(l.text, style, boLang) : generateSkt(l.text, sktLang);
+
   const generateOne = (l: PhoneticLine) => {
-    const raw = l.kind === 'bo' ? generateBo(l.text, style, boLang) : generateSkt(l.text, sktLang);
+    const raw = rawOne(l);
     if (l.kind === 'skt' && iast) return raw;
     return applyPhoneticRules(raw, rulesFor(ruleLists, l.kind, docLang));
+  };
+
+  /** Open the replacements on the list that governs THIS line, with the line in the try-it
+   *  box. The sample is the RAW engine output — what the rules are handed — so the box
+   *  reproduces exactly what generation did to this line, and a rule can be tried against it
+   *  without touching any data. A line whose engine gives nothing falls back to what it
+   *  currently reads. */
+  const openRulesFor = (l: PhoneticLine) => {
+    setRulesSeed({ kind: l.kind, sample: rawOne(l) || bodyOf(l, matchFor(l)) });
+    setRulesOpen(true);
   };
 
   const handleGenerate = (l: PhoneticLine) => {
@@ -703,6 +719,17 @@ export const PhoneticsView: React.FC = () => {
                       <Zap size={13} />
                     </button>
                     )}
+                    {canEditPhonetics && (
+                    <button
+                      type="button"
+                      onClick={() => openRulesFor(l)}
+                      className="mt-0.5 px-1.5 py-1 rounded-md text-lapis hover:bg-cream transition-colors shrink-0"
+                      style={{ border: '1px solid var(--cline)' }}
+                      title="Open the replacements with THIS line in the try-it box, as the rules receive it"
+                    >
+                      <Replace size={13} />
+                    </button>
+                    )}
                   </div>
                   {/* Status + reviewed */}
                   <div className="w-40 shrink-0 flex items-center justify-end gap-2">
@@ -734,11 +761,12 @@ export const PhoneticsView: React.FC = () => {
 
       {rulesOpen && (
         <RulesModal
-          kind={tab}
+          kind={rulesSeed?.kind ?? tab}
           lang={docLang}
+          sample={rulesSeed?.sample}
           langs={DOC_LANGS}
           langName={(l) => LANG_NAME[l as DocLang] ?? l}
-          onClose={() => setRulesOpen(false)}
+          onClose={() => { setRulesOpen(false); setRulesSeed(null); }}
         />
       )}
     </div>
