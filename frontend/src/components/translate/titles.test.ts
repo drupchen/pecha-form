@@ -154,9 +154,12 @@ describe('a chunk that holds BORROWED tokens', () => {
 });
 
 describe('the unchanged rules', () => {
-  it('appends a title whose anchor names nothing', () => {
+  it('DROPS a title whose anchor names nothing in this stream', () => {
+    // It belongs to another text. Appending it is what put ten of a compilation's section
+    // titles under an unrelated five-line praise, and would print them in its booklet too.
     const out = insertTitleChunks(twice(), [title({ id: 11, anchor_syl_id: 'gone' })]);
-    expect(keys(out)[5]).toBe('T11');
+    expect(out.some(c => c.titleLayout)).toBe(false);
+    expect(out).toHaveLength(5);
   });
 
   it('appends a title with no anchor at all — the end-of-stream bar', () => {

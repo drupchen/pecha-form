@@ -283,7 +283,12 @@ function titleIndex(chunks: DerivedChunk[], l: ChunkLayout): number {
   // which is where this title has always landed.
   if (at < 0) at = chunks.findIndex(c => holds(c, false));
   if (at < 0) at = chunks.findIndex(c => c.sylIds.includes(syl));   // synthetic rows, last resort
-  if (at < 0) return -1;
+  // The anchor names a syllable this stream does not have: the title belongs to another text
+  // and must not be shown here. (`-2`, not `-1` — see `insertTitleChunks`: a NULL anchor is
+  // the end-of-stream gesture and still lands at the end, but an anchor that resolves nowhere
+  // is not an instruction to append. Ten of a compilation's titles once piled up under an
+  // unrelated praise that way.)
+  if (at < 0) return -2;
   return l.anchor_after ? at + 1 : at;
 }
 
@@ -309,8 +314,9 @@ export function insertTitleChunks(
       titleLayout: l,
     };
     const at = titleIndex(out, l);
+    if (at === -2) continue;                    // anchored in another text — not ours to show
     if (at >= 0) out.splice(Math.min(at, out.length), 0, entry);
-    else out.push(entry);
+    else out.push(entry);                       // no anchor at all: the end-of-stream bar
   }
   return out;
 }

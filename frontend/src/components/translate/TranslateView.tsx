@@ -110,6 +110,10 @@ const RenderAsPill: React.FC<{
  * the scramble layer — moving small/sapche instruction chunks and inserting
  * synthetic title chunks (global default or booklet-only).
  */
+/** One frozen empty array for every "not this text's data yet" case: a fresh `[]` per render
+ *  would give each memo below a new identity and re-derive the whole bench. */
+const NONE: any[] = [];
+
 export const TranslateView: React.FC = () => {
   const currentText = useTextStore(s => s.currentText);
   // Permission-read on Translate: chunk boxes stay static (ChunkEditor gates
@@ -131,11 +135,23 @@ export const TranslateView: React.FC = () => {
   const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
 
   const languages = useTranslationStore(s => s.languages);
-  const serverChunks = useTranslationStore(s => s.chunks);
-  const overrides = useTranslationStore(s => s.overrides);
+  // The store holds ONE text at a time, and a switch leaves the previous text's data in it
+  // until the fetches land. Rendering that window means another text's chunks, arrangement and
+  // suggestions — briefly here, permanently in a view that forgets to fetch (which is how a
+  // compilation's titles reached an unrelated praise). A mismatch reads as "not loaded yet".
+  const allChunks = useTranslationStore(s => s.chunks);
+  const allOverrides = useTranslationStore(s => s.overrides);
+  const allSuggestions = useTranslationStore(s => s.suggestions);
+  const allLayouts = useTranslationStore(s => s.layouts);
+  const trTextId = useTranslationStore(s => s.textId);
+  const collabTextId = useTranslationStore(s => s.collabTextId);
   const seen = useTranslationStore(s => s.seen);
-  const suggestions = useTranslationStore(s => s.suggestions);
-  const layouts = useTranslationStore(s => s.layouts);
+  const chunksMine = trTextId === currentText?.id;
+  const collabMine = collabTextId === currentText?.id;
+  const serverChunks = chunksMine ? allChunks : NONE;
+  const overrides = collabMine ? allOverrides : NONE;
+  const suggestions = collabMine ? allSuggestions : NONE;
+  const layouts = collabMine ? allLayouts : NONE;
   const passages = usePassageStore(s => s.passages);
   const fetchPassages = usePassageStore(s => s.fetchPassages);
   const editPassage = usePassageStore(s => s.editPassage);

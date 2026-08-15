@@ -24,7 +24,14 @@ interface TranslationState {
   seen: Map<string, string>;          // `${chunkId}:${lang}` -> seen_updated_at
   suggestions: TranslationSuggestion[];
   layouts: ChunkLayout[];
+  /** The text `chunks` were fetched for. */
   textId: number | null;
+  /** The text the COLLAB state (overrides, seen, suggestions, layouts) was fetched for — a
+   *  separate fetch, so a separate stamp. A view that renders layouts must check this against
+   *  the text it is showing: these stores are per-text singletons, and one that reads without
+   *  fetching (or reads during the fetch) renders ANOTHER text's arrangement. That is how ten
+   *  of a compilation's titles ended up under a 255-character praise. */
+  collabTextId: number | null;
   /** Bumped whenever a heading's label, level, or existence changes (translation body,
    *  chunk level, or a title layout). The booklet preview + PDF navigation derive from the
    *  translation pane, so they watch this to re-compile as headings are curated. */
@@ -83,6 +90,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
   suggestions: [],
   layouts: [],
   textId: null,
+  collabTextId: null,
   version: 0,
 
   fetchLanguages: async () => {
@@ -108,7 +116,7 @@ export const useTranslationStore = create<TranslationState>((set, get) => ({
         getOverrides(textId), getSeen(textId), getSuggestions(textId), getLayouts(textId),
       ]);
       set({
-        overrides, suggestions, layouts,
+        overrides, suggestions, layouts, collabTextId: textId,
         seen: new Map(seenRows.map(r => [ovKey(r.chunk_id, r.lang), r.seen_updated_at])),
       });
     } catch (e: any) {

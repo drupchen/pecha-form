@@ -71,9 +71,18 @@ export const PhoneticsView: React.FC = () => {
   // The sapche headings shown inline for orientation come from the SAME sources the booklet's
   // navigation outline uses: the translation chunks (their per-language label) and the sapche
   // tree (nesting depth).
-  const trChunks = useTranslationStore(s => s.chunks);
-  const layouts = useTranslationStore(s => s.layouts);
+  const allTrChunks = useTranslationStore(s => s.chunks);
+  const allLayouts = useTranslationStore(s => s.layouts);
+  const trTextId = useTranslationStore(s => s.textId);
+  const collabTextId = useTranslationStore(s => s.collabTextId);
   const fetchChunks = useTranslationStore(s => s.fetchChunks);
+  const fetchCollab = useTranslationStore(s => s.fetchCollab);
+  // These stores hold ONE text at a time. Reading them without checking whose data it is
+  // renders another text's arrangement — a compilation's ten section titles once appeared
+  // under a five-line praise, because this view read `layouts` and never fetched them. A
+  // mismatch means "not loaded yet", which is exactly how it should look.
+  const trChunks = trTextId === currentText?.id ? allTrChunks : [];
+  const layouts = collabTextId === currentText?.id ? allLayouts : [];
   const treeNodes = useTreeNodeStore(s => s.nodes);
   const fetchNodes = useTreeNodeStore(s => s.fetchNodes);
   const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
@@ -120,7 +129,9 @@ export const PhoneticsView: React.FC = () => {
     fetchBreaks(id);
     fetchNodes(id);
     fetchChunks(id);
-  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes, fetchChunks]);
+    fetchCollab(id);          // the title layouts this view renders inline
+  }, [currentText, refreshNonce, fetchTokens, fetchSpans, fetchMarkers, fetchBreaks, fetchNodes,
+      fetchChunks, fetchCollab]);
 
   // Phonetics are per-language: refetch and drop drafts on a document or language change.
   useEffect(() => {
