@@ -21,8 +21,28 @@ by ``notes``, whose payload is offset-based) back to a syllable id; ``offsets_fo
 """
 
 
-def _token_seq(conn, text_id):
+def _occurrence_offsets(conn, text_id):
+    """``(syl_id, op_id) -> start_offset`` over the composed stream.
+
+    ``_syl_offset_maps`` keeps ONE offset per syllable id, which is all most anchors need —
+    but a source transcluded several times shows the same uuids several times, and a segment
+    BOUNDARY may legitimately belong to one of those occurrences and not the others (the same
+    text standing alone here, sitting inside a segment there). ``op_id`` names the occurrence,
+    0 meaning "not tied to one".
+    """
+    out: dict = {}
+    pos = 0
+    for tid, text, op in _token_seq(conn, text_id, with_op=True):
+        out.setdefault((tid, op or 0), pos)
+        pos += len(text)
+    return out
+
+
+def _token_seq(conn, text_id, with_op: bool = False):
     """Ordered ``(id, text)`` pairs — the anchor space of a text.
+
+    ``with_op=True`` yields ``(id, text, op_id)`` instead: which derivation op emitted the
+    token, so a caller can tell two occurrences of the same syllable apart.
 
     A primary anchors on its own syllable rows. A secondary anchors on its COMPOSED
     sequence (parent refs + derivation ops, recursive), whose token ids are real
@@ -31,10 +51,15 @@ def _token_seq(conn, text_id):
     row = conn.execute("SELECT text_type FROM texts WHERE id = ?", (text_id,)).fetchone()
     if row and row["text_type"] == "secondary":
         from .derivation import compose_secondary  # late import (no module cycle)
-        return [(t["id"], t["text"]) for t in compose_secondary(conn, text_id)]
-    return [(r["id"], r["text"]) for r in conn.execute(
-        "SELECT id, text FROM syllables WHERE text_id=? ORDER BY idx", (text_id,),
-    )]
+        toks = compose_secondary(conn, text_id)
+        if with_op:
+            return [(t["id"], t["text"], t.get("op_id")) for t in toks]
+        return [(t["id"], t["text"]) for t in toks]
+    rows = conn.execute(
+        "SELECT id, text FROM syllables WHERE text_id=? ORDER BY idx", (text_id,)).fetchall()
+    if with_op:
+        return [(r["id"], r["text"], None) for r in rows]   # a primary has no ops
+    return [(r["id"], r["text"]) for r in rows]
 
 
 def _root_maps(conn, text_id):

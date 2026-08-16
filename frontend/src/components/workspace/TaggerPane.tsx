@@ -1,6 +1,8 @@
 import React, { useMemo, useState, useRef, useEffect, useLayoutEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, Plus } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
+import { TranscludePicker } from './TranscludePicker';
+import { transcludeInto } from './transcludeAction';
 import { useTagStore } from '../../store/useTagStore';
 import { useMarkerStore } from '../../store/useMarkerStore';
 import { useSuggestionStore } from '../../store/useSuggestionStore';
@@ -71,6 +73,11 @@ function readClickToken(): { unitStart: number; unitEnd: number; rect: DOMRect }
 
 export const TaggerPane: React.FC = () => {
   const currentText = useTextStore(s => s.currentText);
+  const loadText = useTextStore(s => s.loadText);
+  // Which separator has its "insert a text here" picker open (a segment key, or null).
+  // Only a SECONDARY can host a transclusion — a primary owns its own syllables.
+  const [addingAt, setAddingAt] = useState<string | null>(null);
+  const isSecondaryText = currentText?.text_type === 'secondary';
   const spans = useTagStore(s => s.spans);
   const markers = useMarkerStore(s => s.markers);
   const deleteMarker = useMarkerStore(s => s.deleteMarker);
@@ -480,11 +487,26 @@ export const TaggerPane: React.FC = () => {
             return (
               <React.Fragment key={seg.key}>
                 {markerHere && (
-                  <div className="flex items-center justify-center gap-1 my-1.5 group">
+                  <div className="flex items-center justify-center gap-1 my-1.5 group relative">
                     <span className="h-px flex-1 bg-vermilion-lo opacity-60" />
                     <span className="text-[10px] uppercase tracking-wider text-vermilion-deep">
                       separator{markerHere.inherited ? ' · inherited' : ''}
                     </span>
+                    {/* Add a whole text HERE, as a segment of its own. Most transcluded texts
+                        are whole units, and the only way in used to be: select the tail of a
+                        segment, append after it, then split. The boundary this places is
+                        scoped to the new run's occurrence, so the same source stays inline
+                        wherever it was inserted that way. */}
+                    {!consultMode && isSecondaryText && (
+                      <button
+                        onClick={() => setAddingAt(addingAt === seg.key ? null : seg.key)}
+                        className={`p-0.5 text-vermilion-deep hover:text-lapis ${
+                          addingAt === seg.key ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                        title="Insert a text here, as its own segment"
+                      >
+                        <Plus size={11} />
+                      </button>
+                    )}
                     {/* An INHERITED boundary is read-only here — edit segmentation on
                         the text that owns it (the primary) and it ripples. */}
                     {!consultMode && !markerHere.inherited && (
@@ -497,6 +519,31 @@ export const TaggerPane: React.FC = () => {
                       </button>
                     )}
                     <span className="h-px flex-1 bg-vermilion-lo opacity-60" />
+                    {addingAt === seg.key && currentText && (
+                      <div className="absolute z-30 top-full left-1/2 -translate-x-1/2 mt-1 w-80 p-2
+                                      rounded-md bg-cream-hi shadow-lg"
+                           style={{ border: '1px solid var(--cline)' }}>
+                        <div className="text-[11px] text-ink-soft mb-1.5">
+                          Insert a text here as its own segment — a live link, so corrections
+                          made in it ripple here:
+                        </div>
+                        <TranscludePicker
+                          excludeTextId={currentText.id}
+                          onPick={(srcId) => {
+                            const anchor = seg.tokens.find(t => !t.inserted && t.text !== '');
+                            setAddingAt(null);
+                            void transcludeInto({
+                              textId: currentText.id,
+                              srcTextId: srcId,
+                              anchorSylId: anchor?.id ?? null,
+                              anchorOpId: (anchor as { op_id?: number } | undefined)?.op_id,
+                              asSegment: true,
+                              reload: loadText,
+                            }).catch((e: any) => alert('Could not insert the text: ' + (e?.message || e)));
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
                 {boundaryGroups.map(g => <PassageCard key={`pcard-${g[0].id}`} group={g} />)}

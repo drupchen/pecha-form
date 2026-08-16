@@ -102,7 +102,14 @@ CREATE TABLE IF NOT EXISTS markers (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
     syl_id       TEXT,
-    UNIQUE(text_id, syl_id)
+    -- WHICH OCCURRENCE this boundary belongs to. 0 = at this syllable wherever it appears
+    -- (everything that predates the column, and every inherited boundary). A transclusion
+    -- op's id = only the run that op emits — needed because one source may be transcluded
+    -- several times into the same host, standing as its own segment in one place and sitting
+    -- inside a segment in another. The id stored is the COMPOSED one, so a run later cut in
+    -- two (`derivation_ops.split_of`) keeps its boundaries.
+    op_id        INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(text_id, syl_id, op_id)
 );
 CREATE INDEX IF NOT EXISTS idx_markers_text ON markers(text_id);
 
@@ -1040,7 +1047,9 @@ _COLUMN_MIGRATIONS = {
     # never at the source occurrence of the shared syllables). NULL = a normal note on
     # the host text. Plain INTEGER (ALTER can't add an FK); dangling id = never renders.
     "notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT"), ("passage_id", "INTEGER")],
-    "markers": [("syl_id", "TEXT")],
+    # op_id: which occurrence a boundary belongs to — 0 = at this syllable wherever it
+    # appears (every row that predates the column), a transclusion op's id = that run only.
+    "markers": [("syl_id", "TEXT"), ("op_id", "INTEGER NOT NULL DEFAULT 0")],
     # passage_id: the sapche section IS that passage occurrence (a zero-host-width
     # "segment" between two boundaries). Mutually exclusive with segment_start_syl_id.
     "tree_nodes": [("segment_start_syl_id", "TEXT"), ("passage_id", "INTEGER")],
@@ -1274,6 +1283,48 @@ def _rebuild_tree_nodes_position_unique(conn) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id)")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id)")
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _rebuild_markers_op_unique(conn) -> None:
+    """Widen `markers`' UNIQUE(text_id, syl_id) to include `op_id`.
+
+    A boundary used to be "this syllable, in this text", which cannot say WHICH occurrence
+    when a source is transcluded more than once — and the same text may legitimately be a
+    segment of its own in one place and part of a segment in another. The old constraint
+    made the second boundary an IntegrityError.
+
+    Rows keep their ids and their `op_id = 0`, which still means "wherever this syllable
+    appears": nothing already placed changes meaning.
+
+    No-op once the widened constraint is in place (including fresh DBs from SCHEMA).
+    Must run OUTSIDE a transaction: it toggles PRAGMA foreign_keys.
+    """
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='markers'"
+    ).fetchone()
+    if not sql or "UNIQUE(text_id, syl_id, op_id)" in (sql["sql"] or ""):
+        return
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        with conn:
+            conn.execute("DROP TABLE IF EXISTS markers__new")   # a previous aborted run
+            conn.execute("""
+                CREATE TABLE markers__new (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text_id  INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,
+                    syl_id       TEXT,
+                    op_id        INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(text_id, syl_id, op_id)
+                )""")
+            conn.execute(
+                "INSERT INTO markers__new (id, text_id, syl_id, op_id) "
+                "SELECT id, text_id, syl_id, COALESCE(op_id, 0) FROM markers")
+            conn.execute("DROP TABLE markers")
+            conn.execute("ALTER TABLE markers__new RENAME TO markers")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_markers_text ON markers(text_id)")
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
 
@@ -1889,6 +1940,7 @@ def init_db():
     # carry text_id. After the offset drop, which also rebuilds tree_nodes; own
     # foreign_keys-OFF transaction.
     _rebuild_tree_nodes_position_unique(conn)
+    _rebuild_markers_op_unique(conn)
     # Text pages: `document_items.kind` gains 'textpage'. Own foreign_keys-OFF
     # transaction, and after the additive column pass so `ref_document_id` exists.
     _rebuild_document_items_kinds(conn)

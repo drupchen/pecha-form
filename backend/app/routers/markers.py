@@ -4,16 +4,24 @@ from typing import List
 from ..db import get_db
 from ..inherit import source_texts
 from ..schemas import MarkerOut, MarkerCreate
-from ..syllable_anchors import anchor_for_point, offset_for_syl_start, _syl_offset_maps
+from ..syllable_anchors import (
+    anchor_for_point, offset_for_syl_start, _syl_offset_maps, _occurrence_offsets,
+)
 
 router = APIRouter(prefix="/api", tags=["markers"])
 
 
-def _position_for(syl_id, id2start, total_len):
+def _position_for(syl_id, id2start, total_len, op_id=0, per_occurrence=None):
     # Derive the marker position (a frontend render aid) from its syllable anchor.
     # syl_id NULL is the end-of-text sentinel → position at the end of the text.
     if syl_id is None:
         return total_len
+    # A boundary scoped to ONE occurrence sits at that occurrence, not at whichever one
+    # the id→offset map happens to hold (it keeps a single offset per syllable).
+    if op_id and per_occurrence is not None:
+        at = per_occurrence.get((syl_id, op_id))
+        if at is not None:
+            return at
     return id2start.get(syl_id, total_len)
 
 
@@ -29,21 +37,30 @@ def list_markers(text_id: int):
     cursor = conn.cursor()
     id2start, id2end = _syl_offset_maps(conn, text_id)
     total_len = max(id2end.values(), default=0)
+    per_occurrence = _occurrence_offsets(conn, text_id)
     by_key: dict = {}
     for origin in [text_id] + source_texts(cursor, text_id):
         inherited = origin != text_id
         for r in cursor.execute("SELECT * FROM markers WHERE text_id = ?", (origin,)).fetchall():
             syl = r["syl_id"]
+            # An INHERITED boundary is the source's own segmentation, which applies wherever
+            # its syllable appears here: its op scope belongs to the source's stream, not
+            # this one. Only the text's OWN boundaries carry an occurrence here.
+            op = 0 if inherited else (r["op_id"] or 0)
             # Applies only if the anchor resolves in THIS stream (a dead/foreign
             # anchor is skipped — the graceful dangling floor).
             if syl is not None and syl not in id2start:
                 continue
-            key = syl if syl is not None else "__end__"
+            if op and (syl, op) not in per_occurrence:
+                continue    # scoped to a run this text no longer has
+            # Two occurrences of one syllable are two different places, so the key carries
+            # the scope: the same text can be a segment here and part of one there.
+            key = (syl if syl is not None else "__end__", op)
             if key in by_key and not by_key[key]["inherited"]:
                 continue  # the child's own boundary already claims this position
             by_key[key] = {
-                "id": r["id"], "text_id": text_id, "syl_id": syl,
-                "position": _position_for(syl, id2start, total_len),
+                "id": r["id"], "text_id": text_id, "syl_id": syl, "op_id": op,
+                "position": _position_for(syl, id2start, total_len, op, per_occurrence),
                 "inherited": inherited,
             }
     conn.close()
@@ -82,8 +99,8 @@ def create_marker(text_id: int, marker: MarkerCreate):
 
     try:
         cursor.execute(
-            "INSERT INTO markers (text_id, syl_id) VALUES (?, ?)",
-            (text_id, syl_id),
+            "INSERT INTO markers (text_id, syl_id, op_id) VALUES (?, ?, ?)",
+            (text_id, syl_id, marker.op_id or 0),
         )
         marker_id = cursor.lastrowid
         conn.commit()
@@ -92,9 +109,11 @@ def create_marker(text_id: int, marker: MarkerCreate):
         raise HTTPException(409, "A marker already exists at this position")
 
     id2start, id2end = _syl_offset_maps(conn, text_id)
-    position = _position_for(syl_id, id2start, max(id2end.values(), default=0))
+    position = _position_for(syl_id, id2start, max(id2end.values(), default=0),
+                             marker.op_id or 0, _occurrence_offsets(conn, text_id))
     conn.close()
-    return {"id": marker_id, "text_id": text_id, "position": position, "syl_id": syl_id}
+    return {"id": marker_id, "text_id": text_id, "position": position, "syl_id": syl_id,
+            "op_id": marker.op_id or 0}
 
 
 @router.delete("/markers/{marker_id}")

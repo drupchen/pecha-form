@@ -542,7 +542,7 @@ def _next_op_at_anchor(conn, op):
 
 
 def transclude(conn, text_id: int, anchor_syl_id, src_text_id: int,
-               src_start_syl_id=None, src_end_syl_id=None, anchor_op_id=None) -> None:
+               src_start_syl_id=None, src_end_syl_id=None, anchor_op_id=None) -> dict:
     """Splice a range LINK from another text into a secondary text (no copy). The
     source range resolves through the source's composed sequence, so a secondary can
     transclude from primaries or other secondaries and upstream corrections ripple.
@@ -578,12 +578,17 @@ def transclude(conn, text_id: int, anchor_syl_id, src_text_id: int,
             before_op_id = _split_transclude(conn, host, at_syl_id, host_ids)
             anchor_syl_id = host["anchor_syl_id"]
     pos = _position_before(conn, text_id, before_op_id)
-    conn.execute(
+    cur = conn.execute(
         "INSERT INTO derivation_ops (text_id, op_kind, anchor_syl_id, position, "
         "src_text_id, src_start_syl_id, src_end_syl_id) "
         "VALUES (?, 'transclude', ?, ?, ?, ?, ?)",
         (text_id, anchor_syl_id, pos, src_text_id, src_start_syl_id, src_end_syl_id),
     )
+    # The op id IS the occurrence: a caller placing a segment boundary at the run's head
+    # scopes it with this, so the same source inserted inline elsewhere keeps none.
+    return {"op_id": cur.lastrowid,
+            "first_syl_id": syllable_ids_between(
+                src_syls, src_start_syl_id, src_end_syl_id)[0]}
 
 
 def _delete_op(conn, op_id: int) -> None:

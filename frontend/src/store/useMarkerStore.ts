@@ -9,6 +9,10 @@ export interface Marker {
   position: number;
   // Part 6: syllable that starts the new segment (source of truth for the boundary).
   syl_id: string | null;
+  /** Which OCCURRENCE this boundary belongs to: 0 = at this syllable wherever it appears
+   *  (all boundaries that predate the field, and every inherited one), a transclusion op's
+   *  id = that run only — one source may stand alone here and sit inside a segment there. */
+  op_id?: number;
   // True when INHERITED from a source text (parent/transclusion) — read-only here;
   // edit segmentation on the owning text and it ripples. See backend app/inherit.py.
   inherited?: boolean;

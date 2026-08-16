@@ -13,12 +13,11 @@ import { usePassageStore } from '../../store/usePassageStore';
 import { useEditorTokenStore } from '../../store/useEditorTokenStore';
 import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import type { Passage } from '../../api/client';
-import {
-  editRange, suggestUpstream, transclude, listDerivationOps, deleteDerivationOp,
-} from '../../api/client';
-import { useUndoStore } from '../../store/useUndoStore';
+import { editRange, suggestUpstream } from '../../api/client';
+import { transcludeInto } from './transcludeAction';
+import { TranscludePicker } from './TranscludePicker';
 import { colorForSessionTag, SESSION_TAG_NAME_RE } from '../../lib/sessionTagColor';
-import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, BookPlus, FileText } from 'lucide-react';
+import { Tag as TagIcon, Edit3, Scissors, X, Mic, StickyNote, Copy, Trash2, Link2, FileOutput, BookPlus } from 'lucide-react';
 
 const COLORS = [
   '#ef4444', '#f97316', '#f59e0b', '#84cc16',
@@ -50,7 +49,6 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
   const currentText = useTextStore(s => s.currentText);
   const extractSelection = useTextStore(s => s.extractSelection);
   const loadText = useTextStore(s => s.loadText);
-  const texts = useTextStore(s => s.texts);
   const allTags = useTagStore(s => s.tags);
   const createTag = useTagStore(s => s.createTag);
   const createSpan = useTagStore(s => s.createSpan);
@@ -210,22 +208,10 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
     setError(null);
     try {
       const { anchorId, anchorOpId } = anchorAfterSelection();
-      const textId = currentText.id;
-      await transclude(textId, {
-        anchor_syl_id: anchorId, src_text_id: srcTextId, anchor_op_id: anchorOpId,
+      await transcludeInto({
+        textId: currentText.id, srcTextId, anchorSylId: anchorId, anchorOpId,
+        reload: loadText,      // inline here: the run stays inside its host segment
       });
-      // The endpoint answers with the recomposed text, not the op it created, so the row is
-      // read back: the newest transclude op of this text is the one just made.
-      const ops = await listDerivationOps(textId).catch(() => []);
-      const mine = ops.filter(o => o.op_kind === 'transclude');
-      const op = mine.length ? mine[mine.length - 1] : null;
-      if (op) {
-        useUndoStore.getState().push({
-          description: op.summary || 'Transclusion',
-          undo: async () => { await deleteDerivationOp(op.id); await loadText(textId); },
-        });
-      }
-      await loadText(textId);
       onClose();
     } catch (e: any) {
       setError(e.message || 'Could not insert the text');
@@ -822,34 +808,10 @@ export const SegmentTagPopover: React.FC<Props> = ({ segment, selection, trailin
               Insert a whole text after the selection (a live link — corrections made in
               it ripple here; undo from the Edits panel):
             </div>
-            {texts.filter(t => t.id !== currentText.id).length === 0 ? (
-              <p className="text-xs text-ink-soft italic">No other texts available.</p>
-            ) : (
-              <ul className="flex flex-col gap-0.5 max-h-56 overflow-y-auto rounded"
-                  style={{ border: '1px solid var(--cline)' }}>
-                {texts.filter(t => t.id !== currentText.id).map(t => (
-                  <li key={t.id}>
-                    <button
-                      type="button"
-                      onClick={() => handleTransclude(t.id)}
-                      className="w-full text-left text-xs px-2 py-1.5 hover:bg-cream flex items-center gap-2 min-w-0"
-                      title={t.title}
-                    >
-                      <FileText size={12} className="text-bronze shrink-0" />
-                      <span className="tibetan-text-sm text-ink truncate min-w-0" style={{ fontSize: '13px' }}>
-                        {t.title}
-                      </span>
-                      <span className={
-                        'text-[9px] uppercase tracking-wide px-1 py-px rounded font-mono shrink-0 ml-auto ' +
-                        (t.text_type === 'secondary' ? 'bg-lapis/10 text-lapis' : 'bg-bronze/10 text-bronze')
-                      }>
-                        {t.text_type}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <TranscludePicker
+              excludeTextId={currentText.id}
+              onPick={(id) => handleTransclude(id)}
+            />
           </div>
         )}
 

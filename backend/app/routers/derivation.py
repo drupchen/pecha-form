@@ -47,12 +47,22 @@ def post_edit_range(text_id: int, payload: EditRangeIn):
 
 @router.post("/texts/{text_id}/transclude", response_model=ComposedOut)
 def post_transclude(text_id: int, payload: TranscludeIn):
-    """Splice a range from another text into a secondary text (links, not copies)."""
+    """Splice a range from another text into a secondary text (links, not copies).
+
+    ``as_segment`` also gives the run a boundary at its head, scoped to THIS occurrence, so
+    it stands as a segment of its own — what the separator's "+" asks for. Atomic here
+    because only this call knows the op it just created, and that op id is the scope."""
     conn = get_db()
     try:
-        transclude(conn, text_id, payload.anchor_syl_id, payload.src_text_id,
-                   payload.src_start_syl_id, payload.src_end_syl_id,
-                   anchor_op_id=payload.anchor_op_id)
+        made = transclude(conn, text_id, payload.anchor_syl_id, payload.src_text_id,
+                          payload.src_start_syl_id, payload.src_end_syl_id,
+                          anchor_op_id=payload.anchor_op_id)
+        if payload.as_segment and made.get("first_syl_id"):
+            # OR IGNORE: a boundary may already sit there (the source's own first marker,
+            # inherited), and asking twice is not an error.
+            conn.execute(
+                "INSERT OR IGNORE INTO markers (text_id, syl_id, op_id) VALUES (?, ?, ?)",
+                (text_id, made["first_syl_id"], made["op_id"]))
         conn.commit()
         return _composed_payload(conn, text_id)
     finally:

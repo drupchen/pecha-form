@@ -182,6 +182,10 @@ class TranscludeIn(BaseModel):
     # The op that emitted the anchor token (ComposedToken.op_id) — names the
     # OCCURRENCE when the same source is transcluded several times.
     anchor_op_id: Optional[int] = None
+    # Place the transcluded run as a SEGMENT of its own: a boundary at its head, scoped to
+    # this occurrence. What the separator's "+" asks for — most transcluded texts are whole
+    # units — while the same source stays inline wherever it was inserted that way.
+    as_segment: bool = False
 
 class InsertBreakIn(BaseModel):
     # Manual line break: hosted "\n" inserted BEFORE this composed token; None = at end.
@@ -270,6 +274,10 @@ class MarkerOut(BaseModel):
     # Part 6: the syllable that starts at the boundary, so the client can replay
     # (undo) a separator by syllable id rather than by offset.
     syl_id: Optional[str] = None
+    # Which OCCURRENCE this boundary belongs to: 0 = at this syllable wherever it
+    # appears, a transclusion op's id = that run only (one source may be transcluded
+    # several times, standing alone here and inside a segment there).
+    op_id: int = 0
     # True when this boundary is INHERITED from a source text (parent/transclusion)
     # — read-only here; edit it on its owning text. See app/inherit.py.
     inherited: bool = False
@@ -280,6 +288,9 @@ class MarkerCreate(BaseModel):
     # the marker. `position` is the legacy offset path, ignored when syl_id is set.
     syl_id: Optional[str] = None
     position: Optional[int] = None
+    # 0 = every occurrence of that syllable (the default, and what every boundary
+    # placed before this column meant); a transclusion op's id scopes it to that run.
+    op_id: int = 0
 
 # ─── Tree nodes ───────────────────────────────────────────────────────────────
 

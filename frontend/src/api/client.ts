@@ -1088,7 +1088,13 @@ export async function editRange(
 // Omit the src range to transclude the source's WHOLE text.
 export async function transclude(
   textId: number,
-  body: { anchor_syl_id: string | null; src_text_id: number; src_start_syl_id?: string; src_end_syl_id?: string; anchor_op_id?: number },
+  body: {
+    anchor_syl_id: string | null; src_text_id: number;
+    src_start_syl_id?: string; src_end_syl_id?: string; anchor_op_id?: number;
+    /** Give the transcluded run a boundary at its head, scoped to THIS occurrence, so it
+     *  stands as a segment of its own — what the separator's "+" asks for. */
+    as_segment?: boolean;
+  },
 ): Promise<ComposedResult> {
   const res = await apiFetch(`${API_BASE}/texts/${textId}/transclude`, {
     method: 'POST',
