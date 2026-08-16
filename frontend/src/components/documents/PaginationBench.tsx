@@ -101,8 +101,13 @@ interface OverviewEdition {
  *    which takes it OUT of the continuation rule — its Tibetan stops folding onto the line
  *    above and it stands as its own heading line. Any booklet holding a promoted run has one
  *    more line than its stored measurements know about.
+ * 13: the leading TITLE block stopped hosting the continuation rule. A text that opens
+ *    `title` + small-instructions had the instruction's Tibetan merged onto the title and
+ *    then LIFTED with it onto the title page — the first body page showed the translation
+ *    with no Tibetan beside it. That Tibetan is back in the body, so those texts gain a
+ *    line's worth of verso where they used to have none.
  */
-const RENDER_EPOCH = 12;
+const RENDER_EPOCH = 13;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.

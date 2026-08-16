@@ -90,6 +90,11 @@ export const COMPILE_BUILD: object = {};
 
 const rk = (a: string, b: string) => `${a}-${b}`;
 
+/** A line the leading-title lift takes out of the body and onto the text's title page.
+ *  Shared by `compileTextItem`'s continuation rule and `compileDocument`'s lift so the two
+ *  cannot disagree about which lines the body keeps. */
+export const liftsToTitlePage = (l: DocLine) => l.role === 'title' && l.tokens.length > 0;
+
 /**
  * Print the glosses the translator moved — and nothing else.
  *
@@ -452,7 +457,15 @@ export async function compileTextItem(
   // index-aligned and the shared break set keeps working.
   const mergedOut: DocLine[] = [];
   let host: DocLine | null = null;   // last line carrying real tokens — the merge target
+  // …but never the LEADING TITLE BLOCK, which `compileDocument` lifts onto the text's title
+  // page. An opening instruction merged onto it left with it: its translation stayed in the
+  // body while its Tibetan went to the title page, so the first page showed the French with
+  // no Tibetan beside it. A text that opens `title` + instruction is the common shape, so
+  // the instruction keeps its own tokens there and becomes the host itself — which is what
+  // "a text's very first line has nothing to continue" was always meant to give.
+  let inLeadingTitle = true;
   for (const l of out) {
+    if (inLeadingTitle && !liftsToTitlePage(l)) inLeadingTitle = false;
     if (l.role === 'small' && l.smallKind === 'instructions' && host) {
       // Every line-level chunk's last token carries a trailing `\n` (the display break
       // deriveChunks appends at `count>=1`), and `.bk-tibetan` is `white-space: pre-wrap` —
@@ -477,7 +490,7 @@ export async function compileTextItem(
       continue;
     }
     mergedOut.push(l);
-    host = l;
+    if (!inLeadingTitle) host = l;      // a lifted line is no line to continue
   }
   out.length = 0;
   out.push(...mergedOut);
@@ -630,7 +643,7 @@ export async function compileDocument(items: DocumentItem[], lang: string): Prom
     const titleLines: DocLine[] = [];
     // Only a Tibetan title (real tokens) heads the title page; a translation-only title layout
     // (no tokens) stays in the body so it prints as a section heading on the pages.
-    while (i < compiled.length && compiled[i].role === 'title' && compiled[i].tokens.length > 0) {
+    while (i < compiled.length && liftsToTitlePage(compiled[i])) {
       titleLines.push(compiled[i]); i++;
     }
     // Keyed by the id the LINES carry (the aligned text page's item when reused), so the
