@@ -111,8 +111,13 @@ interface OverviewEdition {
  *    narrower than the stored measurements believe, so they must be re-flowed rather than
  *    trusted. The stream signature cannot see this on its own: `toSigLines` hashes token
  *    COUNTS, and the count is exactly what this change preserves.
+ * 15: the same closure ate the SEPARATOR. That inner space was also the gap before a
+ *    small-letter gloss continuing on the line, so closing it ran the two together
+ *    (`བགྱི།།ལན་གསུམ།`). One space goes back wherever the host now ends hard on a shad — at the
+ *    booklet's continuation join and at an inline gloss — and the closure now reads the
+ *    VERSE's own tail rather than the line's, so a line carrying a gloss closes at all.
  */
-const RENDER_EPOCH = 14;
+const RENDER_EPOCH = 15;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.

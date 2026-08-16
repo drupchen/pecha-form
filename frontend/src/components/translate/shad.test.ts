@@ -49,6 +49,24 @@ function stream(texts: string[], tag = TAGS.verse): { tokens: EditorToken[]; spa
   return { tokens, spans };
 }
 
+/** A verse line followed by a small-letter gloss, each under its own span — the real shape of
+ *  `བགྱི། །ལན་གསུམ།`. With a display-break override of 0 on the verse's shad the gloss is
+ *  absorbed into the verse line (the inline-minor rule), which is the case this covers. */
+function mixed(verse: string[], gloss: string[], glossTag = TAGS.smallInstructions) {
+  const { tokens } = stream([...verse, ...gloss]);
+  const cut = verse.length;
+  const span = (tag: typeof TAGS.verse, a: number, b: number) => ({
+    id: a, tag: { ...tag, tag_kind: 'regular' },
+    start_offset: tokens[a].start_offset, end_offset: tokens[b].end_offset,
+    start_syl_id: tokens[a].id, end_syl_id: tokens[b].id,
+  } as unknown as Span);
+  return {
+    tokens,
+    spans: [span(TAGS.verse, 0, cut - 1), span(glossTag, cut, tokens.length - 1)],
+    shadId: tokens[cut - 1].id,
+  };
+}
+
 const GROUPS = { verse: true, sapche: true, mantra: true };
 
 /** The rendered Tibetan of the whole stream, as the benches and the booklet draw it. */
@@ -125,6 +143,45 @@ describe('what it must not touch', () => {
       expect(render(['ཐམས་', 'ཅད་', 'བདེ་', 'སོ', '། ། '], tag)).toContain('སོ། ། ');
       expect(render([...LINE, ' །'], tag)).toContain('ཤོག །');
     }
+  });
+});
+
+describe('a verse line that carries a small-letter gloss', () => {
+  /** Render the whole stream the way the benches draw it, with the verse's own break lifted so
+   *  the gloss rides on the verse's line. */
+  const inline = (verse: string[], gloss: string[], glossTag = TAGS.smallInstructions) => {
+    const { tokens, spans, shadId } = mixed(verse, gloss, glossTag);
+    const chunks = deriveChunks(tokens, new Set<number>(), spans,
+                               new Map([[shadId, 0]]), GROUPS);
+    return chunks.flatMap((c) => c.tokens).map((t) => t.render).join('');
+  };
+
+  it('closes the VERSE’s shad, not the line’s last one', () => {
+    // Without this the line ends on the gloss's `། `, the verse's `། །` is not line-final, and
+    // nothing closed — the case the first cut of this rule missed.
+    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། ']))
+      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།། ལན་གསུམ། ');
+  });
+
+  it('keeps a space between the shad and the gloss — the separator the closure ate', () => {
+    // `བགྱི།།ལན་གསུམ།` ran the two together on the printed page. One space, and only one.
+    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། '])).toContain('ཤོག།། ལན་');
+    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། '])).not.toContain('ཤོག།།  ');
+  });
+
+  it('leaves the gloss’s own text exactly as typed, shads and all', () => {
+    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', ' །'])).toContain('ལན་གསུམ །');
+  });
+
+  it('treats a trailing sapche run the same way', () => {
+    // (A sapche run start carries its own break, hence the trailing newline.)
+    expect(inline([...LINE, '། །'], ['དངོས་', 'གཞི'], { name: 'sapche', color: '#08a' }))
+      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།། དངོས་གཞི\n');
+  });
+
+  it('adds no separator when the verse already ends on one', () => {
+    expect(inline(['ཐམས་', 'ཅད་', 'བདེ་', 'སོ', '། ། '], ['ལན་', 'གསུམ']))
+      .toBe('ཐམས་ཅད་བདེ་སོ།། ལན་གསུམ');
   });
 });
 

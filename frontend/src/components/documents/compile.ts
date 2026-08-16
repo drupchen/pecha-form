@@ -3,7 +3,7 @@ import {
   type DocumentItem,
 } from '../../api/client';
 import {
-  deriveChunks, insertTitleChunks, moveDisplays, type MovePlacement,
+  deriveChunks, insertTitleChunks, moveDisplays, SHAD_FLUSH, type MovePlacement,
 } from '../translate/chunks';
 import { kindOf } from '../phonetics/lines';
 import { apiFetch } from '../../api/http';
@@ -486,14 +486,25 @@ export async function compileTextItem(
       // deriveChunks appends at `count>=1`), and `.bk-tibetan` is `white-space: pre-wrap` —
       // so appended as-is that `\n` would force the small run onto a NEW visual line. Strip
       // ONLY that artificial newline (not other whitespace), so the run flows straight on
-      // after the source's own separator — Tibetan joins on the tsheg (་) / shad, never a
-      // space. The tokens are appended UNMODIFIED, reproducing the editor's text exactly.
-      // The clone never mutates the shared token; chains strip each prior run's `\n` at
-      // their own join.
+      // after the source's own separator. The tokens are appended UNMODIFIED, reproducing the
+      // editor's text exactly. The clone never mutates the shared token; chains strip each
+      // prior run's `\n` at their own join.
+      //
+      // …and supply the separator when the host has none left. A verse line ending `། །` now
+      // closes to `།།` (`closeVerseShads`) — and that inner space was ALSO the gap before the
+      // gloss, so without it the instruction ran flush into the shad: `བགྱི།།ལན་གསུམ།`. When the
+      // host ends hard on a shad and the run opens on a letter, one space goes back. It is a
+      // display join like the `\n` strip above, written onto the host's LAST token, so the
+      // token count — what the row contract, the anchors and the split machinery address —
+      // is exactly what it was. A host ending on a tsheg (་) or already on a space joins as
+      // it always did.
       const last = host.tokens[host.tokens.length - 1];
+      const opens = l.tokens.find((t) => t.render.trim() !== '');
+      const joined = last ? last.render.replace(/\n+$/u, '') : '';
+      const sep = last && opens && SHAD_FLUSH.test(joined) && /^\S/u.test(opens.render) ? ' ' : '';
       host.tokens = [
         ...host.tokens.slice(0, -1),
-        ...(last ? [{ ...last, render: last.render.replace(/\n+$/u, '') }] : []),
+        ...(last ? [{ ...last, render: joined + sep }] : []),
         ...l.tokens.map((t) => ({ ...t, small: true })),
       ];
       host.endSylId = l.endSylId;

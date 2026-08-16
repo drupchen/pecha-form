@@ -626,6 +626,11 @@ type RenderToken = DerivedChunk['tokens'][number];
 const VERSE_SHAD_TAIL =
   /(^|[^།༎༏༐༑༔༴༄-༊])(།|[ཀགཤ][ཱ-྄]*)([^\S\n]+)།(?![།༎༏༐༑༔༴])[^\S\n]*\n?$/u;
 
+/** A render that ends HARD on a shad — nothing after it, not even a space. What follows must
+ *  be given a separator: the space closed out of `། །` was also the gap before whatever runs
+ *  on after it (the booklet's continuation rule reads this too, at its join). */
+export const SHAD_FLUSH = /[།༎༏༐༑༔༴]$/u;
+
 /** Delete the gap in ONE line's worth of tokens, or return null if it has none. The line is
  *  matched as one string and the deletion is mapped back to whichever token(s) hold those
  *  characters — the corpus keeps the space inside a single token (`། ། `, ` །`), but a
@@ -658,8 +663,34 @@ function closeVerseShads(chunks: DerivedChunk[]): DerivedChunk[] {
     let changed = false;
     const closeGroup = () => {
       if (!group.length) return;
-      const closed = closeShadInLine(group);
-      if (closed) { changed = true; toks.push(...closed); } else toks.push(...group);
+      // WHERE THE VERSE ENDS, not where the line does. A small-letter gloss — `ལན་གསུམ།`,
+      // "three times" — rides on the same rendered line whenever the break after the verse's
+      // shad is suppressed (a short verse group, or a display-break override of 0), so the
+      // line's LAST shad is the gloss's and the verse's own `། །` is no longer line-final.
+      // Cut the trailing minor run and close at the verse's own tail.
+      //
+      // `small` is the only per-token tag this pass has, and it is the right one: a verse
+      // chunk holds verse tokens, MINOR tokens (small letters / sapche) and whitespace, and
+      // nothing else — any other type would have flushed the chunk. So "not small, not
+      // whitespace" IS "verse" here.
+      let end = group.length;
+      while (end > 0 && (group[end - 1].small || group[end - 1].render.trim() === '')) end -= 1;
+      // …unless the cut leaves nothing: a `small - verses` line is small from end to end, and
+      // cutting it would stop closing the very lines this rule is for.
+      const cut = group.slice(0, end).some((t) => t.render.trim() !== '') ? end : group.length;
+      const closed = closeShadInLine(group.slice(0, cut));
+      if (closed) {
+        changed = true;
+        // The gloss needs the separator the closure just ate, or it reads flush against the
+        // shad (`བགྱི།།ལན་གསུམ།`). One space, on the verse's own last token — no new token.
+        const tail = group.slice(cut);
+        const opens = tail.find((t) => t.render.trim() !== '');
+        const lastIdx = closed.length - 1;
+        if (opens && SHAD_FLUSH.test(closed[lastIdx].render) && /^\S/u.test(opens.render)) {
+          closed[lastIdx] = { ...closed[lastIdx], render: `${closed[lastIdx].render} ` };
+        }
+        toks.push(...closed, ...tail);
+      } else toks.push(...group);
       group = [];
     };
     // A LINE ends at the token carrying the break (the synthesized `\n` `deriveChunks`
