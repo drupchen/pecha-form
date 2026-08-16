@@ -3,7 +3,7 @@ import {
   type DocumentItem,
 } from '../../api/client';
 import {
-  deriveChunks, insertTitleChunks, moveDisplays, SHAD_FLUSH, type MovePlacement,
+  deriveChunks, insertTitleChunks, moveDisplays, closeShadInLine, type MovePlacement,
 } from '../translate/chunks';
 import { kindOf } from '../phonetics/lines';
 import { apiFetch } from '../../api/http';
@@ -96,6 +96,42 @@ const rk = (a: string, b: string) => `${a}-${b}`;
  *  syllable and covering different lengths both answer for that chunk, and when they carry the
  *  same body the paragraph printed twice. See the call site in `transFor`. */
 export const joinDistinctBodies = (bodies: string[]): string => [...new Set(bodies)].join('');
+
+/**
+ * NO SPACE BEFORE A VERSE LINE'S CLOSING SHAD — asked of the line the booklet actually prints.
+ *
+ * Tibetan writes none: the gap in `ཅིག །` and `སོ། །` is there because ཀ ག ཤ take no tsheg and
+ * the scribe leaves a blank where it would have been. The rule is exactly one sentence: when a
+ * line ENDS on a space and a shad, and that ending is verse (`verse`, or the small-letter
+ * `small - verses`), the space goes. Nothing else is touched.
+ *
+ * It is asked HERE, not in `deriveChunks`, because a booklet line is not final until the
+ * continuation rule above has appended a small-instructions run's Tibetan to it. A line that
+ * runs on into such a gloss no longer ends on ` །` — its last substantial token is the gloss's,
+ * not the verse's — so it keeps its text exactly as written (`མཆི། །ལན་གསུམ།`). Closing at derive
+ * time judged a line that was about to grow, and moved the gap to the wrong side of the shads.
+ *
+ * Only `render` strings change, and only by deleting spaces: the token count, every id and
+ * every `opId` come out identical, so the row contract, the page-break anchors and the split
+ * machinery still address exactly what they did.
+ */
+export function closeVerseLineEnds(lines: DocLine[]): DocLine[] {
+  let any = false;
+  const out = lines.map((l) => {
+    const verse = l.role === 'verse' || (l.role === 'small' && l.smallKind === 'verses');
+    if (!verse || !l.tokens.length) return l;
+    // "The end of the line is tagged verse": the last substantial token must be the verse's
+    // own, never a borrowed small-letter run. (A `small - verses` line is small throughout —
+    // its own type — so the flag says nothing there and the role has already spoken.)
+    const lastReal = [...l.tokens].reverse().find((t) => t.render.trim() !== '');
+    if (!lastReal || (l.role === 'verse' && lastReal.small)) return l;
+    const closed = closeShadInLine(l.tokens);
+    if (!closed) return l;
+    any = true;
+    return { ...l, tokens: closed };
+  });
+  return any ? out : lines;
+}
 
 /** A line the leading-title lift takes out of the body and onto the text's title page.
  *  Shared by `compileTextItem`'s continuation rule and `compileDocument`'s lift so the two
@@ -242,9 +278,14 @@ export async function compileTextItem(
   // the page breaks. The translate bench's move layer rearranges the reading flow of the
   // TRANSLATION, and the scripture does not follow it — the recto's own order is built from
   // this same stream at the end of the compile (`applyMovesToRecto`).
+  // `closeShads` (last arg) is OFF for both: the shad rule is asked at the end of this compile,
+  // once the continuation rule has finished assembling the lines this document prints
+  // (`closeVerseLineEnds`). Asked here it would judge a line that is about to grow a gloss.
   const lines = insertTitleChunks(
-    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true), layouts);
-  const chunks = deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, false, true);
+    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true, false),
+    layouts);
+  const chunks = deriveChunks(
+    tokens, markerOffsets, spans, breakOverrides, groups, undefined, false, true, false);
 
   // Where each syllable sits in the stream — so rows matched to a line come back in the
   // order they are read, whatever order the API listed them in.
@@ -488,23 +529,13 @@ export async function compileTextItem(
       // ONLY that artificial newline (not other whitespace), so the run flows straight on
       // after the source's own separator. The tokens are appended UNMODIFIED, reproducing the
       // editor's text exactly. The clone never mutates the shared token; chains strip each
-      // prior run's `\n` at their own join.
-      //
-      // …and supply the separator when the host has none left. A verse line ending `། །` now
-      // closes to `།།` (`closeVerseShads`) — and that inner space was ALSO the gap before the
-      // gloss, so without it the instruction ran flush into the shad: `བགྱི།།ལན་གསུམ།`. When the
-      // host ends hard on a shad and the run opens on a letter, one space goes back. It is a
-      // display join like the `\n` strip above, written onto the host's LAST token, so the
-      // token count — what the row contract, the anchors and the split machinery address —
-      // is exactly what it was. A host ending on a tsheg (་) or already on a space joins as
-      // it always did.
+      // prior run's `\n` at their own join. The host keeps the separator it was written with —
+      // the space inside its closing `། །` — because the shad closure runs AFTER this merge
+      // (`closeVerseLineEnds`) and a line that continues into a gloss is not closed at all.
       const last = host.tokens[host.tokens.length - 1];
-      const opens = l.tokens.find((t) => t.render.trim() !== '');
-      const joined = last ? last.render.replace(/\n+$/u, '') : '';
-      const sep = last && opens && SHAD_FLUSH.test(joined) && /^\S/u.test(opens.render) ? ' ' : '';
       host.tokens = [
         ...host.tokens.slice(0, -1),
-        ...(last ? [{ ...last, render: joined + sep }] : []),
+        ...(last ? [{ ...last, render: last.render.replace(/\n+$/u, '') }] : []),
         ...l.tokens.map((t) => ({ ...t, small: true })),
       ];
       host.endSylId = l.endSylId;
@@ -520,6 +551,13 @@ export async function compileTextItem(
   }
   out.length = 0;
   out.push(...mergedOut);
+
+  // NOW the lines are the lines this document prints, so now the shad rule can be asked (see
+  // `closeVerseLineEnds`): the merge above is what turns a verse line ending `། །` into one
+  // that runs on into its gloss, and only a line still ENDING on ` །` is closed.
+  const closedOut = closeVerseLineEnds(out);
+  out.length = 0;
+  out.push(...closedOut);
 
   // ── Navigation outline: the TRANSLATION pane's headings, per language ──
   // The booklet reads in one language, so its navigation is the sequence of headings the

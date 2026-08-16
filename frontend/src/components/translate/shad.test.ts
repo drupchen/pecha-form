@@ -146,7 +146,7 @@ describe('what it must not touch', () => {
   });
 });
 
-describe('a verse line that carries a small-letter gloss', () => {
+describe('a line that runs on past its verse', () => {
   /** Render the whole stream the way the benches draw it, with the verse's own break lifted so
    *  the gloss rides on the verse's line. */
   const inline = (verse: string[], gloss: string[], glossTag = TAGS.smallInstructions) => {
@@ -156,17 +156,18 @@ describe('a verse line that carries a small-letter gloss', () => {
     return chunks.flatMap((c) => c.tokens).map((t) => t.render).join('');
   };
 
-  it('closes the VERSE’s shad, not the line’s last one', () => {
-    // Without this the line ends on the gloss's `། `, the verse's `། །` is not line-final, and
-    // nothing closed — the case the first cut of this rule missed.
+  it('is left exactly as written — the line does not END on ` །`', () => {
+    // `ལན་གསུམ།` ("three times") continues the line, so the verse's `། །` is not the line's
+    // ending and the rule has nothing to say. Reaching inside for the verse's own tail moved
+    // the gap to the far side of the shads (`ཤོག།། ལན་གསུམ།`), which is not the rule.
     expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། ']))
-      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།། ལན་གསུམ། ');
+      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག། །ལན་གསུམ། ');
   });
 
-  it('keeps a space between the shad and the gloss — the separator the closure ate', () => {
-    // `བགྱི།།ལན་གསུམ།` ran the two together on the printed page. One space, and only one.
-    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། '])).toContain('ཤོག།། ལན་');
-    expect(inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། '])).not.toContain('ཤོག།།  ');
+  it('never inserts a separator of its own', () => {
+    const out = inline([...LINE, '། །'], ['ལན་', 'གསུམ', '། ']);
+    expect(out).toContain('ཤོག། །ལན་');
+    expect(out).not.toContain('།། ');
   });
 
   it('leaves the gloss’s own text exactly as typed, shads and all', () => {
@@ -176,12 +177,16 @@ describe('a verse line that carries a small-letter gloss', () => {
   it('treats a trailing sapche run the same way', () => {
     // (A sapche run start carries its own break, hence the trailing newline.)
     expect(inline([...LINE, '། །'], ['དངོས་', 'གཞི'], { name: 'sapche', color: '#08a' }))
-      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།། དངོས་གཞི\n');
+      .toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག། །དངོས་གཞི\n');
   });
 
-  it('adds no separator when the verse already ends on one', () => {
-    expect(inline(['ཐམས་', 'ཅད་', 'བདེ་', 'སོ', '། ། '], ['ལན་', 'གསུམ']))
-      .toBe('ཐམས་ཅད་བདེ་སོ།། ལན་གསུམ');
+  it('still closes the verse line when the gloss keeps its own line', () => {
+    // No override: the verse's shad carries its break, so the line ends there and closes —
+    // and the gloss, on its own line, is untouched.
+    const { tokens, spans } = mixed([...LINE, '། །'], ['ལན་', 'གསུམ', '། ']);
+    const out = deriveChunks(tokens, new Set<number>(), spans, new Map(), GROUPS)
+      .flatMap((c) => c.tokens).map((t) => t.render).join('');
+    expect(out).toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།།\nལན་གསུམ། ');
   });
 });
 

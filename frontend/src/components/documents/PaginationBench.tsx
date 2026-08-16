@@ -116,8 +116,14 @@ interface OverviewEdition {
  *    (`བགྱི།།ལན་གསུམ།`). One space goes back wherever the host now ends hard on a shad — at the
  *    booklet's continuation join and at an inline gloss — and the closure now reads the
  *    VERSE's own tail rather than the line's, so a line carrying a gloss closes at all.
+ * 16: …and that was more than the rule asked for. The rule is only ever about a line that
+ *    ENDS on ` །`: a line running on into its gloss keeps its text exactly as written
+ *    (`མཆི། །ལན་གསུམ།`), so no closure and no repair space. The booklet now asks the question
+ *    after its continuation rule has assembled the line (`closeVerseLineEnds`), which is the
+ *    first moment the line is the one it prints. Gloss-carrying lines are a space wider than
+ *    epochs 14 and 15 measured.
  */
-const RENDER_EPOCH = 15;
+const RENDER_EPOCH = 16;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.
