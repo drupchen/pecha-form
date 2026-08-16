@@ -113,6 +113,10 @@ def list_derivation_ops(text_id: int):
                     "SELECT title FROM texts WHERE id = ?", (op["src_text_id"],)
                 ).fetchone()
                 summary = f"transcluded from “{src['title'] if src else '?'}”"
+                # A run cut in two so something could be inserted between its segments
+                # legitimately leaves two rows for one source — say which is which.
+                if op["split_of"]:
+                    summary += " (continued)"
             d["summary"] = summary
             out.append(d)
         return out

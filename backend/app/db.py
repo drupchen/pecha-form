@@ -362,7 +362,13 @@ CREATE TABLE IF NOT EXISTS derivation_ops (
     -- transclude only: a range LINK into another text (no copy).
     src_text_id      INTEGER REFERENCES texts(id) ON DELETE CASCADE,
     src_start_syl_id TEXT,
-    src_end_syl_id   TEXT
+    src_end_syl_id   TEXT,
+    -- transclude only: the op this one was CUT FROM, when something was inserted between
+    -- two segments of a transcluded text. Both halves compose under the ORIGINAL id (see
+    -- `emit_transclude`), because `(syllable, op_id)` is the occurrence identity every layer
+    -- above anchors on — the booklet's page breaks most of all. Deliberately not a foreign
+    -- key: it is a historical identity and must outlive the row it names.
+    split_of         INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_derivation_ops_text ON derivation_ops(text_id);
 
@@ -942,6 +948,8 @@ CREATE INDEX IF NOT EXISTS idx_invites_org ON invites(org_id);
 # Additive column migrations for pre-existing tables. Each is applied only if
 # the column is missing, so existing rows and data are untouched.
 _COLUMN_MIGRATIONS = {
+    # See the CREATE above: the halves of a cut transclusion share one occurrence identity.
+    "derivation_ops": [("split_of", "INTEGER")],
     # Image display size (Phase D3 resize) — added to the pre-existing document_images table.
     "document_images": [
         ("width_mm", "REAL"),
