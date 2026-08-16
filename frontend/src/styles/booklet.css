@@ -144,6 +144,16 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .booklet-page.furniture { padding: var(--m-top) var(--m-outer) var(--m-bottom); }
 .bk-titlepage { height: 100%; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; gap: 4mm; }
+/* The translated blocks (main title, sub-title, origin, author, and any paragraph beyond
+   them), in a box of NO HEIGHT. The page centres what it holds, so an edition missing its
+   title re-centred its seal and its Tibetan and fell out of step with the other editions —
+   and those two are the same picture and the same string in all of them. So the box takes
+   itself out of that sum: `height: 0` leaves the shared pair centring on its own height,
+   identical everywhere, while these children flow on below, unclipped, spaced as they were
+   when they were siblings (hence the same 4mm gap; the parent's gap still gives the first of
+   them its air). See `TitleContent`. */
+.bk-title-trans { height: 0; align-self: stretch; display: flex; flex-direction: column;
+  align-items: center; gap: 4mm; }
 /* A title slot's field in the Documents tab: contentEditable, so it needs its own empty
    state and focus ring — an empty one collapses to nothing and looks like a bug otherwise. */
 .bk-richline:empty::before {
@@ -979,6 +989,10 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .style-specimen .bk-copyright,
 .style-specimen .bk-toc { height: auto; display: block; }
 .style-specimen .bk-titlepage { text-align: center; }
+/* The specimen lays the title page out as ordinary blocks, so the zero-height box that keeps
+   the translated blocks out of the page's centring has to become an ordinary block too — at
+   height 0 they would paint over whatever the specimen shows next. */
+.style-specimen .bk-title-trans { height: auto; display: block; }
 .style-specimen .bk-seal { margin-bottom: 2mm; }
 /* The cover ornament's slot in the specimen: the seal (image or ༀ) with its loader beside it.
    The tools are studio chrome — they never print, so they sit outside the centred flow. */

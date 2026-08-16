@@ -14,7 +14,7 @@ import {
   NavOutline,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
-  PageGround, shiftHostOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
+  PageGround, shiftHostOf, inkBlocksOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
   furnitureSpaceOf as furnitureSpaceRead,
   FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
@@ -1468,15 +1468,21 @@ export const PaginationBench: React.FC<{
    * Its own kind rather than the body pair, because those anchor on a page's first LINE and
    * a special page has none; and the write goes through `withUndo(..., slotStr(body))` since
    * `putRow`/`delRow` take a `DocLine`.
+   *
+   * `forLang` is the column being dragged — this edition in the detailed view, the column's own
+   * in the overview. The overview used to write EVERY edition at once, to keep the columns
+   * aligned; the columns now align by construction (the seal and the Tibetan are placed once,
+   * for all editions, and no longer move when an edition's title is missing), so a drag on a
+   * translated block means what it says: move it HERE. The two views are one function again.
    */
-  const furnitureGroundOf = (item: DocumentItem): BlockGroundOf => (key: string) => {
-    const rowLang = key.startsWith('#') ? furnitureShiftLang(key, lang) : '';
+  const furnitureGroundOf = (item: DocumentItem, forLang = lang): BlockGroundOf => (key: string) => {
+    const rowLang = key.startsWith('#') ? furnitureShiftLang(key, forLang) : '';
     const body = {
       item_id: item.id, anchor_syl_id: key,
       kind: FURNITURE_SHIFT_KIND as DocumentLayoutKind, lang: rowLang,
     };
     return {
-      valueMm: furnitureShiftMm(rows, item.id, key, lang),
+      valueMm: furnitureShiftMm(rows, item.id, key, forLang),
       onCommit: (mm: number) => {
         void withUndo(`${KIND_LABEL[FURNITURE_SHIFT_KIND] ?? 'block placement'} changed`,
           [body], async () => {
@@ -1487,35 +1493,6 @@ export const PaginationBench: React.FC<{
       },
     };
   };
-
-  /** The overview's block-placement ground: a live grab bar, like the detailed view, but one
-   *  drag moves the block in EVERY edition at once — the whole reason to place a title block
-   *  from the overview is to keep the four columns aligned. A per-edition block (#title_main /
-   *  _sub / _origin / _author, the seal) writes to all languages; a shared one (#title_tib*,
-   *  the booklet's own Tibetan) writes its single '' row exactly as the detailed view does. The
-   *  handle reads THIS column's current value, so each column shows where its edition sits. */
-  const furnitureGroundOfAll = (item: DocumentItem, colLang: string): BlockGroundOf =>
-    (key: string) => {
-      const perEdition = key.startsWith('#') && !key.startsWith('#title_tib');
-      const langs = perEdition ? (doc?.languages ?? [colLang]) : [''];
-      const slots = langs.map((lg) => ({
-        item_id: item.id, anchor_syl_id: key,
-        kind: FURNITURE_SHIFT_KIND as DocumentLayoutKind, lang: lg,
-      }));
-      return {
-        valueMm: furnitureShiftMm(rows, item.id, key, colLang),
-        onCommit: (mm: number) => {
-          const label = `${KIND_LABEL[FURNITURE_SHIFT_KIND] ?? 'block placement'} changed`
-            + (perEdition ? ' (all editions)' : '');
-          void withUndo(label, slots, async () => {
-            for (const body of slots) {
-              Math.abs(mm) < 0.05 ? await deleteLayoutRow(documentId, body)
-                                  : await putLayoutRow(documentId, { ...body, value: mm });
-            }
-          }, slotStr(slots[0]));
-        },
-      };
-    };
 
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
@@ -1791,8 +1768,11 @@ export const PaginationBench: React.FC<{
     const extentOf = (c: HTMLElement) => {
       const w = shiftHostOf(c);
       const page = c.parentElement as HTMLElement;
+      // `inkBlocksOf`, not `.children`: a title page's translated blocks sit inside a box of
+      // no height, and unioning that box instead of them ends a cover's ink at the Tibetan.
+      const blocks = inkBlocksOf(w);
       let ink = -Infinity, inkTop = Infinity;
-      for (const ch of Array.from(w.children)) {
+      for (const ch of blocks) {
         const r = ch.getBoundingClientRect();
         ink = Math.max(ink, r.bottom);
         inkTop = Math.min(inkTop, r.top);
@@ -1807,7 +1787,7 @@ export const PaginationBench: React.FC<{
       const s = config ? pr.height / (config.page_height_mm * MM_PX)
               : page.clientHeight ? pr.height / page.clientHeight : 1;
       return {
-        n: w.children.length,
+        n: blocks.length,
         setSlack: c.clientHeight - (ink - wr.top) / s,      // the block; shift-invariant
         footSlack: (pr.bottom - ink) / s,                   // the sheet, below
         // The sheet, above — off the INK, not the box. A special page places its blocks one
@@ -1901,7 +1881,8 @@ export const PaginationBench: React.FC<{
   // own in the overview. The horizontal resize is per-edition (a title reads at a different
   // width once its language does), so an overview column must key its width to ITS edition, not
   // the on-screen one; otherwise every column shows and edits the same row and the resize looks
-  // shared. (The vertical drag is the opposite — shared — via `furnitureGroundOfAll`.)
+  // shared. The vertical drag (`furnitureGroundOf`) takes `forLang` for exactly the same
+  // reason, and the two now agree block for block on what is shared and what is per edition.
   const furnitureWidthOf = (item: DocumentItem, forLang = lang): BlockWidthOf => (key: string) => {
     const furn = key.startsWith('#');
     const kind: DocumentLayoutKind = furn ? 'width_furniture' : 'width_tibetan';
@@ -1989,7 +1970,7 @@ export const PaginationBench: React.FC<{
                       orgSeal={orgSeal} widthOf={furnitureWidthOf(item, ed.lang)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
-                      groundOf={furnitureGroundOfAll(item, ed.lang)}
+                      groundOf={furnitureGroundOf(item, ed.lang)}
                       spaceOf={furnitureSpaceRead(rows, item.id)}
                       onResizeImage={(mm) => void onResizeImage(item, mm)}
                       version={versionLabel}

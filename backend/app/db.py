@@ -1893,6 +1893,50 @@ def _fold_copyright_into_backcover(conn) -> None:
         conn.execute("DELETE FROM document_items WHERE id = ?", (cp_id,))
 
 
+def _share_image_placement(conn) -> None:
+    """The cover seal / image page / back-cover picture is ONE picture, printed in every
+    edition, so its vertical placement is now stored once (``lang = ''``) like the booklet's own
+    Tibetan — see ``furnitureShiftLang``. Rows written per edition would simply stop resolving,
+    so fold each ``(document, item)`` group into a single shared row.
+
+    The kept value is the MODAL one, ties broken by the document's first language: where the
+    editions differ it is because a missing translation re-centred the page and the odd edition
+    was nudged to compensate — which the layout no longer requires. Idempotent: a no-op once
+    every ``#image`` placement is shared (fresh DBs, re-runs)."""
+    groups = conn.execute(
+        "SELECT document_id, item_id FROM document_layout "
+        "WHERE kind = 'shift_furniture' AND anchor_syl_id = '#image' AND lang IS NOT NULL "
+        "AND lang != '' GROUP BY document_id, item_id").fetchall()
+    for g in groups:
+        doc_id, item_id = g["document_id"], g["item_id"]
+        rows = conn.execute(
+            "SELECT lang, value FROM document_layout WHERE kind = 'shift_furniture' "
+            "AND anchor_syl_id = '#image' AND document_id = ? AND item_id = ?",
+            (doc_id, item_id)).fetchall()
+        per_lang = {r["lang"]: r["value"] for r in rows if (r["lang"] or "")}
+        if not per_lang:
+            continue
+        counts: dict[float, int] = {}
+        for v in per_lang.values():
+            counts[v] = counts.get(v, 0) + 1
+        top = max(counts.values())
+        first = conn.execute(
+            "SELECT lang FROM document_languages WHERE document_id = ? "
+            "ORDER BY position, lang LIMIT 1", (doc_id,)).fetchone()
+        first_lang = first["lang"] if first else None
+        tied = [v for v, n in counts.items() if n == top]
+        keep = (per_lang.get(first_lang) if first_lang and per_lang.get(first_lang) in tied
+                else tied[0])
+        conn.execute(
+            "DELETE FROM document_layout WHERE kind = 'shift_furniture' "
+            "AND anchor_syl_id = '#image' AND document_id = ? AND item_id = ?",
+            (doc_id, item_id))
+        conn.execute(
+            "INSERT INTO document_layout (document_id, item_id, anchor_syl_id, kind, value, lang) "
+            "VALUES (?, ?, '#image', 'shift_furniture', ?, '')",
+            (doc_id, item_id, keep))
+
+
 def init_db():
     conn = get_db()
     # WAL survives in the DB file; set once so concurrent multi-user reads never
@@ -1925,6 +1969,8 @@ def init_db():
                      "error = 'interrupted by restart' WHERE status = 'rendering'")
         # The copyright page folded into the back cover — move its content over and drop it.
         _fold_copyright_into_backcover(conn)
+        # The cover image's placement became shared across editions — fold the per-edition rows.
+        _share_image_placement(conn)
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)

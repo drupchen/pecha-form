@@ -80,6 +80,20 @@ export function shiftHostOf(content: HTMLElement): HTMLElement {
 }
 
 /**
+ * The blocks a page's ink is actually made of.
+ *
+ * Every measurement here — the room a drag has, the datum rule, the overfull test — reads the
+ * shift host's CHILDREN and unions their rects. A title page's translated blocks live inside a
+ * box of no height (`.bk-title-trans`, so they cannot move the shared seal and Tibetan), and a
+ * zero-height box unioned as-is reports a cover whose ink stops at the Tibetan: room below
+ * over-reported, an overfull cover never lit. Descend into it — the blocks are the ink, the box
+ * is only how they are kept out of the centring.
+ */
+export const inkBlocksOf = (host: HTMLElement): HTMLElement[] =>
+  (Array.from(host.children) as HTMLElement[]).flatMap((k) =>
+    k.classList.contains('bk-title-trans') ? (Array.from(k.children) as HTMLElement[]) : [k]);
+
+/**
  * How far one page's ink could travel before it leaves the SHEET, in mm, either way.
  *
  * Measured off the INK, not the container: a furniture page centres its block inside a
@@ -95,7 +109,7 @@ export function shiftHostOf(content: HTMLElement): HTMLElement {
 export function groundRoom(pageEl: HTMLElement, pageHeightMm?: number): { up: number; down: number } {
   const content = pageEl.querySelector<HTMLElement>(':scope > .booklet-content');
   if (!content) return { up: 0, down: 0 };
-  const kids = Array.from(shiftHostOf(content).children) as HTMLElement[];
+  const kids = inkBlocksOf(shiftHostOf(content));
   if (!kids.length) return { up: 0, down: 0 };
   let top = Infinity, bottom = -Infinity;
   for (const k of kids) {
@@ -535,7 +549,7 @@ const Ground: React.FC<{
     // stays put while the block moves out from under it.
     if (datum) {
       const content = page.querySelector<HTMLElement>(':scope > .booklet-content');
-      const kids = content ? (Array.from(shiftHostOf(content).children) as HTMLElement[]) : [];
+      const kids = content ? inkBlocksOf(shiftHostOf(content)) : [];
       if (kids.length) {
         const pr = page.getBoundingClientRect();
         setMark((Math.min(...kids.map((k) => k.getBoundingClientRect().top)) - pr.top) / s);
@@ -1077,11 +1091,19 @@ export const TitleContent: React.FC<{
             {t.tokens.map((tk, k) => <span key={k}>{tk.render}</span>)}
           </WidthLine>
         ))}
-      {/* The four named slots, each the override or the paragraph it was seeded from.
-          The width KEY is deliberately the one this block already had — paragraph n has
-          always been `#title_sub{n-1}` — because naming the slots must not move anyone's
-          stored adjustments onto a different block. The names are new; the addresses are
-          not. */}
+      {/* THE TRANSLATED BLOCKS, IN A BOX OF NO HEIGHT.
+          The page centres what it holds, so when an edition has no translated title its stack
+          is two lines shorter and everything left in it — the seal, the Tibetan — re-centres
+          downward, out of step with the other three (an `en` cover sitting visibly below the
+          `fr` beside it). Those two are the SAME in every edition and must print at the same
+          height in all of them, so they are what the page centres, alone: this box contributes
+          nothing to that (`height: 0`) while its children flow on below it exactly as they did
+          as siblings. An edition with no title now leaves a blank there instead of dragging
+          the seal down with it.
+          The four named slots keep the width KEY they already had — paragraph n has always
+          been `#title_sub{n-1}` — because naming the slots must not move anyone's stored
+          adjustments onto a different block. The names are new; the addresses are not. */}
+      <div className="bk-title-trans">
       {TITLE_BLOCKS.map((block) => {
         const meta = TITLE_BLOCK_META[block];
         const own = slots?.[block];
@@ -1105,6 +1127,7 @@ export const TitleContent: React.FC<{
           <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(p) }} />
         </WidthLine>
       ))}
+      </div>
     </div>
   );
 };
@@ -1386,10 +1409,14 @@ export const PAGE_SHIFT_KIND = { verso: 'page_shift_verso', recto: 'page_shift_r
  */
 export const FURNITURE_SHIFT_KIND = 'shift_furniture';
 
-/** The lang seam, identical to `width_furniture`'s: '#title_tib*' is the booklet's own
- *  Tibetan, the same string in every edition, so its placement is set once. */
+/** The lang seam: a block whose CONTENT is the same in every edition is placed once, for all
+ *  of them. That is '#title_tib*' (the booklet's own Tibetan, one string printed in every
+ *  edition) and '#image' — the cover seal, the image page's picture, the back cover's — which
+ *  is one picture, and which the editions must never be able to place differently from the
+ *  Tibetan it sits above. Everything else (the translated title blocks, the TOC entries, the
+ *  furniture bodies) reads and writes its own edition's row. */
 export const furnitureShiftLang = (key: string, lang: string): string =>
-  key.startsWith('#title_tib') ? '' : lang;
+  key.startsWith('#title_tib') || key === '#image' ? '' : lang;
 
 export const furnitureShiftMm = (
   rows: DocumentLayoutRow[], itemId: number, key: string, lang: string,
