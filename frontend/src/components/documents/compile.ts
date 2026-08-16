@@ -555,9 +555,12 @@ export async function compileTextItem(
   // NOW the lines are the lines this document prints, so now the shad rule can be asked (see
   // `closeVerseLineEnds`): the merge above is what turns a verse line ending `། །` into one
   // that runs on into its gloss, and only a line still ENDING on ` །` is closed.
-  const closedOut = closeVerseLineEnds(out);
-  out.length = 0;
-  out.push(...closedOut);
+  //
+  // Written back IN PLACE, one index at a time. `closeVerseLineEnds` returns its argument by
+  // identity when it changes nothing (most documents), so `out.length = 0` followed by
+  // `out.push(...result)` emptied the array it was about to spread — every text page with no
+  // verse line to close compiled to ZERO lines and the bench showed "No pages".
+  closeVerseLineEnds(out).forEach((l, i) => { out[i] = l; });
 
   // ── Navigation outline: the TRANSLATION pane's headings, per language ──
   // The booklet reads in one language, so its navigation is the sequence of headings the

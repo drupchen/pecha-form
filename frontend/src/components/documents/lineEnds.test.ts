@@ -84,6 +84,23 @@ describe('closing a verse line’s own ending', () => {
     expect(closeVerseLineEnds([head])[0]).toBe(head);
   });
 
+  it('LOSES NO LINE when written back in place — the identity trap', () => {
+    // It returns its argument by identity when it changes nothing, which is most documents.
+    // The compile writes the result back index by index for exactly that reason: clearing the
+    // array first and spreading the result into it emptied the array it was spreading, and
+    // every text page with no verse line to close compiled to zero lines ("No pages").
+    const lines = [line({ ...verseLine(), role: 'prose' }), verseLine()];
+    const out = [...lines];
+    closeVerseLineEnds(out).forEach((l, i) => { out[i] = l; });
+    expect(out).toHaveLength(lines.length);
+    expect(out.map((l) => l.key)).toEqual(lines.map((l) => l.key));
+
+    const untouched = [line({ ...verseLine(), role: 'prose' })];
+    const same = [...untouched];
+    closeVerseLineEnds(same).forEach((l, i) => { same[i] = l; });
+    expect(same).toHaveLength(1);
+  });
+
   it('changes no id, no opId and no token count — and returns the list by identity when it changes nothing', () => {
     const before = verseLine();
     const out = closeVerseLineEnds([before]);
