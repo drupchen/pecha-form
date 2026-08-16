@@ -90,6 +90,13 @@ export const COMPILE_BUILD: object = {};
 
 const rk = (a: string, b: string) => `${a}-${b}`;
 
+/** The bodies of every translation anchored in one derived chunk, joined for display — each
+ *  DISTINCT body once, in the order the stream reads them. A derived chunk can span several of
+ *  the origin's, whose translations must all print; but two origin chunks starting on the SAME
+ *  syllable and covering different lengths both answer for that chunk, and when they carry the
+ *  same body the paragraph printed twice. See the call site in `transFor`. */
+export const joinDistinctBodies = (bodies: string[]): string => [...new Set(bodies)].join('');
+
 /** A line the leading-title lift takes out of the body and onto the text's title page.
  *  Shared by `compileTextItem`'s continuation rule and `compileDocument`'s lift so the two
  *  cannot disagree about which lines the body keeps. */
@@ -299,12 +306,20 @@ export async function compileTextItem(
     // EVERY translation anchored in this chunk, in stream order — a derived chunk can span
     // several of the origin's, and taking the first threw the others away. Concatenated as
     // HTML, so `splitParagraphs` below sees all of their paragraphs.
+    //
+    // …but each DISTINCT body only once. Two of the origin's chunks may start on the same
+    // syllable and cover different lengths — an earlier one the translator superseded by a
+    // longer one over the same passage — and both then answer here. When they say the same
+    // thing, printing both printed the paragraph twice (text 77's opening instruction, whose
+    // chunks 542 and 543 carry a byte-identical French body). Two chunks saying DIFFERENT
+    // things still both print: only the repetition goes. The overlapping chunks themselves are
+    // data and are left alone — they are the translator's to resolve in the bench.
     const hits = ch.sylIds
       .flatMap((id) => transByStart.get(id) ?? [])
       .sort((a, b) => (posById.get(a.start_syl_id) ?? 0) - (posById.get(b.start_syl_id) ?? 0))
       .map((c) => c.translations.find((x) => x.lang === lang)?.body)
       .filter((b): b is string => !!b);
-    return hits.join('');
+    return joinDistinctBodies(hits);
   };
 
   // Which chunk each line belongs to — by STREAM OFFSET, not syllable id. A composed
