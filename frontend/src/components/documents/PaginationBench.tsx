@@ -106,8 +106,13 @@ interface OverviewEdition {
  *    then LIFTED with it onto the title page — the first body page showed the translation
  *    with no Tibetan beside it. That Tibetan is back in the body, so those texts gain a
  *    line's worth of verso where they used to have none.
+ * 14: a verse line no longer prints the space before its closing shad (`ཅིག །` → `ཅིག།`,
+ *    `སོ། །` → `སོ།།` — see `closeVerseShads`). Every verse line in the booklet is a hair
+ *    narrower than the stored measurements believe, so they must be re-flowed rather than
+ *    trusted. The stream signature cannot see this on its own: `toSigLines` hashes token
+ *    COUNTS, and the count is exactly what this change preserves.
  */
-const RENDER_EPOCH = 13;
+const RENDER_EPOCH = 14;
 
 /**
  * One page's "fill it out" control: every empty line on THIS page grows by the same mm.

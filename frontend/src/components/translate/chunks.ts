@@ -584,5 +584,91 @@ export function deriveChunks(
     else if (count >= 1) sawBreak = true;
   }
   flush();
-  return chunks;
+  return closeVerseShads(chunks);
+}
+
+/**
+ * THE SPACE BEFORE A SHAD AT A VERSE LINE END — closed in the render, nowhere else.
+ *
+ * Tibetan writes no space before a shad. The gap in `ཅིག །` and `སོ། །` is a typing
+ * convention — ཀ ག ཤ take no tsheg, so the scribe leaves a blank where the tsheg would be —
+ * and the reader does not want to see it. It is printed text, not stored text, so this closes
+ * the gap in the RENDER string a token contributes: the one thing the translate bench, the
+ * phonetics bench, the aligned text page and the booklet all draw, and therefore the one
+ * change that reaches the PDF too (the PDF prints what the bench shows).
+ *
+ * What it must NOT disturb, and does not:
+ *   - the stored text, its syllables, their uuids and their derived offsets;
+ *   - the token COUNT and every token's id/`opId`/`small` — so the row contract, the
+ *     `(syllable, opId)` anchors, the page breaks and the mid-line split machinery still
+ *     address exactly what they addressed before. Only `render` changes, and only by
+ *     deleting spaces.
+ *   - `DerivedChunk.text`, which is the INPUT to phonetics generation (`generateBo` /
+ *     `generateSkt` read `l.text`). Feeding the romanizers a different string is a different
+ *     change from closing a gap on the page; nothing renders `text` but a 24-char menu label.
+ *
+ * The scope is exactly the cases asked for, and deliberately narrow:
+ *   - VERSE only — `verse`, and the small-letter verses of the small family
+ *     (`small - verses`). Prose, mantras, instructions, titles and colophons keep their text
+ *     as typed.
+ *   - at the END OF A LINE only. That is what keeps a yig-mgo opening cluster (`༄༅། །`, which
+ *     opens a line and is followed by the text it introduces) out of it.
+ *   - single shad to single shad. `།། །།` — the flourish that closes a text — has a double on
+ *     both sides and is never touched.
+ */
+type RenderToken = DerivedChunk['tokens'][number];
+
+/** A verse line's closable tail: `ཀ/ག/ཤ` (+ any vowel signs) or a LONE `།`, then whitespace,
+ *  then a LONE `།`, at the end of the line. Written with a leading capture instead of a
+ *  lookbehind (Safari < 16.4 has no lookbehind) so the space run's offset is computable.
+ *  Group 3 — the run to delete — is `[^\S\n]+`: every whitespace character EXCEPT a newline,
+ *  greedy, so two or three spaces all go and the line break itself never can. */
+const VERSE_SHAD_TAIL =
+  /(^|[^།༎༏༐༑༔༴༄-༊])(།|[ཀགཤ][ཱ-྄]*)([^\S\n]+)།(?![།༎༏༐༑༔༴])[^\S\n]*\n?$/u;
+
+/** Delete the gap in ONE line's worth of tokens, or return null if it has none. The line is
+ *  matched as one string and the deletion is mapped back to whichever token(s) hold those
+ *  characters — the corpus keeps the space inside a single token (`། ། `, ` །`), but a
+ *  composed stream may split it, and a character range does not care. */
+function closeShadInLine(toks: RenderToken[]): RenderToken[] | null {
+  const line = toks.map((t) => t.render).join('');
+  const m = VERSE_SHAD_TAIL.exec(line);
+  if (!m) return null;
+  const from = m.index + m[1].length + m[2].length;
+  const to = from + m[3].length;
+  let pos = 0;
+  return toks.map((t) => {
+    const s = pos, e = pos + t.render.length;
+    pos = e;
+    if (to <= s || from >= e) return t;
+    const a = Math.max(from, s) - s, b = Math.min(to, e) - s;
+    return { ...t, render: t.render.slice(0, a) + t.render.slice(b) };
+  });
+}
+
+/** Apply the rule to every verse / small-verse chunk, line by line. A chunk with nothing to
+ *  close is returned BY IDENTITY (as is the whole list), so nothing downstream re-renders or
+ *  re-measures for a pass that changed nothing. */
+function closeVerseShads(chunks: DerivedChunk[]): DerivedChunk[] {
+  let any = false;
+  const out = chunks.map((c) => {
+    if (c.tagType !== 'verse' && !(c.tagType === 'small' && c.smallKind === 'verses')) return c;
+    const toks: RenderToken[] = [];
+    let group: RenderToken[] = [];
+    let changed = false;
+    const closeGroup = () => {
+      if (!group.length) return;
+      const closed = closeShadInLine(group);
+      if (closed) { changed = true; toks.push(...closed); } else toks.push(...group);
+      group = [];
+    };
+    // A LINE ends at the token carrying the break (the synthesized `\n` `deriveChunks`
+    // appends at `count >= 1`, or a real newline token), and the chunk's tail is a line too.
+    for (const t of c.tokens) { group.push(t); if (t.render.includes('\n')) closeGroup(); }
+    closeGroup();
+    if (!changed) return c;
+    any = true;
+    return { ...c, tokens: toks };
+  });
+  return any ? out : chunks;
 }
