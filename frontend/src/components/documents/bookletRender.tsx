@@ -653,9 +653,15 @@ const Ground: React.FC<{
            onKeyDown={onKeyDown}
            onDoubleClick={() => onCommit(0)}>
         <span className="bk-ground-hint">↕</span>
-        {shifted && !dragging && (
+        {/* The reading. While DRAGGING it is the one thing you are looking at — aligning four
+            editions means reading four numbers — so it stays, live, for the whole gesture; and
+            `0.0` is a reading then, not an absence. It steps aside only for the page rail's
+            dashed datum rule (`datum`), which carries the same live value at the ink's
+            original top and would otherwise print it twice. At rest, only a block that has
+            actually been placed has something to say. */}
+        {(dragging ? !datum : shifted) && (
           <span className="bk-ground-chip">
-            {cur > 0 ? `↓${cur.toFixed(1)}` : `↑${(-cur).toFixed(1)}`}
+            {cur > 0.05 ? `↓${cur.toFixed(1)}` : cur < -0.05 ? `↑${(-cur).toFixed(1)}` : '0.0'}
           </span>
         )}
       </div>

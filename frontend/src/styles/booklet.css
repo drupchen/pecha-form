@@ -617,10 +617,17 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
 .bk-ground-hint { font: 9px/1 system-ui, sans-serif; color: inherit; opacity: 0;
                   margin-left: 1px; pointer-events: none; }
 .bk-ground:hover .bk-ground-hint { opacity: 0.7; }
+/* The reading. It is read at a glance, four columns at a time, while a block is moving — so
+   it is set dark and bold enough to survive the overview's scale, with a hairline halo for
+   where it crosses the text-block guide. The HUE stays the rail's, because the hue is meaning:
+   jade = this edition's placement, lapis = shared by all four. */
 .bk-ground-chip {
   position: absolute; top: 0; left: 4px;
-  font: 600 8px/1 system-ui, sans-serif; white-space: nowrap; pointer-events: none;
+  font: 700 9px/1 system-ui, sans-serif; white-space: nowrap; pointer-events: none;
+  text-shadow: 0 0 2px #fff, 0 0 2px #fff;
 }
+.bk-ground-edition .bk-ground-chip { color: #24614a; }   /* jade, darkened to read at rest */
+.bk-ground-shared .bk-ground-chip { color: #1f537a; }    /* lapis, likewise */
 /* Pushing against a clamp: the rail resists and greys at that end rather than disappearing.
    An absent control cannot say "this page is full"; a stuck one can. */
 .bk-ground[data-atend] { border-left-color: var(--ink-soft, #77706a); }
@@ -646,13 +653,27 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   /* Under the width grips' stacking so a grip is never buried by a neighbour's rail. */
   z-index: 3;
 }
-/* Reveal a block's rail on the BLOCK, not on the whole page: on a title page every block
-   would otherwise light up at once, which says nothing about which one you are near. */
-.booklet-page:hover .bk-ground-block { opacity: 0; }
-.bk-widthline:hover > .bk-ground-block { opacity: 0.45; }
-.bk-ground-block[data-shifted] { opacity: 0.3; }
-.bk-widthline:hover > .bk-ground-block[data-shifted] { opacity: 0.55; }
-.bk-ground-block:hover, .bk-ground-block[data-dragging] { opacity: 1; }
+/* A block's rail is ALWAYS DRAWN, unlike the page's.
+ *
+ * Placing a title block is comparative work — you are matching this block against the same
+ * block in three other editions — and a control that appears only under the pointer can be
+ * looked at in one column at a time. So the rail stands at rest, and its reading with it.
+ *
+ * The presence is carried by the LINE's alpha, never by `opacity` on the box: opacity
+ * multiplies down, so a faded rail can only hold a faded number, and the number is the whole
+ * point of the thing. The element stays at full opacity and the border does the fading — which
+ * is also why the two inherited `opacity` rules (`.bk-ground`'s 0, and the page-hover 0.45)
+ * are overridden here rather than tuned.
+ *
+ * `[data-shifted]` no longer changes anything on a block rail: every rail is drawn now, and
+ * which blocks have been MOVED is said far better by the reading beside them. */
+.bk-ground-block,
+.bk-ground-block[data-shifted],
+.booklet-page:hover .bk-ground-block { opacity: 1; }
+.bk-ground-block { border-left-color: rgba(58, 125, 95, 0.5); }
+.bk-widthline:hover > .bk-ground-block,
+.bk-ground-block:hover,
+.bk-ground-block[data-dragging] { border-left-color: var(--jade, #3a7d5f); }
 /* The chip would sit outside the sheet on a left-hugging rail; put it on the other side. */
 .bk-ground-block .bk-ground-chip { left: auto; right: 4px; }
 
