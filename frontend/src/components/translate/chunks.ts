@@ -1,4 +1,4 @@
-import type { EditorToken, ChunkLayout, Passage } from '../../api/client';
+import type { EditorToken, ChunkLayout, Passage, TranslationChunk } from '../../api/client';
 import type { Span } from '../../store/useTagStore';
 import { tokenBreak, shortVerseGroupEnders, sapcheRunStartIds } from '../workspace/segments';
 
@@ -323,11 +323,53 @@ export function insertTitleChunks(
   return out;
 }
 
+/**
+ * WHAT A REPEAT SAYS: the translation a passage row shows when it has no edit of its own.
+ *
+ * It repeats source text, so it repeats that text's translation — every source chunk
+ * OVERLAPPING the row's source range, in stream order. Overlapping, not exact: a passage may
+ * reuse part of a paragraph and should still start from that paragraph's words. Consecutive
+ * duplicates collapse, because one chunk can cover several of the row's units and would
+ * otherwise be printed once per unit.
+ *
+ * Shared deliberately: the translate bench shows this as the retrieved value the translator
+ * may override, and the booklet prints it. Two copies of the rule would drift, and the bench
+ * is where you read what the page will say.
+ */
+export function retrievedPassageBody(
+  chunks: TranslationChunk[],
+  posById: Map<string, number>,
+  unitStart: string | undefined,
+  unitEnd: string | undefined,
+  lang: string,
+): string {
+  const s0 = unitStart ? posById.get(unitStart) : undefined;
+  const e0 = unitEnd ? posById.get(unitEnd) : undefined;
+  if (s0 == null || e0 == null) return '';
+  const bodies: string[] = [];
+  chunks
+    .map(c => ({ c, s: posById.get(c.start_syl_id), e: posById.get(c.end_syl_id) }))
+    .filter((x): x is { c: TranslationChunk; s: number; e: number } =>
+      x.s != null && x.e != null && x.s <= e0 && x.e >= s0)
+    .sort((a, b) => a.s - b.s)
+    .forEach(x => {
+      const b = x.c.translations.find(t => t.lang === lang)?.body ?? '';
+      if (b && b !== bodies[bodies.length - 1]) bodies.push(b);
+    });
+  return bodies.join('');
+}
+
 /** Insert grayed, read-only PASSAGE rows: a passage repeats earlier content. Passages at
  *  the SAME anchor form one block — concatenate their source ranges, re-derive with the
  *  usual rules (so runs keep their type + line breaks and a whitelisted `ནས` fuses into a
  *  mantra), then emit ONE row per same-type group (adjacent same-type units merged), so
- *  each renders by its type (verse → numbered/editable, mantra → kept as is). */
+ *  each renders by its type (verse → numbered/editable, mantra → kept as is).
+ *
+ *  `shape` is how the re-derivation is asked for, and the defaults are the TRANSLATE BENCH's,
+ *  where a repeat is one card per same-type group. The BOOKLET needs the other shape — one row
+ *  per printed LINE, instructions their own unit, no merge — because these rows are lines of a
+ *  page: merged, a repeated four-line verse would arrive as a single row the flow cannot break,
+ *  and the shad rule is asked later, once the line is the one that prints. */
 export function insertPassageChunks(
   chunks: DerivedChunk[],
   passages: Passage[],
@@ -336,7 +378,11 @@ export function insertPassageChunks(
   spans: Span[],
   breakOverrides: Map<string, number>,
   groups: { verse: boolean; sapche: boolean; mantra: boolean },
+  shape: {
+    lineLevel?: boolean; splitInstructions?: boolean; closeShads?: boolean; merge?: boolean;
+  } = {},
 ): DerivedChunk[] {
+  const { lineLevel = false, splitInstructions = false, closeShads = true, merge = true } = shape;
   if (!passages.length) return chunks;
   const idx = new Map(tokens.map((t, i) => [t.id, i] as const));
   const out = [...chunks];
@@ -358,13 +404,34 @@ export function insertPassageChunks(
       }
     }
     const units = combined.length
-      ? deriveChunks(combined, markerOffsets, spans, breakOverrides, groups)
+      ? deriveChunks(combined, markerOffsets, spans, breakOverrides, groups, undefined,
+                     lineLevel, splitInstructions, closeShads)
       : [];
-    // Merge adjacent same-type units into groups ("concatenate adjacent same-type").
+    // The GROUP — a run of adjacent same-type units — is the unit of TRANSLATION, whichever
+    // shape the rows take: the bench shows one card per group and keys its passage-local edits
+    // by the group's first syllable, so a page whose rows are LINES must still carry the
+    // group's identity or an edit made in the bench would resolve on the first line only.
+    const groupOf = new Map<string, { start: string; end: string }>();
+    let g0: DerivedChunk | null = null;
+    const groupMembers: DerivedChunk[][] = [];
+    for (const u of units) {
+      if (g0 && g0.tagType === u.tagType && g0.smallKind === u.smallKind) {
+        groupMembers[groupMembers.length - 1].push(u);
+      } else {
+        g0 = u;
+        groupMembers.push([u]);
+      }
+    }
+    for (const ms of groupMembers) {
+      const span = { start: ms[0].startSylId, end: ms[ms.length - 1].endSylId };
+      for (const m of ms) groupOf.set(m.startSylId, span);
+    }
+    // Merge adjacent same-type units into groups ("concatenate adjacent same-type") — for the
+    // bench, where the group is the card. A page keeps its lines.
     const merged: DerivedChunk[] = [];
     for (const u of units) {
       const prev = merged[merged.length - 1];
-      if (prev && prev.tagType === u.tagType && prev.smallKind === u.smallKind) {
+      if (merge && prev && prev.tagType === u.tagType && prev.smallKind === u.smallKind) {
         prev.tokens = [...prev.tokens, ...u.tokens];
         prev.text = `${prev.text}\n${u.text}`;
         prev.endSylId = u.endSylId;
@@ -374,6 +441,9 @@ export function insertPassageChunks(
       ? out.findIndex(c => c.sylIds.includes(first.anchor_syl_id!)) : -1;
     const rows = merged.map((g, gi): DerivedChunk => {
       const srcChunk = chunks.find(c => c.sylIds.includes(g.startSylId));
+      // The row's own extent is what it DRAWS; the group's is what it MEANS. They are the same
+      // row when the rows are groups (the bench) and differ when the rows are lines (a page).
+      const span = groupOf.get(g.startSylId) ?? { start: g.startSylId, end: g.endSylId };
       return {
         key: `passage-${first.id}-${gi}`,
         startSylId: '', endSylId: '',
@@ -383,9 +453,9 @@ export function insertPassageChunks(
         ...(g.smallKind ? { smallKind: g.smallKind } : {}),
         passage: first,
         passageSrcOffset: srcChunk ? srcChunk.startOffset : undefined,
-        passageUnitStart: g.startSylId,
-        passageUnitEnd: g.endSylId,
-        passageUnitKey: g.startSylId,
+        passageUnitStart: span.start,
+        passageUnitEnd: span.end,
+        passageUnitKey: span.start,
       };
     });
     if (at >= 0) out.splice(at, 0, ...rows);

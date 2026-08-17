@@ -1,9 +1,10 @@
 import {
-  API_BASE, getEditorTokens, getTextTranslations, getPhonetics, getLayouts,
+  API_BASE, getEditorTokens, getTextTranslations, getPhonetics, getLayouts, getPassages,
   type DocumentItem,
 } from '../../api/client';
 import {
-  deriveChunks, insertTitleChunks, moveDisplays, closeShadInLine, type MovePlacement,
+  deriveChunks, insertTitleChunks, insertPassageChunks,
+  moveDisplays, closeShadInLine, type MovePlacement,
 } from '../translate/chunks';
 import { kindOf } from '../phonetics/lines';
 import { apiFetch } from '../../api/http';
@@ -70,6 +71,11 @@ export interface DocLine {
    *  above this row's own text. Recto only — the Tibetan never follows a move. Each keeps the
    *  face it had at its origin, so an instruction reads as an instruction wherever it lands. */
   borrowed?: BorrowedGloss[];
+  /** Set on a PASSAGE row — earlier text printed again where it is recited again. It prints
+   *  like any line of its type; what the flag is for is everything that must count the text
+   *  ONCE: the navigation outline, which would otherwise gain a second bookmark for a repeated
+   *  heading (and, having no syllable of its own, list it last). */
+  passageId?: number;
 }
 
 /** A gloss printed on a row other than its own (see `applyMovesToRecto`). */
@@ -221,16 +227,20 @@ export async function compileTextItem(
   // all keyed by (item, anchor) — resolves exactly as it does on the text page itself. That
   // is what makes an aligned text reusable instead of re-aligned.
   const layoutItemId = item.layout_item_id ?? item.id;
-  const [tokens, spans, breaks, markers, translations, phonetics, treeNodes, layouts] = await Promise.all([
-    getEditorTokens(textId),
-    fetchJson(`${API_BASE}/texts/${textId}/spans`),
-    fetchJson(`${API_BASE}/texts/${textId}/display-breaks`),
-    fetchJson(`${API_BASE}/texts/${textId}/markers`),
-    getTextTranslations(textId),
-    getPhonetics(textId, lang),
-    fetchJson(`${API_BASE}/texts/${textId}/tree-nodes`),
-    getLayouts(textId),
-  ]);
+  const [tokens, spans, breaks, markers, translations, phonetics, treeNodes, layouts, passages]
+    = await Promise.all([
+      getEditorTokens(textId),
+      fetchJson(`${API_BASE}/texts/${textId}/spans`),
+      fetchJson(`${API_BASE}/texts/${textId}/display-breaks`),
+      fetchJson(`${API_BASE}/texts/${textId}/markers`),
+      getTextTranslations(textId),
+      getPhonetics(textId, lang),
+      fetchJson(`${API_BASE}/texts/${textId}/tree-nodes`),
+      getLayouts(textId),
+      // A passage is a stretch of earlier text marked to be recited AGAIN here. It is printed
+      // where it repeats — the reader recites it there — so the booklet has to fetch them.
+      getPassages(textId),
+    ]);
 
   // Sapche outline depth per anchor syllable: a tree node's `segment_start` offset →
   // the syllable starting there → its nesting depth (root = 0). Section headings use
@@ -281,8 +291,17 @@ export async function compileTextItem(
   // `closeShads` (last arg) is OFF for both: the shad rule is asked at the end of this compile,
   // once the continuation rule has finished assembling the lines this document prints
   // (`closeVerseLineEnds`). Asked here it would judge a line that is about to grow a gloss.
+  //
+  // PASSAGES FIRST, then titles — the bench's order, and for its reason: a passage block is
+  // spliced before the chunk it repeats in front of, so titles inserted first end up above the
+  // repeats and read as belonging to the segment before. The `shape` asks for the PAGE's
+  // shape: one row per printed line, instructions their own unit, no merge (a merged four-line
+  // verse is a row the flow cannot break), shads left to the pass at the end.
   const lines = insertTitleChunks(
-    deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true, false),
+    insertPassageChunks(
+      deriveChunks(tokens, markerOffsets, spans, breakOverrides, groups, undefined, true, true, false),
+      passages, tokens, markerOffsets, spans, breakOverrides, groups,
+      { lineLevel: true, splitInstructions: true, closeShads: false, merge: false }),
     layouts);
   const chunks = deriveChunks(
     tokens, markerOffsets, spans, breakOverrides, groups, undefined, false, true, false);
@@ -420,6 +439,38 @@ export async function compileTextItem(
     });
   }
 
+  /**
+   * WHAT A REPEATED LINE SAYS: what that line says where it stands.
+   *
+   * A passage repeats particular LINES, so it repeats their translation — not the translation
+   * of the section they were taken from. Reading the source CHUNKS overlapping the repeat (as
+   * the bench does, deliberately, to offer the translator a paragraph to trim) printed the
+   * whole section on every row of the repeat.
+   *
+   * The per-line pieces are already dealt out above, so a repeat only has to look up the lines
+   * it copies: the row's tokens carry the source's syllable ids, and every source line is
+   * keyed here by the id it starts on.
+   */
+  const lineOfSyl = new Map<string, number>();
+  lines.forEach((l, i) => {
+    if (l.passage) return;                        // a repeat is not a source for another repeat
+    for (const t of l.tokens) if (!lineOfSyl.has(t.id)) lineOfSyl.set(t.id, i);
+  });
+  const repeatedTranslation = (l: typeof lines[number]): string => {
+    const seen = new Set<number>();
+    const pieces: string[] = [];
+    for (const t of l.tokens) {
+      const at = lineOfSyl.get(t.id);
+      if (at == null || seen.has(at)) continue;
+      seen.add(at);
+      const piece = translationByLine.get(at);
+      // Consecutive duplicates collapse: one source line's piece may be reached through
+      // several of this row's tokens when the repeat cuts inside a line.
+      if (piece && piece !== pieces[pieces.length - 1]) pieces.push(piece);
+    }
+    return pieces.join(' ');
+  };
+
   const out: DocLine[] = [];
   lines.forEach((l, i) => {
     // A translation-only title (scramble-layer layout): it has no syllables, so its heading
@@ -444,6 +495,41 @@ export async function compileTextItem(
         ...(gloss ? { smallKind: 'intro' } : {}),
         ...(paras.length ? { paragraphs: paras } : {}),
         ...(body ? {} : { missingTitle: true }),
+      });
+      return;
+    }
+    /**
+     * A PASSAGE row: earlier text, printed again where it is recited again.
+     *
+     * It carries the source's tokens — its own line breaks and run type — but none of its
+     * syllable ids: those belong to the original, and a repeat that claimed them would make
+     * every id-keyed thing (a title's anchor, a break, a phonetics row) ambiguous. So the row
+     * resolves what it shows through the SOURCE range it repeats, and everything that
+     * addresses the row itself uses its unique key (`anchorOf` already does this for the
+     * syllable-less title rows).
+     *
+     * The translation is the passage's own edit for this edition when it has one — a repeat
+     * may read differently the second time — and otherwise what the copied LINES say where
+     * they stand (`repeatedTranslation`). The phonetics are the source's, matched on the row's
+     * own token ids, because that is what the reader recites. The grey dashed card of the
+     * bench is an editing affordance and deliberately does not come here: on the page a repeat
+     * is text like any other.
+     */
+    if (l.passage) {
+      const local = l.passage.translations?.[lang]?.[l.passageUnitKey ?? ''];
+      const body = (local && local.trim()) ? local : repeatedTranslation(l);
+      out.push({
+        itemId: layoutItemId, textId, key: `${layoutItemId}:${l.key}`, role: l.tagType,
+        startSylId: '', endSylId: '', opId: null, tokens: l.tokens,
+        phonetics: phonFor({ startSylId: '', endSylId: '',
+                             sylIds: l.tokens.map((t) => t.id), tagType: l.tagType }),
+        translation: body || null,
+        // The gap belongs after the BLOCK, not between its lines: a repeat is one unit of
+        // reading, like the chunk it copies.
+        emptyAfter: lines[i + 1]?.passage == null,
+        level: null,
+        passageId: l.passage.id,
+        ...(l.smallKind ? { smallKind: l.smallKind } : {}),
       });
       return;
     }
@@ -584,6 +670,11 @@ export async function compileTextItem(
   out.forEach((l, li) => {
     if (li < lead) return;
     if (l.role !== 'sapche' && l.role !== 'title') return;
+    // A PASSAGE repeats text that is already in the outline under its original. A second
+    // bookmark for it would say the section is here too — and, the row having no syllable of
+    // its own, would sort to the end of the navigation. A repeat is linked to a TOC node
+    // deliberately or not at all (`tree_nodes.passage_id`), never automatically.
+    if (l.passageId != null) return;
     // Translation-only title lines (empty `startSylId`) are the scramble-layer titles now
     // rendered in the body — the `layouts` loop below already lists them in the outline with
     // their real anchor/level/order, so skip them here to avoid a duplicate bookmark.

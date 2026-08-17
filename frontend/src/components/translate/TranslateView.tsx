@@ -9,7 +9,8 @@ import { useUIStore } from '../../store/useUIStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
 import { TreePane } from '../workspace/TreePane';
-import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks, ownToken, type DerivedChunk } from './chunks';
+import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks,
+         retrievedPassageBody, ownToken, type DerivedChunk } from './chunks';
 import { usePassageStore } from '../../store/usePassageStore';
 import { readTokenSelection } from '../workspace/segments';
 import { ChunkEditor } from './ChunkEditor';
@@ -439,24 +440,10 @@ export const TranslateView: React.FC = () => {
     streamIds.forEach((id, i) => m.set(id, i));
     return m;
   }, [streamIds]);
-  // Retrieved translation for a passage group: concat (dedup consecutive) the translations
-  // of every source chunk overlapping the group's [start..end] source range.
-  const retrievedForGroup = (u: DerivedChunk, lang: string): string => {
-    const s0 = u.passageUnitStart ? posById.get(u.passageUnitStart) : undefined;
-    const e0 = u.passageUnitEnd ? posById.get(u.passageUnitEnd) : undefined;
-    if (s0 == null || e0 == null) return '';
-    const bodies: string[] = [];
-    serverChunks
-      .map(c => ({ c, s: posById.get(c.start_syl_id), e: posById.get(c.end_syl_id) }))
-      .filter((x): x is { c: TranslationChunk; s: number; e: number } =>
-        x.s != null && x.e != null && x.s <= e0 && x.e >= s0)
-      .sort((a, b) => a.s - b.s)
-      .forEach(x => {
-        const b = translationOf(x.c, lang)?.body ?? '';
-        if (b && b !== bodies[bodies.length - 1]) bodies.push(b);
-      });
-    return bodies.join('');
-  };
+  // Retrieved translation for a passage group — the same rule the BOOKLET prints by
+  // (`retrievedPassageBody`), so what is read here is what lands on the page.
+  const retrievedForGroup = (u: DerivedChunk, lang: string): string =>
+    retrievedPassageBody(serverChunks, posById, u.passageUnitStart, u.passageUnitEnd, lang);
   const overrideFor = (chunkId: number | undefined, lang: string) =>
     chunkId == null ? undefined : overrides.find(o => o.chunk_id === chunkId && o.lang === lang);
   const pendingFor = (chunkId: number | undefined, lang: string) =>
