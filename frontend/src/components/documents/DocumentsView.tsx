@@ -360,6 +360,47 @@ export const DocumentsView: React.FC = () => {
   const followedCover = (it: DocumentItem): DocumentItem | null =>
     (it.text_id != null ? coverFollowedBy(current?.items ?? [], it) : null);
 
+  /** The aligned text this page's content was filled from, if it says so. Matched on the id
+   *  `fillCoverFrom` writes — the layout id for a reused text page — which is the id the page
+   *  itself resolves the binding by. */
+  const seededFrom = (it: DocumentItem): DocumentItem | null =>
+    (it.source_item_id != null
+      ? (current?.items ?? []).find(i => (i.layout_item_id ?? i.id) === it.source_item_id) ?? null
+      : null);
+
+  /** True while this page has words of its own — any slot in any edition, or the Tibetan. */
+  const hasOwnTitleText = (it: DocumentItem): boolean =>
+    !!furnitureBody(it.id, TIBETAN_LANG)
+    || (current?.languages ?? []).some(lg => TITLE_BLOCKS.some(b => !!furnitureBody(it.id, lg, b)));
+
+  /**
+   * Undo a fill: drop the copied words and let go of the text they came from.
+   *
+   * Filling writes the text's title into this page's slots as a COPY, so afterwards the page
+   * no longer follows anything — which is right while you edit it, and wrong once you decide
+   * the page is not about that text. Clearing every slot and the Tibetan puts the page back to
+   * following (an absent row is what "follows" means), and clearing the binding releases the
+   * text: its own inner cover stops taking this cover's words and spacing, and goes back to
+   * its own title.
+   */
+  const releaseFromText = async (it: DocumentItem) => {
+    if (!current) return;
+    const from = seededFrom(it);
+    if (!confirm(from
+      ? `Delete the title text copied from “${from.text_title ?? from.ref_title ?? 'the aligned text'}” and release it?`
+      : 'Delete this page’s own title text and follow the aligned text again?')) return;
+    try {
+      for (const lg of current.languages) {
+        for (const block of TITLE_BLOCKS) await saveFurniture(it.id, lg, '', block);
+      }
+      await saveFurniture(it.id, TIBETAN_LANG, '');
+      if (it.source_item_id != null) await patchDocumentItem(it.id, { source_item_id: 0 });
+      await open(current.id);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not release the aligned text' });
+    }
+  };
+
   const setDisposition = async (it: DocumentItem, on: boolean) => {
     if (!current) return;
     try {
@@ -422,14 +463,14 @@ export const DocumentsView: React.FC = () => {
     if (!current) return;
     const key = textItem.layout_item_id ?? textItem.id;
     try {
-      // RECORD WHOSE TITLE THIS IS. The seeding is a copy — the words become the cover's own —
-      // but the fact that they came from this text is what says whose inner cover should
-      // follow this cover, content and spacing alike (`coverFollowedBy`). A cover written by
-      // hand for a whole booklet is seeded from no text and so binds nobody.
-      const target = current.items.find(i => i.id === coverId);
-      if (target?.kind === 'cover') {
-        await patchDocumentItem(coverId, { source_item_id: key });
-      }
+      // RECORD WHOSE TITLE THIS IS — on any page that carries title blocks. The seeding is a
+      // copy, so afterwards nothing in the words says where they came from; this is what the
+      // panel reads to say it, and what "release" undoes. On a COVER it means more: it is
+      // also what decides whose inner cover follows this cover, content and spacing alike
+      // (`coverFollowedBy`, which asks for `kind === 'cover'` and so cannot mistake an inner
+      // cover's own record for a binding). A cover written by hand for a whole booklet is
+      // seeded from no text and binds nobody.
+      await patchDocumentItem(coverId, { source_item_id: key });
       for (const lg of current.languages) {
         const c = await compileDocument(current.items, lg);
         const tl = c.titleByItem.get(key) ?? [];
@@ -1047,6 +1088,31 @@ export const DocumentsView: React.FC = () => {
                                       : 'fill'}
                                   </button>
                                 ))}
+                                {/* WHOSE TITLE IS ON THIS PAGE. Filling copies the words, so
+                                    afterwards nothing on the page says where they came from —
+                                    and on a cover that is also what decides whose inner cover
+                                    follows it. Say it, and offer the way back. */}
+                                {seededFrom(it) && (
+                                  <span className="text-ink-soft">
+                                    · filled from{' '}
+                                    <span className="text-ink">
+                                      {seededFrom(it)!.text_title ?? seededFrom(it)!.ref_title
+                                        ?? `#${it.source_item_id}`}
+                                    </span>
+                                  </span>
+                                )}
+                                {(seededFrom(it) || hasOwnTitleText(it)) && (
+                                  <button type="button"
+                                          onClick={() => void releaseFromText(it)}
+                                          className="px-1.5 py-0.5 rounded text-vermilion hover:bg-cream"
+                                          style={{ border: '1px solid var(--cline)' }}
+                                          title={'Delete the title text this page carries and '
+                                            + 'follow the aligned text again. On a cover it also '
+                                            + 'releases that text, whose own title page stops '
+                                            + 'following this cover.'}>
+                                    release
+                                  </button>
+                                )}
                               </div>
                             )}
                             {TITLE_BLOCKS.map(block => (

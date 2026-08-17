@@ -70,6 +70,19 @@ describe('following the cover', () => {
     expect(inheritedBodyOf([], text, c, 'fr', 'title_main')).toBeNull();
   });
 
+  it('treats a CLEARED field as absent, and goes on following the cover', () => {
+    // "reset" and "release" write an empty row rather than deleting it. An empty string is a
+    // value to `??`, so this page would have stopped following and gone back to the text.
+    const furn = [row({ item_id: 1, block: 'title_main', body: '<p>Les Mots</p>' }),
+                  row({ item_id: 2, block: 'title_main', body: '' })];
+    expect(inheritedBodyOf(furn, text, c, 'fr', 'title_main')).toBe('<p>Les Mots</p>');
+  });
+
+  it('reads a cover’s own cleared field as nothing, not as a blank title', () => {
+    const furn = [row({ item_id: 1, block: 'title_main', body: '   ' })];
+    expect(inheritedBodyOf(furn, text, c, 'fr', 'title_main')).toBeNull();
+  });
+
   it('inherits a block’s PLACEMENT, so the cover’s spacing carries over', () => {
     const own = (key: string) => ({ valueMm: key === '#title_sub0' ? 2.5 : 0 });
     const cov = (key: string) => ({ valueMm: key === '#title_main' ? 1.6 : 9.9 });

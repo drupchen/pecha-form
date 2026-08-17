@@ -1980,12 +1980,23 @@ export function coverFollowedBy(
 }
 
 /** Read a furniture body through the cover an inner cover follows: its own row wins, the
- *  cover's stands in, and absent both the caller's fallback (the text's title) applies. */
+ *  cover's stands in, and absent both the caller's fallback (the text's title) applies.
+ *
+ *  EMPTY IS ABSENT here. Clearing a field writes an empty row rather than deleting it (that is
+ *  what "reset" and "release" do), and an empty string is a value to `??` — so a cleared slot
+ *  would have stopped following the cover and gone silently back to the text. A row means
+ *  "this page says so" only when it says something. */
 export const inheritedBodyOf = (
   furniture: DocumentFurnitureRow[], item: DocumentItem, cover: DocumentItem | null,
   lang: string, block = '',
-): string | null => furnitureBodyOf(furniture, item, lang, block)
-  ?? (cover ? furnitureBodyOf(furniture, cover, lang, block) : null);
+): string | null => {
+  const own = furnitureBodyOf(furniture, item, lang, block);
+  if (own && own.trim()) return own;
+  const inherited = cover ? furnitureBodyOf(furniture, cover, lang, block) : null;
+  // Falling all the way through returns this page's own value, empty or absent — both of which
+  // the renderer reads as "follow the text", which is where it should land.
+  return inherited && inherited.trim() ? inherited : own;
+};
 
 /** The same fallback for a block's PLACEMENT (and, with the right reader, its width or its
  *  letter-spacing): the cover's spacing is inherited until this page is dragged itself. The
