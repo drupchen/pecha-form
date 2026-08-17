@@ -2110,6 +2110,12 @@ export const PaginationBench: React.FC<{
               (manual break, vetoes, edit mark) come first so they sit nearest the text and
               ride the top z-layer (never buried); the hover-only NEGOTIABLE controls (auto
               page-start, boundary break + hairline) come after. */}
+          {/* A REUSED ALIGNED TEXT carries NO gutter at all. Every mark in it — the edit
+              pencil, the break marks, the vetoes, the hover controls — speaks about a decision
+              made where the text was aligned, and none of it is this document's to review or
+              revert. A page that may not be changed must not look as though it could be, so
+              the whole rail goes rather than being shown inert. */}
+          {!readOnlyItem(l.itemId) && (
           <span className="bk-gutter">
             {/* "My edits" mark — every hand-tuned balancing change on this line, revertible
                 one at a time from the popover. A pencil, NOT scissors, so it never reads as a
@@ -2141,22 +2147,12 @@ export const PaginationBench: React.FC<{
                   · a SPLIT continuing here   — a wrap arrow; click to rejoin the line.
                 A split tail is also in `breakSet`, so it is tested FIRST. */}
             {k === 0 && globalIdx > 0 && (() => {
-              // A REUSED ALIGNED TEXT shows where it breaks and offers nothing to change it:
-              // that page structure is the aligned text's, and this document reprints it. The
-              // marks stay — the reader of the bench should see WHERE the pages fall — but
-              // they are inert, so a break here reads as a fact, not as an affordance.
-              const frozenHere = readOnlyItem(l.itemId);
               const isSplitTail = l.splitAnchor != null && anchorOf(l) !== l.splitAnchor;
               const isTextStart = !isSplitTail && forcedStarts.has(globalIdx)
                 && streamLines[globalIdx - 1]?.itemId !== l.itemId;
               if (isSplitTail) {
                 const manual = vetoInfo.manualSplit.get(`${l.itemId}:${splitAnchorOf(l)}`) ?? true;
-                return frozenHere ? (
-                  <span className="bk-breakctl bk-startmark bk-startmark-split"
-                        title="A line is split across this page break, in the aligned text this page comes from. Change it there.">
-                    <CornerDownRight size={9} />
-                  </span>
-                ) : (
+                return (
                   <button type="button" className="bk-breakctl bk-startmark bk-startmark-split"
                           title={`A line is split across this page break${manual ? '' : ' by the automatic flow'}. `
                             + `Click to ${manual ? 'rejoin the line — the flow may split here again on a re-flow'
@@ -2176,12 +2172,6 @@ export const PaginationBench: React.FC<{
               }
               if (breakSet.has(globalIdx)) {
                 const manual = manualBreaks.has(globalIdx);
-                if (frozenHere) return (
-                  <span className="bk-breakctl bk-startmark bk-startmark-auto"
-                        title="The aligned text this page comes from breaks here. A booklet reprints it as it is — change the break in the aligned text.">
-                    <Scissors size={9} />
-                  </span>
-                );
                 return (
                   <button type="button"
                           onClick={() => void toggleBreak(globalIdx)}
@@ -2199,14 +2189,14 @@ export const PaginationBench: React.FC<{
             {/* Standing vetoes, visible AT REST in every mode — the flow may not re-place a
                 removed split/break here, and a decision the system honors silently must be
                 visible. Vermilion; the click lifts the veto. */}
-            {vetoInfo.noBreak.has(`${l.itemId}:${anchorOf(l)}`) && !readOnlyItem(l.itemId) && (
+            {vetoInfo.noBreak.has(`${l.itemId}:${anchorOf(l)}`) && (
               <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
                       title="You lifted an automatic page break here — the flow will not re-place it. Click to allow it again."
                       onClick={() => void clearVeto(l, 'no_break')}>
                 <Scissors size={9} />
               </button>
             )}
-            {vetoInfo.noSplit.has(`${l.itemId}:${anchorOf(l)}`) && !readOnlyItem(l.itemId) && (
+            {vetoInfo.noSplit.has(`${l.itemId}:${anchorOf(l)}`) && (
               <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
                       title="You removed a split here — the flow will not re-split this line. Click to allow it again."
                       onClick={() => void clearVeto(l, 'no_split')}>
@@ -2215,7 +2205,7 @@ export const PaginationBench: React.FC<{
             )}
             {/* Boundary controls between this line and the previous — plain page break
                 (scissors) or a mid-content hairline split (rule). Hover-only. */}
-            {k > 0 && !readOnlyItem(l.itemId) && (
+            {k > 0 && (
               <>
                 <button
                   type="button"
@@ -2237,6 +2227,7 @@ export const PaginationBench: React.FC<{
               </>
             )}
           </span>
+          )}
           {splitMode && Comp === Verso
             ? <Verso l={l} {...(readOnlyItem(l.itemId) ? {} : { onSplit: (k: number) => void setSplit(l, k) })} />
             : splitMode && Comp === Recto
