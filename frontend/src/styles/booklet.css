@@ -154,6 +154,10 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
    them its air). See `TitleContent`. */
 .bk-title-trans { height: 0; align-self: stretch; display: flex; flex-direction: column;
   align-items: center; gap: 4mm; }
+/* …except on an INNER COVER, which has no seal and is a page of ONE block — title, sub-title
+   and all, balanced on the sheet as a whole. Putting the box back in flow is exactly that, and
+   is why the rule above is a box rather than a second layout. */
+.bk-title-trans-flow { height: auto; }
 /* A title slot's field in the Documents tab: contentEditable, so it needs its own empty
    state and focus ring — an empty one collapses to nothing and looks like a bug otherwise. */
 .bk-richline:empty::before {

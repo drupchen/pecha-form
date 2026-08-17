@@ -717,11 +717,16 @@ export async function compileDocument(items: DocumentItem[], lang: string): Prom
     // title lift and the line stream join on one id space — see bookletRender.layoutIdOf.
     titleByItem.set(it.layout_item_id ?? it.id, titleLines);
     headingsByItem.set(it.layout_item_id ?? it.id, headings);
-    lines.push(...compiled.slice(i));
+    // COMPUTING the title and LIFTING it out of the body are two different jobs, and were one
+    // expression until the title could stay put. `titleByItem` is filled either way — the
+    // cover reads it to seed itself, whatever this text does with its own copy — while
+    // `'body'` leaves the lines in the stream, heading the text's first page as written.
+    const inBody = (it.title_disposition ?? null) === 'body';
+    lines.push(...(inBody ? compiled : compiled.slice(i)));
     // The recto reads the same lines in the translator's order. The lifted title lines are
     // the same objects, so drop them by identity rather than by count — a move cannot
     // relocate a title, but it can shift what sits at index `i`.
-    const lifted = new Set<DocLine>(titleLines);
+    const lifted = new Set<DocLine>(inBody ? [] : titleLines);
     rectoLines.push(...compiledRecto.filter((l: DocLine) => !lifted.has(l)));
   }
   return { lines, rectoLines, titleByItem, headingsByItem };

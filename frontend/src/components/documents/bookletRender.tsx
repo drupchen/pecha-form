@@ -1055,7 +1055,16 @@ export const TitleContent: React.FC<{
    * Tibetan above does.
    */
   slots?: Partial<Record<TitleBlock, string | null>>;
-}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, groundOf, spaceOf, pageHeightMm,
+  /**
+   * Centre the WHOLE stack, not just the shared pair.
+   *
+   * The cover centres its seal and Tibetan alone — they are the same in every edition and must
+   * print at the same height in all of them, so the translated blocks are kept out of the sum
+   * (see `.bk-title-trans`). An INNER COVER has no seal, and is a page of one block: title,
+   * sub-title and all, optically balanced on the sheet. So it puts the box back in flow.
+   */
+  centreAll?: boolean;
+}> = ({ titleLines, seal, image, widthOf = NO_WIDTH, groundOf, spaceOf, pageHeightMm, centreAll,
         tibetan, slots }) => {
   // The booklet's own lines, or the text's. An override is plain text — it has no syllables,
   // so its lines anchor their widths on a block key instead (see `anchorOf`).
@@ -1109,7 +1118,7 @@ export const TitleContent: React.FC<{
           The four named slots keep the width KEY they already had — paragraph n has always
           been `#title_sub{n-1}` — because naming the slots must not move anyone's stored
           adjustments onto a different block. The names are new; the addresses are not. */}
-      <div className="bk-title-trans">
+      <div className={`bk-title-trans${centreAll ? ' bk-title-trans-flow' : ''}`}>
       {TITLE_BLOCKS.map((block) => {
         const meta = TITLE_BLOCK_META[block];
         const own = slots?.[block];
@@ -1292,7 +1301,8 @@ export const FurniturePage: React.FC<{
   </div>
 );
 
-/** A text's internal title page as a facing-page mock (bench use). */
+/** A text's INNER COVER — its own title page — as a facing-page mock (bench use). The cover
+ *  minus the seal: same blocks, same rails, and the whole stack centred (`centreAll`). */
 export const InternalTitlePage: React.FC<{
   titleLines: DocLine[]; widthOf?: BlockWidthOf; tibetan?: string | null;
   slots?: Partial<Record<TitleBlock, string | null>>;
@@ -1305,7 +1315,7 @@ export const InternalTitlePage: React.FC<{
       <div className="booklet-content">
         <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan}
                       slots={slots} groundOf={groundOf} spaceOf={spaceOf}
-                      pageHeightMm={pageHeightMm} />
+                      pageHeightMm={pageHeightMm} centreAll />
       </div>
     </div>
   </div>
@@ -1823,10 +1833,18 @@ export function deriveBooklet(
   for (const s of spreads) {
     const startItemId = lines[s.start]?.itemId;
     const startsText = startItemId != null && itemStartLine.get(startItemId) === s.start;
-    if (startsText && startItemId !== firstTextItemId) {
+    if (startsText) {
       const item = textItems.find((i) => layoutIdOf(i) === startItemId);
       const tl = titleByItem.get(startItemId) ?? [];
-      if (item && tl.length) bodyUnits.push({ kind: 'title', item, titleLines: tl });
+      // Does this text get an INNER COVER — a title page of its own?
+      //   'page' says yes, whichever text it is: the FIRST text has one only if asked, since
+      //          its title has always lived on the cover instead;
+      //   'body' says no, and the title is in the stream below anyway (see `compileDocument`);
+      //   unset  is the rule that has always held — every text but the first.
+      if (item && tl.length && (item.title_disposition ?? null) !== 'body'
+          && ((item.title_disposition ?? null) === 'page' || startItemId !== firstTextItemId)) {
+        bodyUnits.push({ kind: 'title', item, titleLines: tl });
+      }
     }
     bodyUnits.push({ kind: 'spread', s });
   }
@@ -1940,13 +1958,60 @@ export function furnitureBodyOf(
                             && (f.block ?? '') === block)?.body ?? null;
 }
 
+/**
+ * THE COVER AN INNER COVER FOLLOWS, or null.
+ *
+ * A cover records the aligned text its content was seeded from (`source_item_id`, written by
+ * "fill from the aligned text"). That text's inner cover is the same page minus the seal, so it
+ * follows that cover: each slot, the Tibetan and each block's placement resolve as *its own row
+ * → the cover's row → the text's title*. Nothing is copied — re-space the cover and the inner
+ * cover moves with it, until you touch the thing here, which then diverges alone. Every other
+ * text is built from its own title, and a booklet-wide cover seeded from no text binds nobody.
+ *
+ * Matched on BOTH ids a text item answers to: a reused aligned text carries its own item id and
+ * the text page's (`layout_item_id`), and the cover may have been seeded through either.
+ */
+export function coverFollowedBy(
+  items: DocumentItem[], item: DocumentItem,
+): DocumentItem | null {
+  const ids = [item.id, item.layout_item_id].filter((x): x is number => x != null);
+  return items.find((c) => c.kind === 'cover' && c.source_item_id != null
+                        && ids.includes(c.source_item_id)) ?? null;
+}
+
+/** Read a furniture body through the cover an inner cover follows: its own row wins, the
+ *  cover's stands in, and absent both the caller's fallback (the text's title) applies. */
+export const inheritedBodyOf = (
+  furniture: DocumentFurnitureRow[], item: DocumentItem, cover: DocumentItem | null,
+  lang: string, block = '',
+): string | null => furnitureBodyOf(furniture, item, lang, block)
+  ?? (cover ? furnitureBodyOf(furniture, cover, lang, block) : null);
+
+/** The same fallback for a block's PLACEMENT (and, with the right reader, its width or its
+ *  letter-spacing): the cover's spacing is inherited until this page is dragged itself. The
+ *  seal is never inherited — an inner cover has none, so `#image` resolves to nothing. */
+export const inheritedGroundOf = (
+  own: BlockGroundOf, cover: BlockGroundOf | null,
+): BlockGroundOf => (key) => {
+  const mine = own(key);
+  if (mine.valueMm || !cover || key === '#image') return mine;
+  // Follow the cover's value, but commit to THIS page: dragging an inherited block is how it
+  // stops following, and a handler that wrote to the cover would move both.
+  return { ...mine, valueMm: cover(key).valueMm };
+};
+
 /** This page's authored title slots for one edition, ready for `TitleContent`. A slot with
  *  no row is simply absent, which is what "follows the text" means. */
 export function furnitureSlotsOf(
   furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string,
+  /** The cover this page follows, if any (see `coverFollowedBy`) — its slots stand in for the
+   *  ones this page has not authored. */
+  cover: DocumentItem | null = null,
 ): Partial<Record<TitleBlock, string | null>> {
   const out: Partial<Record<TitleBlock, string | null>> = {};
-  for (const block of TITLE_BLOCKS) out[block] = furnitureBodyOf(furniture, item, lang, block);
+  for (const block of TITLE_BLOCKS) {
+    out[block] = inheritedBodyOf(furniture, item, cover, lang, block);
+  }
   return out;
 }
 

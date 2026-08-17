@@ -9,7 +9,7 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout, extractTextPage,
-  getVersions,
+  getVersions, patchDocumentItem,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize, withUrlAuth,
   type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
   type DocumentSummary,
@@ -19,15 +19,19 @@ import { VersionsPanel } from './Versions';
 import { useCan } from '../../store/usePermissions';
 import { compileDocument } from './compile';
 import {
-  deriveBooklet, TIBETAN_LANG, TITLE_BLOCKS, TITLE_BLOCK_META,
+  deriveBooklet, TIBETAN_LANG, TITLE_BLOCKS, TITLE_BLOCK_META, coverFollowedBy,
   type TitleBlock,
 } from './bookletRender';
 import { cleanSpecimenHtml, stripAttrs } from './StyleStudio';
 
-/** Furniture kinds with an editor: per-language authored text and an uploaded, resizable
- *  image. These were two identically-populated constants — two names for one concept, which
- *  implied a distinction the code never made. */
+/** Furniture kinds with an editor panel of their own. (An aligned text has one too, but by
+ *  carrying a text rather than by its kind — see `editable` at the item row.) */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
+/** …and those that carry an IMAGE. One list until a page appeared that is edited but has no
+ *  picture — the inner cover, which is the cover without its seal — so the two questions are
+ *  now asked separately. Mirrors the backend's `IMAGE_KINDS`: the panel must not offer an
+ *  upload the API refuses. */
+const IMAGE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
 
 /**
  * One title slot's text, edited as it will PRINT rather than as the markup behind it.
@@ -197,8 +201,12 @@ export const DocumentsView: React.FC = () => {
   const [imgBust, setImgBust] = useState(0);   // cache-buster for image previews
   const [imgBusy, setImgBusy] = useState(false);
   // Per cover item: the Tibetan its text supplies. What the cover shows when the booklet has
-  // no Tibetan of its own, and what the editor's field is seeded from.
+  // no Tibetan of its own, and what the editor's field is seeded from. A TEXT item is in here
+  // too, seeded from its own title — that is what its inner cover prints.
   const [sourceTibetan, setSourceTibetan] = useState<Map<number, string>>(new Map());
+  /** Text items whose text carries a TAGGED TITLE. Only those have a title to place, so only
+   *  those are offered the choice between a page of their own and heading their first page. */
+  const [titledItems, setTitledItems] = useState<Set<number>>(new Set());
   /**
    * Per language: the paragraphs of the text's title translation, which are what the title
    * page's slots follow when the booklet has not overridden them — `[0]` the main title,
@@ -268,9 +276,22 @@ export const DocumentsView: React.FC = () => {
         const tibOf = (ls: { tokens: { render: string }[] }[]) =>
           ls.map((l) => l.tokens.map((t) => t.render).join('').trim())
             .filter(Boolean).join('\n');
-        setSourceTibetan(new Map(current.items
-          .filter((it) => it.kind === 'cover')
-          .map((it) => [it.id, tibOf(d.mainTitleLines)])));
+        // A cover is seeded from the booklet's main title; a TEXT item — whose title page is
+        // its inner cover — from its OWN title, which is the whole point of a page per text.
+        // `titled` records which texts have a tagged title at all: without one there is
+        // nothing to place and no choice to offer.
+        const titled = new Set<number>();
+        const seeds = new Map<number, string>();
+        for (const it of current.items) {
+          if (it.kind === 'cover') { seeds.set(it.id, tibOf(d.mainTitleLines)); continue; }
+          if (it.text_id == null) continue;
+          const own = compiled.titleByItem.get(it.layout_item_id ?? it.id) ?? [];
+          if (!own.length) continue;
+          titled.add(it.id);
+          seeds.set(it.id, tibOf(own));
+        }
+        setSourceTibetan(seeds);
+        setTitledItems(titled);
       } catch { /* the cover simply keeps its own text */ }
     })();
     return () => { alive = false; };
@@ -287,7 +308,7 @@ export const DocumentsView: React.FC = () => {
    */
   useEffect(() => {
     const it = current?.items.find(i => i.id === editingItem);
-    if (!current || !it || it.kind !== 'cover') { setSourceSlots(new Map()); setSlotsFor(null); return; }
+    if (!current || !it || !hasTitleBlocks(it)) { setSourceSlots(new Map()); setSlotsFor(null); return; }
     let alive = true;
     (async () => {
       const next = new Map<string, string[]>();
@@ -296,8 +317,12 @@ export const DocumentsView: React.FC = () => {
           const c = await compileDocument(current.items, lg);
           if (!alive) return;
           // The same paragraphs the page reads: the title chunk's `<p>` structure, carried
-          // on whichever title line has it.
-          const tl = [...c.titleByItem.values()][0] ?? [];
+          // on whichever title line has it. A cover follows the booklet's main title (the
+          // first text's); a text's INNER COVER follows its own text, which is what makes a
+          // page per text worth having.
+          const tl = (it.text_id != null
+            ? c.titleByItem.get(it.layout_item_id ?? it.id)
+            : [...c.titleByItem.values()][0]) ?? [];
           next.set(lg, tl.find(t => t.paragraphs?.length)?.paragraphs
                     ?? tl.map(t => t.translation).filter((x): x is string => !!x));
         } catch { /* a language that will not compile simply seeds nothing */ }
@@ -306,6 +331,46 @@ export const DocumentsView: React.FC = () => {
     })();
     return () => { alive = false; };
   }, [current?.id, editingItem, current?.items, current?.languages, trVersion]);
+
+  /**
+   * WHERE A TEXT'S TAGGED TITLE GOES, resolved.
+   *
+   * `'page'` — the text has an INNER COVER, a title page of its own before its first page.
+   * `'body'` — no page; the title stays in the text and heads its first page.
+   * Unset, the rule that has always held: the FIRST text's title is lifted onto the cover and
+   * appears there alone, and every other text gets a page. So the default reads 'body' for the
+   * first text only in the sense that it prints no page of its own — its title is on the cover
+   * — which is why the control below names the two states rather than three.
+   *
+   * Must agree with `deriveBooklet`, which decides the same thing for the page itself.
+   */
+  const innerCoverOn = (it: DocumentItem): boolean => {
+    const d = it.title_disposition ?? null;
+    if (d) return d === 'page';
+    const texts = (current?.items ?? []).filter(i => i.text_id != null);
+    return texts.length > 0 && texts[0].id !== it.id;
+  };
+  /** Pages that print a title page's blocks — the cover, and a text showing its inner cover.
+   *  Every field the cover's panel offers belongs to both. */
+  const hasTitleBlocks = (it: DocumentItem): boolean =>
+    it.kind === 'cover' || (titledItems.has(it.id) && innerCoverOn(it));
+
+  /** The cover this text's inner cover follows, if a cover was seeded from this text — the
+   *  same lookup the page makes, so the panel and the page agree on what a field follows. */
+  const followedCover = (it: DocumentItem): DocumentItem | null =>
+    (it.text_id != null ? coverFollowedBy(current?.items ?? [], it) : null);
+
+  const setDisposition = async (it: DocumentItem, on: boolean) => {
+    if (!current) return;
+    try {
+      // Written explicitly either way — never left to the default once the user has said so,
+      // or adding a text above would silently change what an untouched page does.
+      await patchDocumentItem(it.id, { title_disposition: on ? 'page' : 'body' });
+      await open(current.id);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not change the title page' });
+    }
+  };
 
   /** What the text supplies for one slot in one edition — the seed, and the "following the
    *  text" value the field is compared against. */
@@ -357,6 +422,14 @@ export const DocumentsView: React.FC = () => {
     if (!current) return;
     const key = textItem.layout_item_id ?? textItem.id;
     try {
+      // RECORD WHOSE TITLE THIS IS. The seeding is a copy — the words become the cover's own —
+      // but the fact that they came from this text is what says whose inner cover should
+      // follow this cover, content and spacing alike (`coverFollowedBy`). A cover written by
+      // hand for a whole booklet is seeded from no text and so binds nobody.
+      const target = current.items.find(i => i.id === coverId);
+      if (target?.kind === 'cover') {
+        await patchDocumentItem(coverId, { source_item_id: key });
+      }
       for (const lg of current.languages) {
         const c = await compileDocument(current.items, lg);
         const tl = c.titleByItem.get(key) ?? [];
@@ -378,6 +451,9 @@ export const DocumentsView: React.FC = () => {
           if (tib) await saveFurniture(coverId, TIBETAN_LANG, tib);
         }
       }
+      // Re-read the items so the binding written above is in hand: it decides, from here on,
+      // whose inner cover follows this cover.
+      await open(current.id);
     } catch (e: any) {
       useDocumentStore.setState({ error: e.message || 'Could not fill the cover' });
     }
@@ -777,7 +853,11 @@ export const DocumentsView: React.FC = () => {
                   // Text items get an editable per-language TOC title; furniture items
                   // get their per-language authored content.
                   const isTextItem = it.kind === 'text';
-                  const editable = isTextItem || EDITABLE_FURNITURE.includes(it.kind);
+                  // An ALIGNED TEXT in a booklet is a 'textpage' item, and it too has a panel
+                  // now: the title it carries can head a page of its own — its inner cover —
+                  // and those fields are edited here, beside the text they belong to.
+                  const editable = isTextItem || it.text_id != null
+                    || EDITABLE_FURNITURE.includes(it.kind);
                   return (
                   <div key={it.id}>
                     <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-white"
@@ -835,7 +915,32 @@ export const DocumentsView: React.FC = () => {
                     {editable && canEditDocs && editingItem === it.id && (
                       <div className="ml-8 mt-1 mb-2 p-2 rounded-md bg-cream-hi flex flex-col gap-1.5"
                            style={{ border: '1px solid var(--cline)' }}>
-                        {EDITABLE_FURNITURE.includes(it.kind) && (
+                        {/* WHERE THIS TEXT'S TAGGED TITLE GOES. Offered only where there is a
+                            title to place: a text without one has nothing to decide, and its
+                            page simply shows what it has. The fields below appear with the
+                            page — an inner cover is the cover minus the seal, so it is edited
+                            with the cover's own controls. */}
+                        {titledItems.has(it.id) && (
+                          <div className="flex items-center gap-2 pb-1.5 mb-0.5 text-[11px]"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            <span className="text-ink-soft">Its title</span>
+                            {([[true, 'on a page of its own'],
+                               [false, 'heading its first page']] as const).map(([on, label]) => (
+                              <button key={label} type="button"
+                                      onClick={() => void setDisposition(it, on)}
+                                      className={`px-2 py-0.5 rounded-md ${
+                                        innerCoverOn(it) === on
+                                          ? 'bg-lapis text-white' : 'text-lapis hover:bg-cream'}`}
+                                      style={{ border: '1px solid var(--cline)' }}>
+                                {label}
+                              </button>
+                            ))}
+                            {it.title_disposition == null && (
+                              <span className="text-ink-soft">— by default</span>
+                            )}
+                          </div>
+                        )}
+                        {IMAGE_FURNITURE.includes(it.kind) && (
                           <div className="flex items-center gap-3 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {it.has_image ? (
@@ -881,7 +986,7 @@ export const DocumentsView: React.FC = () => {
                             </div>
                           </div>
                         )}
-                        {it.kind === 'cover' && (
+                        {hasTitleBlocks(it) && (
                           <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             <div className="text-[11px] text-ink-soft flex items-center gap-2">
@@ -916,7 +1021,7 @@ export const DocumentsView: React.FC = () => {
                             Each follows the text until it is overridden, exactly as the
                             Tibetan above does — so this panel now mirrors the page instead of
                             offering one field that did nothing. */}
-                        {it.kind === 'cover' && current.languages.length > 0 && (
+                        {hasTitleBlocks(it) && current.languages.length > 0 && (
                           <div className="flex flex-col gap-2 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {/* A cover already follows the booklet's FIRST aligned text. This
@@ -951,7 +1056,14 @@ export const DocumentsView: React.FC = () => {
                                 </div>
                                 {current.languages.map(code => {
                                   const own = furnitureBody(it.id, code, block);
-                                  const seed = slotSeed(it.id, code, block);
+                                  // What this field FOLLOWS, which must be what the page
+                                  // prints: an inner cover whose cover was seeded from this
+                                  // text follows that cover's words before the text's own, so
+                                  // the box would otherwise show one thing and the page
+                                  // another (see `inheritedBodyOf`).
+                                  const follows = followedCover(it);
+                                  const seed = (follows ? furnitureBody(follows.id, code, block) : '')
+                                            || slotSeed(it.id, code, block);
                                   return (
                                     <div key={code} className="flex items-start gap-2">
                                       <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
@@ -983,7 +1095,7 @@ export const DocumentsView: React.FC = () => {
                         {/* The free-form body. The cover has none: every one of its elements
                             is a named slot above, and the generic box it used to show was
                             never rendered on the page at all. */}
-                        {it.kind !== 'cover' && (
+                        {!hasTitleBlocks(it) && (
                         <div className="text-[11px] text-ink-soft">
                           {isTextItem
                             ? 'Table-of-contents title — per language (blank = the text’s own title)'
@@ -1001,7 +1113,7 @@ export const DocumentsView: React.FC = () => {
                         {/* A plain <div>, NOT a <label>: a label around the contentEditable
                             RichLine re-targets the click on mouse-up and blurs it the instant you
                             click in (the title-slot rows are <div>s for the same reason). */}
-                        {it.kind !== 'cover' && current.languages.map(code => (
+                        {!hasTitleBlocks(it) && current.languages.map(code => (
                           <div key={code} className="flex items-start gap-2">
                             <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
                             {isTextItem ? (

@@ -400,6 +400,15 @@ export interface DocumentItem {
   has_image?: boolean;
   image_width_mm?: number | null;
   image_height_mm?: number | null;
+  /** A TEXT item: where its tagged title goes. null = the default rule (the first text's title
+   *  is lifted onto the cover and appears there alone; every other text gets its own title
+   *  page); 'page' = this text has an INNER COVER, its own title page; 'body' = no title page,
+   *  the title heads the text's first page. A text with no tagged title has nothing to place. */
+  title_disposition?: 'page' | 'body' | null;
+  /** A COVER item: the aligned-text item whose title seeded its content ("fill from the
+   *  aligned text"). That text's inner cover FOLLOWS this cover — content and block placements
+   *  — so a booklet-wide cover, seeded from no text, leaves this null and binds nothing. */
+  source_item_id?: number | null;
 }
 
 /** The served-image URL for an image_page item (append a cache-buster when it changes). */
@@ -602,6 +611,9 @@ export const addDocumentItem = (id: number, body: {
     { method: 'POST', headers: J, body: JSON.stringify(body) });
 export const patchDocumentItem = (itemId: number, body: {
   text_id?: number | null; caption?: string | null; body?: string | null;
+  /** '' clears back to the default rule; 0 clears the cover's source text. */
+  title_disposition?: 'page' | 'body' | '';
+  source_item_id?: number;
 }) =>
   jfetch<DocumentItem>(`${API_BASE}/document-items/${itemId}`,
     { method: 'PATCH', headers: J, body: JSON.stringify(body) });

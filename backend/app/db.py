@@ -627,7 +627,14 @@ CREATE TABLE IF NOT EXISTS document_items (
     ref_document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
     -- Furniture params (styled at D2/D3): image caption, cover/copyright text, etc.
     caption     TEXT,
-    body        TEXT
+    body        TEXT,
+    -- WHERE A TEXT'S TAGGED TITLE GOES (see the column migration for the full note).
+    -- NULL = as it always was; 'page' = its own title page (the inner cover); 'body' = it
+    -- stays in the text, heading its first page.
+    title_disposition TEXT,
+    -- On a COVER: the aligned text whose title seeded it (set by "fill from the aligned
+    -- text"). That text's inner cover follows this cover's disposition.
+    source_item_id    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_document_items_doc ON document_items(document_id);
 
@@ -1074,7 +1081,23 @@ _COLUMN_MIGRATIONS = {
                   # out), so the bench records it and the list reads it back.
                   ("page_count", "INTEGER")],
     # The text-page reference: set on a booklet item of kind 'textpage'.
-    "document_items": [("ref_document_id", "INTEGER REFERENCES documents(id)")],
+    "document_items": [
+        ("ref_document_id", "INTEGER REFERENCES documents(id)"),
+        # WHERE A TEXT'S TAGGED TITLE GOES. A text either has a title tagged at its head or it
+        # does not; without one there is nothing to place and no choice to make. With one:
+        #   NULL   — as it always was: the first text's title is lifted onto the cover and
+        #            appears there alone; every other text gets its own title page.
+        #   'page' — this text has an INNER COVER: its own title page, before its first page.
+        #   'body' — no title page; the title is not lifted and heads the text's first page.
+        # Absent on every existing row, so a booklet laid out before this renders unchanged.
+        ("title_disposition", "TEXT"),
+        # On a COVER item: the aligned text whose title seeded its content, recorded by "fill
+        # from the aligned text". It is what says whose inner cover should FOLLOW this cover
+        # (content and block placements alike) — a booklet-wide cover seeded from no text
+        # leaves it NULL and no text inherits from it. Plain INTEGER: ALTER ADD cannot add a
+        # foreign key, and a stale id simply resolves to nothing.
+        ("source_item_id", "INTEGER"),
+    ],
     # The two move gestures of the translate bench (see the chunk_layouts CREATE):
     # 'inline' = hairline (integrate inside the anchor's chunk, before/after the anchor
     # syllable), 'segment' = bar (stand as an own segment). NULL = legacy row → 'inline'.

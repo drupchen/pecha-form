@@ -96,12 +96,17 @@ def _item_out(conn, row) -> DocumentItemOut:
         if img is not None:
             has_image = True
             w_mm, h_mm = img["width_mm"], img["height_mm"]
+    keys = row.keys()
     return DocumentItemOut(
         id=row["id"], document_id=row["document_id"], position=row["position"],
         kind=row["kind"], text_id=text_id, text_title=title,
         ref_document_id=ref_doc, ref_title=ref_title, layout_item_id=layout_item_id,
         caption=row["caption"], body=row["body"], has_image=has_image,
-        image_width_mm=w_mm, image_height_mm=h_mm)
+        image_width_mm=w_mm, image_height_mm=h_mm,
+        # Read defensively: both columns arrive by the additive migration, and a connection
+        # opened against a database that has not run it yet must not 500 on a missing key.
+        title_disposition=row["title_disposition"] if "title_disposition" in keys else None,
+        source_item_id=row["source_item_id"] if "source_item_id" in keys else None)
 
 
 def _items(conn, document_id: int) -> List[DocumentItemOut]:
@@ -325,6 +330,17 @@ def patch_item(item_id: int, payload: DocumentItemPatch):
             val = getattr(payload, field)
             if val is not None:
                 sets.append(f"{field} = ?"); args.append(val)
+        # The two nullable settings clear to NULL rather than being unset, so each carries its
+        # own "back to the default" sentinel: '' for the disposition (follow the position rule
+        # again), 0 for the cover's source (seeded from no text — a booklet-wide cover).
+        if payload.title_disposition is not None:
+            if payload.title_disposition not in ("", "page", "body"):
+                raise HTTPException(400, "title_disposition must be 'page', 'body' or ''")
+            sets.append("title_disposition = ?")
+            args.append(payload.title_disposition or None)
+        if payload.source_item_id is not None:
+            sets.append("source_item_id = ?")
+            args.append(payload.source_item_id or None)
         if sets:
             conn.execute(f"UPDATE document_items SET {', '.join(sets)} WHERE id = ?",
                          (*args, item_id))

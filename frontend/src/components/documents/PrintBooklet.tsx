@@ -9,6 +9,7 @@ import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
   deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG, versoGapSuppressed,
   gapFillLang, furnitureGroundOf, furnitureSpaceOf, furnitureSlotsOf,
+  coverFollowedBy, inheritedBodyOf, inheritedGroundOf,
   type LineAdj, type WidthTarget, type BlockWidthOf, type PageSide,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -92,6 +93,8 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
     ? rectoDerived : flowLines;
   const vars = rootVars(config);
   const outlineJson = JSON.stringify(navOutline);
+  /** The cover an inner cover follows, if the cover was seeded from that text. */
+  const coverOf = (item: DocumentItem) => coverFollowedBy(doc.items, item);
 
   // Every balancing row the bench stores, read back and applied with NO handlers — the
   // printed page must CARRY what the user set without offering to change it. Keyed exactly
@@ -201,12 +204,19 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
           return (
             <div key={`u${i}`} className="booklet-page furniture print-page">
               <div className="booklet-content">
+                {/* An INNER COVER: the cover minus the seal, whole stack centred, and — when
+                    the cover was seeded from this text — following that cover's content and
+                    spacing through the same two helpers the bench reads them with. */}
                 <TitleContent titleLines={u.titleLines} widthOf={furnitureWidthOf(u.item)}
-                              tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)}
-                              slots={furnitureSlotsOf(furniture, u.item, lang)}
-                              groundOf={furnitureGroundOf(rows, u.item.id, lang)}
+                              tibetan={inheritedBodyOf(furniture, u.item,
+                                                       coverOf(u.item), TIBETAN_LANG)}
+                              slots={furnitureSlotsOf(furniture, u.item, lang, coverOf(u.item))}
+                              groundOf={inheritedGroundOf(
+                                furnitureGroundOf(rows, u.item.id, lang),
+                                coverOf(u.item)
+                                  ? furnitureGroundOf(rows, coverOf(u.item)!.id, lang) : null)}
                               spaceOf={furnitureSpaceOf(rows, u.item.id)}
-                              pageHeightMm={config.page_height_mm} />
+                              pageHeightMm={config.page_height_mm} centreAll />
               </div>
             </div>
           );

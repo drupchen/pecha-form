@@ -15,6 +15,7 @@ import {
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   PageGround, shiftHostOf, inkBlocksOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
+  coverFollowedBy, inheritedBodyOf, inheritedGroundOf,
   furnitureSpaceOf as furnitureSpaceRead,
   FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
@@ -1494,6 +1495,17 @@ export const PaginationBench: React.FC<{
     };
   };
 
+  /** The cover an inner cover follows, and its placement reader stacked under this page's own
+   *  (see `coverFollowedBy` / `inheritedGroundOf`). Both are cheap lookups over the item list;
+   *  keeping them here means the detailed view, the overview and the print page all read the
+   *  inheritance through the same two functions. */
+  const coverFor = (item: DocumentItem) => coverFollowedBy(doc?.items ?? [], item);
+  const innerCoverGroundOf = (item: DocumentItem, forLang = lang): BlockGroundOf => {
+    const cover = coverFor(item);
+    return inheritedGroundOf(furnitureGroundOf(item, forLang),
+                             cover ? furnitureGroundOf(cover, forLang) : null);
+  };
+
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
     translation: 'width_translation', section: 'width_section',
@@ -2450,9 +2462,10 @@ export const PaginationBench: React.FC<{
             const inner = u.kind === 'title' ? (
               <InternalTitlePage titleLines={u.titleLines}
                                  widthOf={furnitureWidthOf(u.item)}
-                                 tibetan={furnitureBodyOf(furniture, u.item, TIBETAN_LANG)}
-                                 slots={furnitureSlotsOf(furniture, u.item, lang)}
-                                 groundOf={furnitureGroundOf(u.item)}
+                                 tibetan={inheritedBodyOf(furniture, u.item,
+                                                          coverFor(u.item), TIBETAN_LANG)}
+                                 slots={furnitureSlotsOf(furniture, u.item, lang, coverFor(u.item))}
+                                 groundOf={innerCoverGroundOf(u.item)}
                                  spaceOf={furnitureSpaceOf(u.item)}
                                  pageHeightMm={config.page_height_mm} />
             ) : (
