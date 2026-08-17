@@ -69,6 +69,12 @@ export interface DerivedChunk {
   passageUnitStart?: string;
   passageUnitEnd?: string;
   passageUnitKey?: string;
+  /** A blank line follows this row INSIDE the repeat. Only the row-per-line shape sets it: a
+   *  repeat is a re-arrangement of selected lines, and where its blank lines fall is part of
+   *  that arrangement — but a line-level derivation flushes at every break and so cannot tell
+   *  a line break from an empty one. The passage's own CHUNK boundaries can, and that is what
+   *  this records (see `insertPassageChunks`). */
+  passageGapAfter?: boolean;
 }
 
 /** Content-type priority: the FIRST of these covering a substantial token wins.
@@ -407,6 +413,15 @@ export function insertPassageChunks(
       ? deriveChunks(combined, markerOffsets, spans, breakOverrides, groups, undefined,
                      lineLevel, splitInstructions, closeShads)
       : [];
+    // WHERE THE REPEAT'S BLANK LINES FALL. A line-level derivation flushes at EVERY break, so
+    // a unit boundary there says only "a line ends", never "a line ends and one is skipped".
+    // The same tokens derived at CHUNK level draw exactly the other boundary — an empty line
+    // is what ends a chunk — so the two together say which of the repeat's lines is followed
+    // by a blank one. Only the page needs this; the bench's card is the group itself.
+    const endsChunk = lineLevel && combined.length
+      ? new Set(deriveChunks(combined, markerOffsets, spans, breakOverrides, groups, undefined,
+                             false, splitInstructions, closeShads).map(u => u.endSylId))
+      : null;
     // The GROUP — a run of adjacent same-type units — is the unit of TRANSLATION, whichever
     // shape the rows take: the bench shows one card per group and keys its passage-local edits
     // by the group's first syllable, so a page whose rows are LINES must still carry the
@@ -456,6 +471,7 @@ export function insertPassageChunks(
         passageUnitStart: span.start,
         passageUnitEnd: span.end,
         passageUnitKey: span.start,
+        ...(endsChunk?.has(g.endSylId) ? { passageGapAfter: true } : {}),
       };
     });
     if (at >= 0) out.splice(at, 0, ...rows);

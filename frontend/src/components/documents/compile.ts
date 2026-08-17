@@ -524,9 +524,10 @@ export async function compileTextItem(
         phonetics: phonFor({ startSylId: '', endSylId: '',
                              sylIds: l.tokens.map((t) => t.id), tagType: l.tagType }),
         translation: body || null,
-        // The gap belongs after the BLOCK, not between its lines: a repeat is one unit of
-        // reading, like the chunk it copies.
-        emptyAfter: lines[i + 1]?.passage == null,
+        // The blank lines of THE REPEAT — a passage is a re-arrangement of selected lines, and
+        // its own empty lines are part of that arrangement (`passageGapAfter`) — plus one after
+        // the BLOCK, which reads as a unit like the chunk it copies.
+        emptyAfter: lines[i + 1]?.passage == null || !!l.passageGapAfter,
         level: null,
         passageId: l.passage.id,
         ...(l.smallKind ? { smallKind: l.smallKind } : {}),
