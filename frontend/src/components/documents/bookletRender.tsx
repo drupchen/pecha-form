@@ -968,18 +968,30 @@ export const Recto: React.FC<{
           text and keep the face they had at their origin — an instruction stays an instruction
           — because only the TEXT travelled: the Tibetan, and the phonetics that transliterate
           it, never leave their own row. */}
-      {l.borrowed?.map((b) => (
-        // Wrapped in the DONOR's role classes so the existing cascade dresses it: an
-        // instruction gloss matches `.bk-role-small .bk-translation` here exactly as it did on
-        // its own row. No new rule, and the studio's per-kind cards keep reaching it.
-        <div key={b.fromKey}
-             className={`bk-borrowed bk-role-${b.role}`
-                        + (b.role === 'small' && b.smallKind ? ` bk-smallkind-${b.smallKind}` : '')}>
-          <WidthLine className="bk-translation" {...widthProps(adj, 'translation', false)}>
-            <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(b.html) }} />
-          </WidthLine>
-        </div>
-      ))}
+      {l.borrowed?.map((b) => {
+        // A gloss travels AS WHAT IT IS. An instruction stays an instruction, and a HEADING —
+        // a title, or a small run the editor promoted to one — is set as a heading, at its own
+        // level: it is the same element it would be on its own row (`bk-section`), not the
+        // translation's face wearing a heading's role class. That was the difference between
+        // "moved" and "moved and still a heading".
+        const heading = b.role === 'title' || b.role === 'sapche';
+        return (
+          // Wrapped in the DONOR's role classes so the existing cascade dresses it: an
+          // instruction gloss matches `.bk-role-small .bk-translation` here exactly as it did
+          // on its own row. No new rule, and the studio's per-kind cards keep reaching it.
+          <div key={b.fromKey}
+               className={`bk-borrowed bk-role-${b.role}`
+                          + (b.role === 'small' && b.smallKind ? ` bk-smallkind-${b.smallKind}` : '')}>
+            <WidthLine
+              className={heading
+                ? `bk-section bk-section-l${LEVEL_SECTION_STYLE(b.level ?? null)}`
+                : 'bk-translation'}
+              {...widthProps(adj, heading ? 'section' : 'translation', false)}>
+              <span dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(b.html) }} />
+            </WidthLine>
+          </div>
+        );
+      })}
       {isSection ? (
         l.translation != null ? (
           <WidthLine className={`bk-section bk-section-l${LEVEL_SECTION_STYLE(l.level)}`}

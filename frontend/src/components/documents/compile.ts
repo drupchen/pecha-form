@@ -85,6 +85,9 @@ export interface BorrowedGloss {
   html: string;
   role: string;
   smallKind?: string;
+  /** A heading's nesting depth, carried so it is SET as a heading where it lands — the size
+   *  steps by level, and a heading printed in the translation's face is not a heading. */
+  level?: number | null;
 }
 
 /** A fresh identity per EVALUATION of this module. In dev, a hot update replaces the
@@ -179,8 +182,20 @@ export function applyMovesToRecto(lines: DocLine[], placements: MovePlacement[])
       .map((l, i) => [l, i] as const)
       .filter(([l]) => l.startSylId && frag.has(l.startSylId));
     if (!donors.length) continue;
-    // The guard: a row carrying Tibetan owns its phonetics and stays put, text and all.
-    if (donors.some(([l]) => l.tokens.length > 0 || l.phonetics)) continue;
+    // The guard, and what it is really about: PHONETICS. They transliterate the Tibetan printed
+    // beside them, so a recited row's text may never be shown against another row's Tibetan —
+    // that row stays put, text and all.
+    //
+    // A HEADING is the case that guard was too coarse for. It recites nothing, and where a
+    // heading belongs is where the translation READS it, not where the Tibetan happens to
+    // carry it: "the dedication and aspiration prayers:" introduces the verse that follows it
+    // in French while sitting after it in the Tibetan. Refusing it because it carries Tibetan
+    // dropped the move silently — the bench showed the heading moved and the booklet printed it
+    // back where it started. Only the WORDS travel: the Tibetan stays on its own row, on the
+    // verso, and the heading's own recto row goes empty, exactly as a moved gloss's does.
+    const mayLend = (l: DocLine) =>
+      !l.phonetics && (l.tokens.length === 0 || l.role === 'title' || l.role === 'sapche');
+    if (!donors.every(([l]) => mayLend(l))) continue;
     const at = pl.anchorId == null ? -1 : lines.findIndex(
       (l) => l.startSylId === pl.anchorId || l.tokens.some((t) => t.id === pl.anchorId));
     if (at < 0) continue;
@@ -190,7 +205,7 @@ export function applyMovesToRecto(lines: DocLine[], placements: MovePlacement[])
       if (i === at) continue;                              // already where it belongs
       if (l.translation) {
         glosses.push({
-          fromKey: l.key, html: l.translation, role: l.role,
+          fromKey: l.key, html: l.translation, role: l.role, level: l.level,
           ...(l.smallKind ? { smallKind: l.smallKind } : {}),
         });
       }

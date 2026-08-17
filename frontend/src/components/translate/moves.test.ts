@@ -123,6 +123,33 @@ describe('a move on the page', () => {
     expect(applyMovesToRecto(verso, placementsFor(layouts))).toBe(verso);
   });
 
+  // 'title' is a tagged title; 'sapche' is also what a SMALL run promoted to a heading becomes
+  // (`render_as: 'heading'`), which is how this case arrives in practice — the promotion takes
+  // the row out of the continuation rule, so it keeps its own Tibetan instead of being merged.
+  it.each(['title', 'sapche'])('lets a %s HEADING lend its words, Tibetan and all', (role) => {
+    // Where a heading belongs is where the translation READS it: "the dedication and
+    // aspiration prayers:" introduces in French the verse it follows in the Tibetan. It has
+    // its own Tibetan but no phonetics, so only the words travel — the Tibetan stays on its
+    // row, on the verso, and the heading's own recto row goes empty.
+    const t = stream();
+    const heading: DocLine = {
+      itemId: 1, textId: 1, key: 'k-head', role,
+      startSylId: t[3].id, endSylId: t[3].id, opId: 7,
+      tokens: [{ id: t[3].id, render: 'ཅེས་བསྔོ་སྨོན་དང་།' }],
+      phonetics: '', translation: 'The dedication and aspiration prayers:',
+      emptyAfter: false, level: 1,
+    } as DocLine;
+    const verso = [recited(t[0]), recited(t[1]), recited(t[2]), heading];
+    const out = applyMovesToRecto(verso, placementsFor([move({
+      src_start_syl_id: t[3].id, src_end_syl_id: t[3].id, anchor_syl_id: t[0].id,
+    })]));
+    expect(out[0].borrowed).toHaveLength(1);
+    expect(out[0].borrowed![0].html).toBe('The dedication and aspiration prayers:');
+    expect(out[0].borrowed![0].role).toBe(role);
+    expect(out[3].translation).toBeNull();          // its own recto row, emptied
+    expect(out[3].tokens).toEqual(heading.tokens);  // …and its Tibetan, untouched
+  });
+
   it('is the identity when nothing is moved', () => {
     const verso = lines();
     expect(applyMovesToRecto(verso, [])).toBe(verso);
