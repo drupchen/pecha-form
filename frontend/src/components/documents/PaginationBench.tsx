@@ -577,6 +577,29 @@ export const PaginationBench: React.FC<{
     return () => { alive = false; };
   }, [overview, doc, treeVersion, trVersion]);
 
+  /**
+   * THE LINES THIS DOCUMENT MAY NOT LAY OUT: those of an aligned text it merely reuses.
+   *
+   * An aligned text is where its text is aligned. A booklet takes that whole — the same breaks,
+   * the same balancing, the same cuts — and only the page NUMBERS differ. So on those lines the
+   * bench offers nothing to adjust, the flow may not break anywhere the aligned text did not,
+   * and no row is written or deleted for them (the API refuses them too, `_item_belongs`).
+   *
+   * Keyed by `layout_item_id` — the id the reused page's lines and rows carry — because that is
+   * the id every break, gap, width and cut is addressed by (`layoutIdOf`).
+   */
+  const reusedItemIds = useMemo(() => new Set(
+    (doc?.items ?? []).filter((it) => it.kind === 'textpage')
+      .map((it) => it.layout_item_id ?? it.id)),
+    [doc]);
+  const readOnlyItem = (itemId: number) => reusedItemIds.has(itemId);
+  /** Every page of text this booklet holds comes from an aligned text: there is nothing here
+   *  to flow, and the button says so rather than appearing to work. */
+  const allReused = useMemo(() => {
+    const texts = (doc?.items ?? []).filter((it) => it.text_id != null);
+    return texts.length > 0 && texts.every((it) => it.kind === 'textpage');
+  }, [doc]);
+
   const contentWmm = config ? config.page_width_mm - config.margin_bind_mm - config.margin_outer_mm : 0;
   const contentHpx = config
     ? (config.page_height_mm - config.margin_top_mm - config.margin_bottom_mm) * MM_PX : 0;
@@ -832,6 +855,11 @@ export const PaginationBench: React.FC<{
           // strand its recto translation a page away from its Tibetan.
           if (l.role === 'small' && l.smallKind === 'instructions' && l.tokens.length === 0)
             unbreakable.add(i);
+          // A REUSED ALIGNED TEXT is laid out where it was aligned. Its own breaks are already
+          // in `forced` below; every other line of it is unbreakable here, so the flow can only
+          // break where that text breaks. If the booklet's geometry or styles do not match, the
+          // page says so (`overfull`) instead of being re-broken behind the author's back.
+          if (readOnlyItem(l.itemId)) unbreakable.add(i);
         });
         // The halves of a MANUAL split (the only splits left in the virgin stream) may not
         // be split again: their anchor already carries a split row.
@@ -863,8 +891,13 @@ export const PaginationBench: React.FC<{
           n: flowLines.length,
           // The flow fills the runs between the starts it may not touch: text boundaries and
           // split tails (which deriveBooklet forces anyway, so a seeded row there would be
-          // redundant), plus the breaks the user placed by hand.
-          forced: new Set<number>([...flow.forcedStarts, ...flow.manualBreaks]),
+          // redundant), plus the breaks the user placed by hand — and every break a REUSED
+          // ALIGNED TEXT brings with it, automatic or not. Those are not this document's to
+          // reconsider: they are where that text breaks, and a booklet reprints it as it is.
+          forced: new Set<number>([
+            ...flow.forcedStarts, ...flow.manualBreaks,
+            ...[...flow.breakSet].filter((i) => readOnlyItem(flowLines[i]?.itemId)),
+          ]),
           hairlines: flow.hairlineSet,
           contentHpx,
           hairHpx: readHairlineAdvance(el),
@@ -884,17 +917,24 @@ export const PaginationBench: React.FC<{
         const splitIdx = new Set(splits.map((s) => s.index));
         const autoStarts = starts.filter((i) =>
           i > 0 && !flow.forcedStarts.has(i) && !flow.manualBreaks.has(i)
-          && !unbreakable.has(i) && !splitIdx.has(i));
+          && !unbreakable.has(i) && !splitIdx.has(i)
+          // …and never on a REUSED ALIGNED TEXT: its breaks are its own, this document only
+          // reprints them. (The API refuses such a write anyway — `_item_belongs`.)
+          && !readOnlyItem(flowLines[i].itemId));
 
         if (pendingReplace.current) {
           // Delete only what we own: the plain auto breaks, and the auto SPLITS with their
           // recto cuts (they live and die with their split). Manual breaks, manual splits
           // and the user's cuts on them are the user's; wiping them was destroying mid-line
           // splits outright and orphaning their `recto_cut` companions with no way back.
+          // …and only what we OWN: a reused aligned text's rows belong to that text, and a
+          // re-flow here must not reach into it (the delete is keyed by this document, so it
+          // would be a no-op — but asking for it at all is the wrong idea to encode).
+          const mine = (r: DocumentLayoutRow) => !readOnlyItem(r.item_id);
           const staleBreaks = rows.filter((r) => r.kind === 'page_break'
                         && !(r.char_offset != null && r.char_offset > 0)
-                        && !isManualBreak(r));
-          const staleSplits = rows.filter(isAutoSplit);
+                        && !isManualBreak(r) && mine(r));
+          const staleSplits = rows.filter((r) => isAutoSplit(r) && mine(r));
           await Promise.all([
             ...staleBreaks.map((r) => deleteLayoutRow(documentId,
               { item_id: r.item_id, anchor_syl_id: r.anchor_syl_id, kind: 'page_break' })),
@@ -1037,6 +1077,10 @@ export const PaginationBench: React.FC<{
     // is the one choke point for automatic re-flow, so the freeze lives here. The stored breaks
     // render untouched; unfreezing re-arms this effect and lets the drift re-flow catch up.
     if (frozen) return;
+    // …and a booklet made entirely of reused aligned texts has nothing of its own to flow:
+    // every page comes laid out from the text it belongs to. Seeding here would measure that
+    // text's pages and try to write breaks the API rightly refuses.
+    if (allReused) return;
     if (!hasStoredBreaks) { void requestSeed(false); return; }
     if (!stamp.sig) return;    // never stamped: nothing to compare to
     if (!drifted) return;
@@ -1045,12 +1089,13 @@ export const PaginationBench: React.FC<{
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, lines, seeding, streamReady, hasStoredBreaks, drifted, styleStale, balanceStale,
-      balanceFp, dirty, stamp.sig, burstSettled, frozen]);
+      balanceFp, dirty, stamp.sig, burstSettled, frozen, allReused]);
 
   /** Toggle a forced page break at line `i` (start of a spread) — click a boundary. */
   const toggleBreak = async (i: number) => {
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
+    if (readOnlyItem(l.itemId)) return;      // a reused aligned text breaks where IT breaks
     const a = anchorOf(l);
     const slots: RowSlot[] = [
       { item_id: l.itemId, anchor_syl_id: a, kind: 'page_break' },
@@ -1090,6 +1135,7 @@ export const PaginationBench: React.FC<{
   const toggleHairline = async (i: number) => {
     if (i <= 0 || i >= renderLines.length) return;
     const l = renderLines[i];
+    if (readOnlyItem(l.itemId)) return;      // a reused aligned text breaks where IT breaks
     const a = anchorOf(l);
     const slots: RowSlot[] = [
       { item_id: l.itemId, anchor_syl_id: a, kind: 'hairline' },
@@ -1127,6 +1173,7 @@ export const PaginationBench: React.FC<{
    * Either way the result is MANUAL — the user's, kept and flowed around.
    */
   const setSplit = async (l: DocLine, k: number) => {
+    if (readOnlyItem(l.itemId)) return;      // …and is cut where IT is cut
     const anchor = splitAnchorOf(l);
     const owner = rows.find((r) => r.kind === 'page_break' && r.item_id === l.itemId
                                 && r.anchor_syl_id === anchor && (r.char_offset ?? 0) > 0);
@@ -1273,6 +1320,7 @@ export const PaginationBench: React.FC<{
   }, [rows]);
   /** Lift a standing veto — the marker's own click. The flow is allowed back in. */
   const clearVeto = async (l: DocLine, kind: 'no_split' | 'no_break') => {
+    if (readOnlyItem(l.itemId)) return;
     await withUndo(kind === 'no_split' ? 'no-split mark lifted' : 'no-break mark lifted',
       [{ item_id: l.itemId, anchor_syl_id: anchorOf(l), kind }],
       async () => {
@@ -1386,7 +1434,12 @@ export const PaginationBench: React.FC<{
     }
     return slots;
   };
+  /** Every line-level write and clear passes here, which is where the read-only rule is
+   *  enforced once: a line of a REUSED ALIGNED TEXT belongs to that text's layout, and this
+   *  document only reprints it. The controls are hidden too — this is the backstop, and the
+   *  API refuses such a write in any case (`_item_belongs`). */
   const putRow = async (l: DocLine, kind: DocumentLayoutKind, value: number, rowLang = '') => {
+    if (readOnlyItem(l.itemId)) return;
     const slots = slotsFor(l, kind, rowLang);
     await withUndo(`${KIND_LABEL[kind] ?? kind} changed`, slots, async () => {
       await putLayoutRow(documentId,
@@ -1394,6 +1447,7 @@ export const PaginationBench: React.FC<{
     }, slotStr(slots[0]));
   };
   const delRow = async (l: DocLine, kind: DocumentLayoutKind, rowLang = '') => {
+    if (readOnlyItem(l.itemId)) return;
     const slots = slotsFor(l, kind, rowLang);
     await withUndo(`${KIND_LABEL[kind] ?? kind} cleared`, slots, async () => {
       // Delete BOTH vintages: a value the user is clearing may have been stored under the
@@ -1604,6 +1658,11 @@ export const PaginationBench: React.FC<{
     // (shared, like `width_tibetan`), a recto gap is that edition's own. One shared row
     // used to move both sides of every booklet at once.
     const gapLang = gapFillLang(side, forLang);
+    // A REUSED ALIGNED TEXT is read here, never adjusted: its lines carry the values the
+    // aligned text set — so they still print exactly as there — but no handler, which is what
+    // makes every gap, width and grip on them disappear (`Gap` and `WidthLine` show a control
+    // only where one was given). One place, rather than a gate per control.
+    if (readOnlyItem(l.itemId)) interactive = false;
     return {
       gapDeltaMm: rowVal(l, 'line_space', gapLang) ?? 0,
       noSpace: rowHas(l, 'line_nospace', gapLang),
@@ -2082,12 +2141,22 @@ export const PaginationBench: React.FC<{
                   · a SPLIT continuing here   — a wrap arrow; click to rejoin the line.
                 A split tail is also in `breakSet`, so it is tested FIRST. */}
             {k === 0 && globalIdx > 0 && (() => {
+              // A REUSED ALIGNED TEXT shows where it breaks and offers nothing to change it:
+              // that page structure is the aligned text's, and this document reprints it. The
+              // marks stay — the reader of the bench should see WHERE the pages fall — but
+              // they are inert, so a break here reads as a fact, not as an affordance.
+              const frozenHere = readOnlyItem(l.itemId);
               const isSplitTail = l.splitAnchor != null && anchorOf(l) !== l.splitAnchor;
               const isTextStart = !isSplitTail && forcedStarts.has(globalIdx)
                 && streamLines[globalIdx - 1]?.itemId !== l.itemId;
               if (isSplitTail) {
                 const manual = vetoInfo.manualSplit.get(`${l.itemId}:${splitAnchorOf(l)}`) ?? true;
-                return (
+                return frozenHere ? (
+                  <span className="bk-breakctl bk-startmark bk-startmark-split"
+                        title="A line is split across this page break, in the aligned text this page comes from. Change it there.">
+                    <CornerDownRight size={9} />
+                  </span>
+                ) : (
                   <button type="button" className="bk-breakctl bk-startmark bk-startmark-split"
                           title={`A line is split across this page break${manual ? '' : ' by the automatic flow'}. `
                             + `Click to ${manual ? 'rejoin the line — the flow may split here again on a re-flow'
@@ -2107,6 +2176,12 @@ export const PaginationBench: React.FC<{
               }
               if (breakSet.has(globalIdx)) {
                 const manual = manualBreaks.has(globalIdx);
+                if (frozenHere) return (
+                  <span className="bk-breakctl bk-startmark bk-startmark-auto"
+                        title="The aligned text this page comes from breaks here. A booklet reprints it as it is — change the break in the aligned text.">
+                    <Scissors size={9} />
+                  </span>
+                );
                 return (
                   <button type="button"
                           onClick={() => void toggleBreak(globalIdx)}
@@ -2124,14 +2199,14 @@ export const PaginationBench: React.FC<{
             {/* Standing vetoes, visible AT REST in every mode — the flow may not re-place a
                 removed split/break here, and a decision the system honors silently must be
                 visible. Vermilion; the click lifts the veto. */}
-            {vetoInfo.noBreak.has(`${l.itemId}:${anchorOf(l)}`) && (
+            {vetoInfo.noBreak.has(`${l.itemId}:${anchorOf(l)}`) && !readOnlyItem(l.itemId) && (
               <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
                       title="You lifted an automatic page break here — the flow will not re-place it. Click to allow it again."
                       onClick={() => void clearVeto(l, 'no_break')}>
                 <Scissors size={9} />
               </button>
             )}
-            {vetoInfo.noSplit.has(`${l.itemId}:${anchorOf(l)}`) && (
+            {vetoInfo.noSplit.has(`${l.itemId}:${anchorOf(l)}`) && !readOnlyItem(l.itemId) && (
               <button type="button" className="bk-breakctl bk-vetobtn bk-vermilion-mark"
                       title="You removed a split here — the flow will not re-split this line. Click to allow it again."
                       onClick={() => void clearVeto(l, 'no_split')}>
@@ -2140,7 +2215,7 @@ export const PaginationBench: React.FC<{
             )}
             {/* Boundary controls between this line and the previous — plain page break
                 (scissors) or a mid-content hairline split (rule). Hover-only. */}
-            {k > 0 && (
+            {k > 0 && !readOnlyItem(l.itemId) && (
               <>
                 <button
                   type="button"
@@ -2163,9 +2238,11 @@ export const PaginationBench: React.FC<{
             )}
           </span>
           {splitMode && Comp === Verso
-            ? <Verso l={l} onSplit={(k) => void setSplit(l, k)} />
+            ? <Verso l={l} {...(readOnlyItem(l.itemId) ? {} : { onSplit: (k: number) => void setSplit(l, k) })} />
             : splitMode && Comp === Recto
-            ? <Recto l={l} onWordSplit={(elm, w) => void setRectoCut(l, elm, w, colLang)} />
+            ? <Recto l={l} {...(readOnlyItem(l.itemId) ? {}
+                : { onWordSplit: (elm: 'phonetics' | 'translation', w: number) =>
+                      void setRectoCut(l, elm, w, colLang) })} />
             : <Comp l={l} adj={adjFor(l, true, colLang, Comp === Verso ? 'verso' : 'recto')}
                     atPageTop={k === 0 && !opensWithRule}
                     noGap={Comp === Verso && versoGapSuppressed(streamLines, globalIdx)} />}
@@ -2296,10 +2373,13 @@ export const PaginationBench: React.FC<{
             </div>
           )}
         </div>
-        <button type="button" onClick={() => void requestSeed(true, 'user')} disabled={seeding || frozen}
+        <button type="button" onClick={() => void requestSeed(true, 'user')}
+                disabled={seeding || frozen || allReused}
                 className="px-2 py-1 rounded-md flex items-center gap-1 text-lapis hover:bg-cream disabled:opacity-40"
                 style={{ border: '1px solid var(--cline)' }}
-                title={frozen
+                title={allReused
+                  ? 'Nothing to flow: every page of this booklet comes from an aligned text, and those are laid out where they are aligned. Re-flow them there.'
+                  : frozen
                   ? 'Pagination is frozen — unfreeze to re-flow.'
                   : 'Re-measure and re-flow the automatic breaks. Your own breaks and mid-line splits are kept and flowed around; breaks from before this booklet tracked who placed them count as automatic.'}>
           <RefreshCw size={12} className={seeding ? 'animate-spin' : ''} /> re-flow
@@ -2503,7 +2583,11 @@ export const PaginationBench: React.FC<{
                         </div>
                       </div>
                       {col.side === 'recto' && <div className="booklet-folio">{si + 1}</div>}
-                      {col.lines && (
+                      {/* The page's own balancing — filling it out, moving its block. A page of
+                          a REUSED ALIGNED TEXT keeps the values that text set (the marks still
+                          show them) but hands out no control: it is laid out where it was
+                          aligned, and only its number changes here. */}
+                      {col.lines && !readOnlyItem(renderLines[u.s.start]?.itemId) && (
                         <>
                           <ShiftMark mm={pageShiftOf(u.s.start, col.side, colLang)} />
                           <GapFillSlider

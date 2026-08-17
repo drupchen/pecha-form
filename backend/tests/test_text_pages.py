@@ -109,10 +109,19 @@ def test_a_second_booklet_gets_the_alignment_for_free():
     assert all(r.inherited for r in rows)
 
 
-def test_a_booklet_may_tune_the_alignment_without_touching_the_others():
+def test_a_booklet_takes_a_reused_alignment_as_it_stands_and_may_not_tune_it():
+    """An ALIGNED TEXT is where its text is aligned; a booklet imports it read-only.
+
+    A booklet used to be allowed to write its own row on the reused text page's item, which
+    then shadowed the inherited one — so tuning the booklet silently repaginated it away from
+    the text it reuses, and the same text printed differently in two places. It may not any
+    more: no adjustment is expected there, none is allowed, and only the page numbers differ.
+    """
     from app.routers.documents import (
-        extract_text_page, get_layout, create_document, add_item, delete_layout_row)
-    from app.schemas import DocumentCreate, DocumentItemIn, DocumentLayoutDeleteIn
+        extract_text_page, get_layout, create_document, add_item)
+    from app.schemas import DocumentCreate, DocumentItemIn
+    import pytest
+    from fastapi import HTTPException
 
     conn = get_db()
     tid = _mk_text(conn, "AlignC", "align_c")
@@ -124,20 +133,17 @@ def test_a_booklet_may_tune_the_alignment_without_touching_the_others():
 
     other = create_document(DocumentCreate(title="Booklet C2"))
     add_item(other.id, DocumentItemIn(kind="textpage", ref_document_id=page))
-    # A local tweak on the SAME (item, anchor, kind, lang) shadows the inherited row…
-    _put(other.id, item, a[0], kind="line_space", lang="en", value=4.5)
+    # The reused text arrives aligned, and the booklet cannot write over it.
+    with pytest.raises(HTTPException) as e:
+        _put(other.id, item, a[0], kind="line_space", lang="en", value=4.5)
+    assert e.value.status_code == 404
+
     rows = get_layout(other.id).rows
     assert len(rows) == 1
-    assert rows[0].value == 4.5 and rows[0].inherited is False
-    # …and leaves the other booklet — and the aligned text — alone.
-    assert [r.value for r in get_layout(doc).rows] == [1.0]
+    assert rows[0].value == 1.0 and rows[0].inherited is True
+    # The aligned text keeps saying what it says, for every booklet that reuses it.
     assert [r.value for r in get_layout(page).rows] == [1.0]
-
-    # Dropping the override falls back to what the aligned text says.
-    delete_layout_row(other.id, DocumentLayoutDeleteIn(
-        item_id=item, anchor_syl_id=a[0], kind="line_space", lang="en"))
-    back = get_layout(other.id).rows
-    assert len(back) == 1 and back[0].value == 1.0 and back[0].inherited is True
+    assert [(r.value, r.inherited) for r in get_layout(doc).rows] == [(1.0, True)]
 
 
 def test_only_a_text_page_can_be_reused_and_only_once_extracted():

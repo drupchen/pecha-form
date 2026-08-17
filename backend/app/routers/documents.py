@@ -504,11 +504,15 @@ def _referenced_textpages(conn, document_id: int) -> List[int]:
 def _gathered_layout_rows(conn, document_id: int) -> List[DocumentLayoutRow]:
     """This document's alignment: its own rows, plus those of every text page it reuses.
 
-    A text page owns the alignment of the text it holds; a booklet that reuses it starts from
-    that and may tune it locally. Both store rows against the SAME `item_id` — the text page's
-    item — so a booklet's row simply SHADOWS the inherited one on the same
-    (item, anchor, kind, lang). Nothing is copied: fix the alignment on the text page and every
-    booklet that has not overridden that exact row follows.
+    A TEXT PAGE OWNS THE ALIGNMENT OF ITS TEXT, and a booklet that reuses it takes it as it is.
+    That is the whole point of an aligned text: it is where the aligning is done, so a booklet
+    imports it read-only and only the page NUMBERS change. Its rows are returned marked
+    `inherited`, which is what tells the bench to offer no control on them.
+
+    A booklet's row on a reused text page's item is therefore ignored here — it can no longer be
+    written (`_item_belongs`), and the rows written before that are dropped by
+    `_drop_booklet_shadow_rows`. This used to be the opposite: the booklet's row SHADOWED the
+    inherited one, so tuning a booklet silently repaginated it away from the text it reuses.
     """
     inherited: dict[tuple, DocumentLayoutRow] = {}
     for ref in _referenced_textpages(conn, document_id):
@@ -518,11 +522,13 @@ def _gathered_layout_rows(conn, document_id: int) -> List[DocumentLayoutRow]:
             d = dict(r)
             inherited[(d["item_id"], d["anchor_syl_id"], d["kind"], d["lang"])] = \
                 DocumentLayoutRow(**d, inherited=True)
-    own = conn.execute("SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
-                       (document_id,)).fetchall()
-    for r in own:
-        d = dict(r)
-        inherited.pop((d["item_id"], d["anchor_syl_id"], d["kind"], d["lang"]), None)
+    # Only rows on THIS document's own items: a booklet lays out its own furniture and nothing
+    # else. (`_item_belongs` refuses the rest, so in a clean database there are none.)
+    mine = {r["id"] for r in conn.execute(
+        "SELECT id FROM document_items WHERE document_id = ?", (document_id,)).fetchall()}
+    own = [r for r in conn.execute(
+        "SELECT * FROM document_layout WHERE document_id = ? ORDER BY id",
+        (document_id,)).fetchall() if r["item_id"] in mine]
     return [*inherited.values(), *(DocumentLayoutRow(**dict(r)) for r in own)]
 
 
@@ -637,23 +643,16 @@ def put_layout_config(document_id: int, payload: DocumentLayoutConfigIn):
 
 
 def _item_belongs(conn, document_id: int, item_id: int) -> bool:
-    """Can this document store a layout row against this item?
+    """Can this document store a layout row against this item? Only its OWN items.
 
-    Its own items, of course — and the items of every TEXT PAGE it reuses, because that is how
-    a booklet tunes an inherited alignment: it writes its own row on the text page's item id,
-    which then shadows the inherited one. Without this the override could only ever be
-    inherited, never placed.
+    A booklet used to be allowed to write on the items of the text pages it reuses, so that it
+    could tune an inherited alignment locally. It may not any more: an aligned text is where its
+    text is aligned, and a booklet imports that as it stands — no adjustment expected, none
+    allowed, only the page numbers differ. A booklet still lays out everything it owns: its
+    cover, its table of contents, its images, its back cover.
     """
-    if conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
-                    (item_id, document_id)).fetchone():
-        return True
-    refs = _referenced_textpages(conn, document_id)
-    if not refs:
-        return False
-    marks = ",".join("?" * len(refs))
-    return conn.execute(
-        f"SELECT 1 FROM document_items WHERE id = ? AND document_id IN ({marks})",
-        (item_id, *refs)).fetchone() is not None
+    return conn.execute("SELECT 1 FROM document_items WHERE id = ? AND document_id = ?",
+                        (item_id, document_id)).fetchone() is not None
 
 
 @router.put("/documents/{document_id}/layout", response_model=DocumentLayoutRow)

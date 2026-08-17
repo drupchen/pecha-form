@@ -1960,6 +1960,25 @@ def _share_image_placement(conn) -> None:
             (doc_id, item_id, keep))
 
 
+def _drop_booklet_shadow_rows(conn) -> None:
+    """A booklet no longer lays out a text it merely reuses.
+
+    An ALIGNED TEXT is where its text is aligned; a booklet imports it as it stands, read-only,
+    and only the page numbers differ. Until now a booklet could write its own layout row against
+    the reused text page's item, which SHADOWED the inherited one — so the same text printed one
+    way in its aligned page and another in the booklet, silently. Those rows can no longer be
+    written (`_item_belongs`) and are no longer read (`_gathered_layout_rows`); this deletes the
+    ones already stored, so what is in the table describes what is on the page.
+
+    Only rows whose item belongs to ANOTHER document go: everything a document lays out on its
+    own items — covers, tables of contents, images, back covers, and a text page's own
+    alignment — is untouched. Idempotent."""
+    conn.execute(
+        "DELETE FROM document_layout WHERE item_id IN ("
+        "  SELECT i.id FROM document_items i"
+        "  WHERE i.document_id != document_layout.document_id)")
+
+
 def init_db():
     conn = get_db()
     # WAL survives in the DB file; set once so concurrent multi-user reads never
@@ -1994,6 +2013,8 @@ def init_db():
         _fold_copyright_into_backcover(conn)
         # The cover image's placement became shared across editions — fold the per-edition rows.
         _share_image_placement(conn)
+        # A booklet no longer tunes a text page it reuses — drop the rows that used to shadow it.
+        _drop_booklet_shadow_rows(conn)
     # Offset-column drop runs after the additive schema, on its own (non-nested)
     # transaction with foreign_keys OFF — see _drop_offset_columns.
     _drop_offset_columns(conn)
