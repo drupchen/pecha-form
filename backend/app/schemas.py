@@ -584,9 +584,10 @@ class DocumentItemPatch(BaseModel):
     text_id: Optional[int] = None
     caption: Optional[str] = None
     body: Optional[str] = None
-    # Where this text's tagged title goes: 'page' (its own title page — the inner cover),
-    # 'body' (heading its first page), or '' to clear back to the default. Absent = untouched,
-    # which is why it is a distinct sentinel rather than None.
+    # Where a title comes from. On a text: 'page' (its own title page — the inner cover) or
+    # 'body' (heading its first page). On a cover: 'own' (detached — seeded from no text).
+    # '' clears back to the default; absent = untouched, which is why it is a distinct
+    # sentinel rather than None.
     title_disposition: Optional[str] = None
     # On a cover: the aligned-text item whose title seeded it. 0 clears it.
     source_item_id: Optional[int] = None
@@ -611,9 +612,11 @@ class DocumentItemOut(BaseModel):
     has_image: bool = False
     image_width_mm: Optional[float] = None
     image_height_mm: Optional[float] = None
-    # A text item: where its tagged title goes — None (the default rule), 'page' or 'body'.
+    # Where this page's title comes from — None (the default rule); on a text 'page' or
+    # 'body'; on a cover 'own' (detached, seeded from no text).
     title_disposition: Optional[str] = None
-    # A cover: the aligned-text item its content was seeded from, whose inner cover follows it.
+    # A cover: the aligned-text item its content was seeded from, whose title it carries and
+    # whose inner cover follows it.
     source_item_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 

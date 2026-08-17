@@ -207,6 +207,11 @@ export const DocumentsView: React.FC = () => {
   /** Text items whose text carries a TAGGED TITLE. Only those have a title to place, so only
    *  those are offered the choice between a page of their own and heading their first page. */
   const [titledItems, setTitledItems] = useState<Set<number>>(new Set());
+  /** The layout id of the text whose title the cover carries — read back from the derivation
+   *  rather than re-derived, so this panel and the page agree on which text that is (and so
+   *  which text therefore prints no title page of its own). Null when the cover carries
+   *  nobody's: detached, or a booklet with no cover. */
+  const [coverSourceItemId, setCoverSourceItemId] = useState<number | null>(null);
   /**
    * Per language: the paragraphs of the text's title translation, which are what the title
    * page's slots follow when the booklet has not overridden them — `[0]` the main title,
@@ -292,6 +297,7 @@ export const DocumentsView: React.FC = () => {
         }
         setSourceTibetan(seeds);
         setTitledItems(titled);
+        setCoverSourceItemId(d.coverSourceItemId);
       } catch { /* the cover simply keeps its own text */ }
     })();
     return () => { alive = false; };
@@ -317,12 +323,15 @@ export const DocumentsView: React.FC = () => {
           const c = await compileDocument(current.items, lg);
           if (!alive) return;
           // The same paragraphs the page reads: the title chunk's `<p>` structure, carried
-          // on whichever title line has it. A cover follows the booklet's main title (the
-          // first text's); a text's INNER COVER follows its own text, which is what makes a
-          // page per text worth having.
+          // on whichever title line has it. A text's INNER COVER follows its own text, which
+          // is what makes a page per text worth having; a cover follows the text whose title
+          // it carries — and a DETACHED cover follows none, so its fields seed from nothing
+          // and an empty box is an empty box on the page too. That last part is not cosmetic:
+          // `saveSlot` stores a value only when it DIFFERS from this seed, so seeding from a
+          // text the cover has let go would file the words the user typed as "following it".
           const tl = (it.text_id != null
             ? c.titleByItem.get(it.layout_item_id ?? it.id)
-            : [...c.titleByItem.values()][0]) ?? [];
+            : (coverSourceItemId != null ? c.titleByItem.get(coverSourceItemId) : [])) ?? [];
           next.set(lg, tl.find(t => t.paragraphs?.length)?.paragraphs
                     ?? tl.map(t => t.translation).filter((x): x is string => !!x));
         } catch { /* a language that will not compile simply seeds nothing */ }
@@ -330,25 +339,27 @@ export const DocumentsView: React.FC = () => {
       if (alive) { setSourceSlots(next); setSlotsFor(it.id); }
     })();
     return () => { alive = false; };
-  }, [current?.id, editingItem, current?.items, current?.languages, trVersion]);
+  }, [current?.id, editingItem, current?.items, current?.languages, trVersion, coverSourceItemId]);
 
   /**
    * WHERE A TEXT'S TAGGED TITLE GOES, resolved.
    *
    * `'page'` — the text has an INNER COVER, a title page of its own before its first page.
    * `'body'` — no page; the title stays in the text and heads its first page.
-   * Unset, the rule that has always held: the FIRST text's title is lifted onto the cover and
-   * appears there alone, and every other text gets a page. So the default reads 'body' for the
-   * first text only in the sense that it prints no page of its own — its title is on the cover
-   * — which is why the control below names the two states rather than three.
+   * Unset, the rule: every text EXCEPT the one whose title the cover carries, whose title is
+   * lifted onto the cover and appears there alone. So the default reads 'body' for that one
+   * text only in the sense that it prints no page of its own — which is why the control below
+   * names the two states rather than three. Detach the cover and it carries nobody's title, so
+   * every text gets a page, each from its own content.
    *
-   * Must agree with `deriveBooklet`, which decides the same thing for the page itself.
+   * Must agree with `deriveBooklet`, which decides the same thing for the page itself — and
+   * does so against the id the LINES carry, which is the id read back into
+   * `coverSourceItemId`.
    */
   const innerCoverOn = (it: DocumentItem): boolean => {
     const d = it.title_disposition ?? null;
     if (d) return d === 'page';
-    const texts = (current?.items ?? []).filter(i => i.text_id != null);
-    return texts.length > 0 && texts[0].id !== it.id;
+    return (it.layout_item_id ?? it.id) !== coverSourceItemId;
   };
   /** Pages that print a title page's blocks — the cover, and a text showing its inner cover.
    *  Every field the cover's panel offers belongs to both. */
@@ -367,6 +378,37 @@ export const DocumentsView: React.FC = () => {
     (it.source_item_id != null
       ? (current?.items ?? []).find(i => (i.layout_item_id ?? i.id) === it.source_item_id) ?? null
       : null);
+
+  /** A cover that STANDS ALONE: seeded from no aligned text, so what is authored on it prints
+   *  and what is not stays blank. The same flag `deriveBooklet` reads to give it no title
+   *  lines, which is what makes a blank slot print blank. */
+  const coverDetached = (it: DocumentItem): boolean =>
+    it.kind === 'cover' && (it.title_disposition ?? null) === 'own';
+
+  /**
+   * UNLINK THE COVER FROM THE ALIGNED TEXT — or link it back.
+   *
+   * A cover follows a text for its unauthored parts: every slot it has no words for prints
+   * that text's corresponding paragraph, and its Tibetan is that text's title. That is right
+   * for a booklet of one text, and wrong for a cover written for the whole book — where the
+   * slots you leave empty are meant to BE empty, not to fill with the first text's words.
+   *
+   * Detaching keeps the words. That is the whole difference from "release" below, which
+   * deletes them: this lets go of the text and leaves the page as you wrote it. The binding
+   * goes with it, since a cover that carries nobody's title has no inner cover following it —
+   * so every aligned text goes back to deriving its own title page from its own content.
+   */
+  const setCoverDetached = async (it: DocumentItem, detached: boolean) => {
+    if (!current) return;
+    try {
+      await patchDocumentItem(it.id, detached
+        ? { title_disposition: 'own', source_item_id: 0 }
+        : { title_disposition: '' });
+      await open(current.id);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not change the cover’s title' });
+    }
+  };
 
   /** True while this page has words of its own — any slot in any edition, or the Tibetan. */
   const hasOwnTitleText = (it: DocumentItem): boolean =>
@@ -459,8 +501,9 @@ export const DocumentsView: React.FC = () => {
    * necessarily the one whose title belongs on the cover. So this writes the chosen text's
    * title into the slots as an explicit copy, which can then be edited like any other.
    */
-  const fillCoverFrom = async (coverId: number, textItem: DocumentItem) => {
+  const fillCoverFrom = async (into: DocumentItem, textItem: DocumentItem) => {
     if (!current) return;
+    const coverId = into.id;
     const key = textItem.layout_item_id ?? textItem.id;
     try {
       // RECORD WHOSE TITLE THIS IS — on any page that carries title blocks. The seeding is a
@@ -470,7 +513,13 @@ export const DocumentsView: React.FC = () => {
       // (`coverFollowedBy`, which asks for `kind === 'cover'` and so cannot mistake an inner
       // cover's own record for a binding). A cover written by hand for a whole booklet is
       // seeded from no text and binds nobody.
-      await patchDocumentItem(coverId, { source_item_id: key });
+      // Filling FROM a text is the opposite of standing alone, so a detached cover comes back
+      // to following the text it is now filled from. Only on a cover: on a TEXT the same
+      // column means where its own title goes, and clearing that would take away the very
+      // inner cover being filled.
+      await patchDocumentItem(coverId, into.kind === 'cover'
+        ? { source_item_id: key, title_disposition: '' }
+        : { source_item_id: key });
       for (const lg of current.languages) {
         const c = await compileDocument(current.items, lg);
         const tl = c.titleByItem.get(key) ?? [];
@@ -981,6 +1030,46 @@ export const DocumentsView: React.FC = () => {
                             )}
                           </div>
                         )}
+                        {/* WHERE THE COVER'S TITLE COMES FROM — the same shape of choice, for
+                            the page at the other end of it. A cover seeds every part it has no
+                            words of its own for from an aligned text, which is what a booklet
+                            of one text wants and what a book with a title of its own does not:
+                            there, an empty slot is meant to BE empty. Detaching keeps whatever
+                            has been written here — it lets the text go, it does not delete
+                            (that is "release" below). */}
+                        {it.kind === 'cover' && (
+                          <div className="flex items-center gap-2 pb-1.5 mb-0.5 text-[11px]"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            <span className="text-ink-soft">Its title</span>
+                            {([[false, 'from the aligned text'],
+                               [true, 'its own']] as const).map(([own, label]) => (
+                              <button key={label} type="button"
+                                      onClick={() => void setCoverDetached(it, own)}
+                                      className={`px-2 py-0.5 rounded-md ${
+                                        coverDetached(it) === own
+                                          ? 'bg-lapis text-white' : 'text-lapis hover:bg-cream'}`}
+                                      style={{ border: '1px solid var(--cline)' }}
+                                      title={own
+                                        ? 'This cover stands alone: what is written here prints, '
+                                          + 'and what is not stays blank. Every aligned text then '
+                                          + 'gets its own title page, from its own content.'
+                                        : 'Every part this cover has no words of its own for '
+                                          + 'follows an aligned text’s title.'}>
+                                {label}
+                              </button>
+                            ))}
+                            {coverDetached(it)
+                              ? <span className="text-ink-soft">— blank stays blank</span>
+                              : <span className="text-ink-soft">
+                                  — {seededFrom(it)
+                                       ? <span className="text-ink">
+                                           {seededFrom(it)!.text_title ?? seededFrom(it)!.ref_title
+                                             ?? `#${it.source_item_id}`}
+                                         </span>
+                                       : 'the first'}
+                                </span>}
+                          </div>
+                        )}
                         {IMAGE_FURNITURE.includes(it.kind) && (
                           <div className="flex items-center gap-3 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
@@ -1032,15 +1121,30 @@ export const DocumentsView: React.FC = () => {
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             <div className="text-[11px] text-ink-soft flex items-center gap-2">
                               <span>Tibetan title — one line per line. Every edition prints it.</span>
+                              {/* A DETACHED cover follows nothing, so neither chip is true of
+                                  it: clearing the box leaves the page blank rather than handing
+                                  it back to a text, and saying "reset to the text's" would
+                                  promise a title that is not coming. */}
                               {furnitureBody(it.id, TIBETAN_LANG) ? (
-                                <button type="button"
-                                        onClick={() => void saveFurniture(it.id, TIBETAN_LANG, '')}
-                                        className="text-lapis hover:underline"
-                                        title="Discard this booklet's own Tibetan and follow the text again">
-                                  reset to the text’s
-                                </button>
+                                coverDetached(it) ? (
+                                  <button type="button"
+                                          onClick={() => void saveFurniture(it.id, TIBETAN_LANG, '')}
+                                          className="text-lapis hover:underline"
+                                          title="Clear this cover's Tibetan title. It stands alone, so the page prints none.">
+                                    clear
+                                  </button>
+                                ) : (
+                                  <button type="button"
+                                          onClick={() => void saveFurniture(it.id, TIBETAN_LANG, '')}
+                                          className="text-lapis hover:underline"
+                                          title="Discard this booklet's own Tibetan and follow the text again">
+                                    reset to the text’s
+                                  </button>
+                                )
                               ) : (
-                                <span className="text-jade">following the text</span>
+                                <span className={coverDetached(it) ? 'text-ink-soft' : 'text-jade'}>
+                                  {coverDetached(it) ? 'blank — this cover stands alone' : 'following the text'}
+                                </span>
                               )}
                             </div>
                             <textarea
@@ -1078,7 +1182,7 @@ export const DocumentsView: React.FC = () => {
                                   <button
                                     key={src.id}
                                     type="button"
-                                    onClick={() => void fillCoverFrom(it.id, src)}
+                                    onClick={() => void fillCoverFrom(it, src)}
                                     className="px-1.5 py-0.5 rounded text-lapis hover:bg-cream"
                                     style={{ border: '1px solid var(--cline)' }}
                                     title={`Copy this text's title into the cover's zones — every edition, and the Tibetan`}
@@ -1139,17 +1243,25 @@ export const DocumentsView: React.FC = () => {
                                         // the old text sitting in it, contradicting the page.
                                         key={`${block}-${code}-${own ? 'own' : 'src'}-${seed}`}
                                         html={own || seed}
-                                        placeholder={slotsFor === it.id ? 'follows the text' : 'loading…'}
+                                        placeholder={slotsFor !== it.id ? 'loading…'
+                                                     : coverDetached(it) ? 'blank' : 'follows the text'}
                                         onCommit={h => void saveSlot(it.id, code, block, h)} />
                                       {own ? (
                                         <button type="button"
                                                 onClick={() => void saveFurniture(it.id, code, '', block)}
                                                 className="text-[10px] text-lapis hover:underline shrink-0"
-                                                title="Discard this booklet's own text and follow the text again">
-                                          reset
+                                                title={coverDetached(it)
+                                                  ? 'Clear this slot. The cover stands alone, so the page prints nothing here.'
+                                                  : 'Discard this booklet’s own text and follow the text again'}>
+                                          {coverDetached(it) ? 'clear' : 'reset'}
                                         </button>
                                       ) : (
-                                        <span className="text-[10px] text-jade shrink-0">following</span>
+                                        // A detached cover follows nothing, so an empty slot
+                                        // is a blank on the page, not an inherited word.
+                                        <span className={`text-[10px] shrink-0 ${
+                                          coverDetached(it) ? 'text-ink-soft' : 'text-jade'}`}>
+                                          {coverDetached(it) ? 'blank' : 'following'}
+                                        </span>
                                       )}
                                     </div>
                                   );

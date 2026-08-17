@@ -1,9 +1,10 @@
-"""Where a text's tagged title goes, and which text seeded a cover.
+"""Where a title comes from, and which text seeded a cover.
 
-Two nullable columns on `document_items`, both meaning "as it always was" when absent:
-`title_disposition` ('page' = this text has an inner cover, 'body' = its title heads its first
-page) and `source_item_id` (on a cover: the aligned text its content was seeded from, which is
-what says whose inner cover follows it).
+Two nullable columns on `document_items`, both meaning "as it always was" when absent.
+`title_disposition` reads differently on the two kinds of page that carry a title: on a TEXT,
+'page' = it has an inner cover, 'body' = its title heads its first page; on a COVER, 'own' =
+it stands alone, seeded from no text at all. `source_item_id` is the aligned text a cover was
+filled from — whose title it carries, and whose inner cover follows it.
 """
 import os
 import sys
@@ -59,6 +60,26 @@ def test_sets_and_clears_the_disposition():
     assert _patch(item_id, title_disposition="body").title_disposition == "body"
     # '' is the sentinel for "back to the default rule" — NULL, not the empty string.
     assert _patch(item_id, title_disposition="").title_disposition is None
+
+
+def test_a_cover_may_stand_alone():
+    """'own' — the cover is seeded from no aligned text, so its blank slots print blank.
+
+    The same column as a text's 'page'/'body'; which of the two vocabularies applies is read
+    from the item's kind, so the endpoint accepts all three and the editor offers each only
+    where it means something.
+    """
+    conn = get_db()
+    try:
+        _, cover_id = _doc_with_item(conn)
+    finally:
+        conn.close()
+    assert _patch(cover_id, title_disposition="own").title_disposition == "own"
+    # Detaching also lets go of any text it had been filled from — the two travel together in
+    # one patch, so the cover cannot be detached and still bind a text's inner cover.
+    out = _patch(cover_id, title_disposition="own", source_item_id=0)
+    assert out.title_disposition == "own" and out.source_item_id is None
+    assert _patch(cover_id, title_disposition="").title_disposition is None
 
 
 def test_refuses_a_disposition_it_does_not_know():

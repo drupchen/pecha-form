@@ -224,10 +224,45 @@ had *before* they were named (`#title_sub{n-1}`), so naming them did not move an
 adjustments.
 
 **An empty slot means "follow the text", not "blank".** `TitleContent` renders
-`own && own.trim() ? own : trans[meta.seed]`, and the seed is the **first** text item's title
-(`mainTitleLines`). So writing `''` into a slot both erases what was authored there and prints
-another text's words in its place. `fillCoverFrom` writes only non-empty values for exactly this
-reason; clearing a box to fall back stays the *user's* gesture.
+`own && own.trim() ? own : trans[meta.seed]`, and the seed comes from `mainTitleLines`. So on a
+cover that follows a text, writing `''` into a slot both erases what was authored there and
+prints that text's words in its place. `fillCoverFrom` writes only non-empty values for exactly
+this reason; clearing a box to fall back stays the *user's* gesture. The one way to make a blank
+slot blank is to leave the cover nothing to follow — below.
+
+### Title pages: the cover and the inner covers
+
+Two nullable columns on `document_items` carry the whole thing. Both mean "as it always was"
+when NULL, so a booklet laid out before they existed renders unchanged.
+
+- **`source_item_id`** — on a cover, the aligned text it was filled from (`fillCoverFrom`). It
+  says two things: whose title this cover **carries**, and whose inner cover **follows** it.
+- **`title_disposition`** — one column read by the two kinds of page that carry a title. On a
+  **text**: `'page'` (it has an inner cover) or `'body'` (its title is not lifted and heads its
+  first page). On a **cover**: `'own'` — *detached*, seeded from no text at all.
+
+**Everything pivots on `coverSourceItemId`** (`deriveBooklet`): the layout id of the text whose
+title the cover carries — the recorded source, else the first text, and `null` when the cover is
+detached or the source has left the booklet. It decides both
+
+- `mainTitleLines`, hence every seed `TitleContent` falls back to on the cover — so a detached
+  cover has *no* lines and its unauthored slots print blank, which is the only way to get a
+  blank there; and
+- which texts get an inner cover by default: **every text except the one whose title the cover
+  carries.** That used to read "every text but the first", which silently assumed the cover
+  follows the first text. Detach the cover and *every* text derives its own title page from its
+  own content.
+
+An inner cover is the cover minus the seal: `coverFollowedBy` → `inheritedBodyOf` /
+`inheritedGroundOf` resolve each slot, the Tibetan and each block's placement as *own row → the
+cover's row → the text's title*, with `#image` deliberately excluded (an inner cover has no
+seal) and empty-is-absent throughout, so a cleared field keeps following rather than falling
+silently back to the text. Nothing is copied: re-space the cover and the inner cover moves with
+it, until you touch that block here, which then diverges alone.
+
+Two gestures that are easily confused, both in the item panel: **detach** ("Its title · its
+own") lets the text go and *keeps* the words; **release** *deletes* every authored slot and the
+Tibetan and then follows the text again.
 
 ### Styles and versions
 

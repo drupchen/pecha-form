@@ -334,9 +334,12 @@ def patch_item(item_id: int, payload: DocumentItemPatch):
         # The two nullable settings clear to NULL rather than being unset, so each carries its
         # own "back to the default" sentinel: '' for the disposition (follow the position rule
         # again), 0 for the cover's source (seeded from no text — a booklet-wide cover).
+        # 'page' and 'body' are a TEXT's — where its tagged title goes. 'own' is a COVER's:
+        # this cover's title is its own, seeded from no text at all, so an empty slot on it
+        # stays empty instead of falling back to an aligned text's words.
         if payload.title_disposition is not None:
-            if payload.title_disposition not in ("", "page", "body"):
-                raise HTTPException(400, "title_disposition must be 'page', 'body' or ''")
+            if payload.title_disposition not in ("", "page", "body", "own"):
+                raise HTTPException(400, "title_disposition must be 'page', 'body', 'own' or ''")
             sets.append("title_disposition = ?")
             args.append(payload.title_disposition or None)
         if payload.source_item_id is not None:

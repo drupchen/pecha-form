@@ -1516,6 +1516,11 @@ export interface DerivedBooklet {
   backMatter: DocumentItem[];
   tocRows: TocRow[];
   mainTitleLines: DocLine[];
+  /** The layout id of the text whose title the cover carries, or null when it carries
+   *  nobody's — a detached cover, or none at all. The editor reads it back rather than
+   *  re-deriving it, so the panel and the page cannot disagree about which text is on the
+   *  cover and which therefore prints no title page of its own. */
+  coverSourceItemId: number | null;
   /** Recto folio (1-based) of the body-unit holding line `idx`. */
   folioOfLine: (idx: number) => number;
   /** The full navigation hierarchy (per text → its sapche sections) for PDF bookmarks. */
@@ -1831,6 +1836,31 @@ export function deriveBooklet(
   const layoutIdOf = (it: DocumentItem) => it.layout_item_id ?? it.id;
   const firstTextItemId = firstTextPos !== Infinity
     ? layoutIdOf(textItems.find((i) => i.position === firstTextPos)!) : null;
+  // WHOSE TITLE THE COVER CARRIES — the pivot of the whole title system, and the reason the
+  // cover no longer means "the first text" wherever it is asked about.
+  //   'own'                  — nobody's. The cover stands alone: what is authored on it prints,
+  //                            what is not stays BLANK (an empty `titleLines` gives
+  //                            `TitleContent` no seed to fall back to), and every aligned text
+  //                            gets its inner cover from its own content.
+  //   a recorded source      — that text's, whichever it is. Matched on BOTH ids a text item
+  //                            answers to, as `coverFollowedBy` does: a reused aligned text
+  //                            carries its own id and the text page's, and "fill from the
+  //                            aligned text" may have written either.
+  //   neither                — the rule that has always held: the first aligned text's.
+  const coverItem = items.find((it) => it.kind === 'cover');
+  const coverSource = coverItem?.source_item_id != null
+    ? textItems.find((i) => i.id === coverItem.source_item_id
+                         || i.layout_item_id === coverItem.source_item_id)
+    : undefined;
+  const coverSourceItemId: number | null =
+    (coverItem?.title_disposition ?? null) === 'own'
+      ? null
+      : coverItem?.source_item_id != null
+        // A binding whose text has since left the booklet names nobody — the cover keeps the
+        // words it was filled with and seeds nothing new, rather than silently adopting
+        // another text's title.
+        ? (coverSource ? layoutIdOf(coverSource) : null)
+        : firstTextItemId;
   const frontMatter = items
     .filter((it) => it.kind !== 'text' && it.position < firstTextPos)
     .sort((a, b) => a.position - b.position);
@@ -1849,12 +1879,15 @@ export function deriveBooklet(
       const item = textItems.find((i) => layoutIdOf(i) === startItemId);
       const tl = titleByItem.get(startItemId) ?? [];
       // Does this text get an INNER COVER — a title page of its own?
-      //   'page' says yes, whichever text it is: the FIRST text has one only if asked, since
-      //          its title has always lived on the cover instead;
+      //   'page' says yes, whichever text it is: the text whose title the cover carries has
+      //          one only if asked, since that title is already on the cover;
       //   'body' says no, and the title is in the stream below anyway (see `compileDocument`);
-      //   unset  is the rule that has always held — every text but the first.
+      //   unset  is the rule generalised: every text EXCEPT the one whose title the cover
+      //          carries. That used to be spelt "every text but the first", which assumed the
+      //          cover follows the first text — so a detached cover ('own', carrying nobody's
+      //          title) now gives every text its own page, each from its own content.
       if (item && tl.length && (item.title_disposition ?? null) !== 'body'
-          && ((item.title_disposition ?? null) === 'page' || startItemId !== firstTextItemId)) {
+          && ((item.title_disposition ?? null) === 'page' || startItemId !== coverSourceItemId)) {
         bodyUnits.push({ kind: 'title', item, titleLines: tl });
       }
     }
@@ -1891,7 +1924,11 @@ export function deriveBooklet(
     const page = titleUnit >= 0 ? titleUnit + 1 : (startLine != null ? folioOfLine(startLine) : 1);
     return { title, page, level: 0, itemId: it.id };
   });
-  const mainTitleLines = firstTextItemId != null ? (titleByItem.get(firstTextItemId) ?? []) : [];
+  // THE COVER'S TIBETAN TITLE, and the seed every unauthored slot on it falls back to. Empty
+  // when the cover carries nobody's title, which is what makes a detached cover's blank slots
+  // print blank: `TitleContent` reads its seeds out of these lines, so there are none to read.
+  const mainTitleLines = coverSourceItemId != null
+    ? (titleByItem.get(coverSourceItemId) ?? []) : [];
 
   // ── PDF navigation outline (bookmarks) ──
   // Physical page index (0-based) of each body-unit's base page: front matter = F pages,
@@ -1943,7 +1980,7 @@ export function deriveBooklet(
 
   return { lines, breakSet, hairlineSet, forcedStarts, manualBreaks,
            spreads, bodyUnits, frontMatter, backMatter, tocRows,
-           mainTitleLines, folioOfLine, navOutline };
+           mainTitleLines, coverSourceItemId, folioOfLine, navOutline };
 }
 
 /** The per-language authored body of a furniture item (copyright text etc.). */

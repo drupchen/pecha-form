@@ -1083,17 +1083,25 @@ _COLUMN_MIGRATIONS = {
     # The text-page reference: set on a booklet item of kind 'textpage'.
     "document_items": [
         ("ref_document_id", "INTEGER REFERENCES documents(id)"),
-        # WHERE A TEXT'S TAGGED TITLE GOES. A text either has a title tagged at its head or it
-        # does not; without one there is nothing to place and no choice to make. With one:
-        #   NULL   — as it always was: the first text's title is lifted onto the cover and
-        #            appears there alone; every other text gets its own title page.
+        # WHERE A TITLE COMES FROM, on both kinds of page that carry one.
+        # On a TEXT — it either has a title tagged at its head or it does not; without one
+        # there is nothing to place and no choice to make. With one:
+        #   NULL   — the default rule: the text whose title the cover carries prints no title
+        #            page of its own (it is on the cover); every other text gets one.
         #   'page' — this text has an INNER COVER: its own title page, before its first page.
         #   'body' — no title page; the title is not lifted and heads the text's first page.
+        # On a COVER:
+        #   NULL   — as it always was: seeded from the FIRST aligned text (or from the text in
+        #            `source_item_id` below, once one has been recorded).
+        #   'own'  — DETACHED. Seeded from no text: what is authored on it prints, and what is
+        #            not stays blank rather than falling back to a text's words. Every aligned
+        #            text then gets its inner cover from its own content.
         # Absent on every existing row, so a booklet laid out before this renders unchanged.
         ("title_disposition", "TEXT"),
         # On a COVER item: the aligned text whose title seeded its content, recorded by "fill
-        # from the aligned text". It is what says whose inner cover should FOLLOW this cover
-        # (content and block placements alike) — a booklet-wide cover seeded from no text
+        # from the aligned text". It says two things: whose title this cover CARRIES (so that
+        # text prints no title page of its own), and whose inner cover FOLLOWS this cover
+        # (content and block placements alike). A booklet-wide cover seeded from no text
         # leaves it NULL and no text inherits from it. Plain INTEGER: ALTER ADD cannot add a
         # foreign key, and a stale id simply resolves to nothing.
         ("source_item_id", "INTEGER"),
