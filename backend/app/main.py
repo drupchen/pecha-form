@@ -73,19 +73,14 @@ async def json_500_with_cors(request: Request, call_next):
         return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
-# Exact-origin allowlist (credentials mode forbids "*"). Extra origins — a
-# production domain, an alternate dev port — come from the env, comma-separated.
-_extra_origins = [
-    o.strip() for o in os.environ.get("SAPCHE_CORS_ORIGINS", "").split(",") if o.strip()
-]
+# Exact-origin allowlist (credentials mode forbids "*"), shared with the PDF export — which
+# renders the booklet from the requesting browser's origin and must trust the same set. See
+# `app/origins.py`.
+from .origins import allowed_origins  # noqa: E402
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # 5174 is where vite lands here whenever another project holds 5173.
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:5174", "http://127.0.0.1:5174",
-        *_extra_origins,
-    ],
+    allow_origins=allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

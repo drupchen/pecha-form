@@ -6,14 +6,15 @@ furniture pages: cover/blank/toc/copyright/image/backcover) published in a set o
 pagination lands page numbers (D2) and PDF export (D3) come later. The auto-TOC is
 computed from each text page's section tree (reuses tree_nodes.get_nested_tree).
 """
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from ..auth import active_org_id, mint_print_token
 from ..db import get_db
+from ..origins import allowed_origins
 import gzip
 import io
 import logging
@@ -833,6 +834,36 @@ _CHROME_BINS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-b
 FRONTEND_URL = os.environ.get("PECHA_FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
 
+def _frontend_origin(request: Optional[Request] = None) -> str:
+    """WHERE THIS APP IS SERVED, asked of the browser that is asking for the PDF.
+
+    A fixed default is a guess, and on a developer machine it guesses wrong: another project
+    holding :5173 pushes this frontend to :5174, the renderer goes on printing :5173, and the
+    export comes back as a one-page PDF of that project's login screen. The browser requesting
+    the export is ON this frontend, so its `Origin`/`Referer` says exactly where to render from.
+
+    Only an origin the server already trusts is accepted — the CORS allowlist plus the
+    configured `PECHA_FRONTEND_URL` — so a forged header cannot aim the renderer at some other
+    host. Anything else, and anything with no request at all (the version worker renders on a
+    background thread), falls back to the configured value.
+    """
+    if request is None:
+        return FRONTEND_URL
+    from urllib.parse import urlparse
+    trusted = {*(o.rstrip('/') for o in allowed_origins()), FRONTEND_URL}
+    for header in ("origin", "referer"):
+        raw = request.headers.get(header)
+        if not raw:
+            continue
+        p = urlparse(raw)
+        if not p.scheme or not p.netloc:
+            continue
+        origin = f"{p.scheme}://{p.netloc}"
+        if origin in trusted:
+            return origin
+    return FRONTEND_URL
+
+
 def _find_chrome() -> str | None:
     for b in _CHROME_BINS:
         p = shutil.which(b)
@@ -841,7 +872,8 @@ def _find_chrome() -> str | None:
     return None
 
 
-def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label: str = "") -> bytes:
+def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label: str = "",
+                        origin: Optional[str] = None) -> bytes:
     """Render ONE edition of the booklet to PDF bytes via headless Chromium, with the
     navigation outline injected. Shared by the live `export_pdf` and the version renderer,
     so a frozen version can never diverge from a live export. Raises HTTPException on failure.
@@ -857,7 +889,8 @@ def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label:
     os.close(fd)
     try:
         token = mint_print_token(document_id, org_id)
-        url = f"{FRONTEND_URL}/?print={document_id}&lang={lang}&print_token={token}"
+        base = (origin or FRONTEND_URL).rstrip("/")
+        url = f"{base}/?print={document_id}&lang={lang}&print_token={token}"
         if version_label:
             from urllib.parse import quote
             url += f"&version={quote(version_label)}"
@@ -872,6 +905,18 @@ def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label:
             raise HTTPException(504, "PDF render timed out. Is the frontend reachable at PECHA_FRONTEND_URL?")
         if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
             raise HTTPException(500, "PDF render produced no output.")
+        # IS THIS EVEN THE BOOKLET? The renderer prints whatever answers at that address, and
+        # what answers is not always this app: a dev machine where another project holds the
+        # port returns ITS login page, and the export came back as a one-page PDF of it — a
+        # plausible file, entirely wrong, with nothing to say so. The print route stamps its
+        # root `data-booklet-ready`, so ask for it and fail loudly when it is absent.
+        dom = _fetch_dom(chrome, url)
+        if dom is not None and "data-booklet-ready" not in dom:
+            raise HTTPException(
+                502,
+                f"{base} did not serve this booklet — the page rendered there is not the "
+                "pagination bench. Another application is probably answering on that address; "
+                "set PECHA_FRONTEND_URL to where this frontend is served.")
         # Navigation outline (bookmarks) — best-effort; a failure yields a booklet without
         # bookmarks rather than no PDF.
         try:
@@ -887,7 +932,7 @@ def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label:
 
 
 @router.get("/documents/{document_id}/pdf")
-def export_pdf(document_id: int, lang: str = "en"):
+def export_pdf(document_id: int, request: Request, lang: str = "en"):
     conn = get_db()
     try:
         doc = _require_doc(conn, document_id)
@@ -900,7 +945,8 @@ def export_pdf(document_id: int, lang: str = "en"):
         version_label = latest["semver"] if latest else ""
     finally:
         conn.close()
-    pdf = _render_booklet_pdf(document_id, org_id, lang, version_label)
+    pdf = _render_booklet_pdf(document_id, org_id, lang, version_label,
+                              origin=_frontend_origin(request))
     safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
     return Response(
         content=pdf, media_type="application/pdf",
@@ -908,14 +954,23 @@ def export_pdf(document_id: int, lang: str = "en"):
     )
 
 
+def _fetch_dom(chrome: str, url: str) -> Optional[str]:
+    """The rendered page's DOM, or None if it could not be read at all (a timeout, a crash —
+    in which case the caller judges nothing rather than refusing a good render)."""
+    try:
+        out = subprocess.run(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--virtual-time-budget=25000", "--dump-dom", url],
+            capture_output=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return out.stdout.decode("utf-8", "replace")
+
+
 def _fetch_outline(chrome: str, url: str) -> list:
     """Render the print page a second time with --dump-dom and read the navigation
     outline the page emits as a `<script id="booklet-outline">` JSON blob."""
-    out = subprocess.run(
-        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--virtual-time-budget=25000", "--dump-dom", url],
-        capture_output=True, timeout=120)
-    html = out.stdout.decode("utf-8", "replace")
+    html = _fetch_dom(chrome, url) or ""
     m = re.search(r'<script id="booklet-outline"[^>]*>(.*?)</script>', html, re.S)
     if not m:
         return []
