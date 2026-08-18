@@ -550,6 +550,25 @@ export async function setOrgSealSize(
 export const deleteOrgSeal = () =>
   apiFetch(`${API_BASE}/org-seal`, { method: 'DELETE' });
 
+/**
+ * THE ORG'S COPYRIGHT TEMPLATE, one body per language.
+ *
+ * The boilerplate a new booklet's back cover opens with. It is COPIED into the booklet — when
+ * its back cover is added, and by "fill from the org template" — never inherited live, because
+ * a booklet's copyright names its own translator and is edited freely from there. Same markup
+ * as the furniture body it seeds, and the same `{{version}}` / `{{year}}` variables.
+ */
+export interface OrgCopyright { lang: string; body: string }
+
+export const getOrgCopyright = (): Promise<OrgCopyright[]> =>
+  jfetch<OrgCopyright[]>(`${API_BASE}/org-copyright`);
+export const putOrgCopyright = (lang: string, body: string): Promise<OrgCopyright> =>
+  jfetch<OrgCopyright>(`${API_BASE}/org-copyright/${lang}`, {
+    method: 'PUT', headers: J, body: JSON.stringify({ body }),
+  });
+export const deleteOrgCopyright = (lang: string) =>
+  apiFetch(`${API_BASE}/org-copyright/${lang}`, { method: 'DELETE' });
+
 // docx style templates
 export const styleTemplateUrl = (target: 'org' | 'document', documentId?: number) =>
   `${API_BASE}/style-template.docx?target=${target}` +

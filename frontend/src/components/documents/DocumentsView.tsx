@@ -9,7 +9,7 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout, extractTextPage,
-  getVersions, patchDocumentItem,
+  getVersions, patchDocumentItem, getOrgCopyright,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize, withUrlAuth,
   type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
   type DocumentSummary,
@@ -22,7 +22,8 @@ import {
   deriveBooklet, TIBETAN_LANG, TITLE_BLOCKS, TITLE_BLOCK_META, coverFollowedBy,
   type TitleBlock,
 } from './bookletRender';
-import { cleanSpecimenHtml, stripAttrs } from './StyleStudio';
+import { cleanSpecimenHtml } from './StyleStudio';
+import { RichLine, bodyToRich } from './RichLine';
 
 /** Furniture kinds with an editor panel of their own. (An aligned text has one too, but by
  *  carrying a text rather than by its kind — see `editable` at the item row.) */
@@ -32,110 +33,6 @@ const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcove
  *  now asked separately. Mirrors the backend's `IMAGE_KINDS`: the panel must not offer an
  *  upload the API refuses. */
 const IMAGE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
-
-/**
- * One title slot's text, edited as it will PRINT rather than as the markup behind it.
- *
- * A title page's slots carry emphasis (a work's name inside "From …") and deliberate line
- * breaks. Typed as source those are `<em>` and `<br>` — which is asking someone setting a
- * title page to read HTML, and to spot the difference between the two when the whole point
- * of the field is how the line looks.
- *
- * Uncontrolled: `innerHTML` is written once, or the caret jumps to the front on every
- * keystroke. The parent re-`key`s the element when the override appears or goes, which is
- * what re-seeds it.
- *
- * `cleanSpecimenHtml` is the Style Studio's sanitizer, reused deliberately rather than
- * copied: it keeps exactly `<strong>`/`<em>`/`<br>` and unwraps everything else — including
- * the inline `style` contentEditable freezes the computed font into, which would otherwise
- * outrank the block's role and pin this line's size forever.
- */
-const RichLine: React.FC<{
-  html: string; placeholder?: string; onCommit: (html: string) => void;
-}> = ({ html, placeholder, onCommit }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [focused, setFocused] = useState(false);
-  useEffect(() => { if (ref.current) ref.current.innerHTML = html; }, []); // eslint-disable-line
-
-  /**
-   * Commit while typing, not only on the way out.
-   *
-   * Blur alone is not enough to be safe: collapsing the panel unmounts the field, and an
-   * unmount is not a blur — the edit would simply be gone, with nothing to say so. The
-   * debounce keeps that from being a write per keystroke, and `commit` is idempotent
-   * (`saveFurniture` returns early when the value has not moved), so the blur and the unmount
-   * below can both call it without writing twice.
-   */
-  const timer = useRef<number>(0);
-  const commit = () => {
-    if (!ref.current) return;
-    onCommit(cleanSpecimenHtml(ref.current.innerHTML));
-  };
-  const commitSoon = () => {
-    window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(commit, 600);
-  };
-  // Flush on the way out — the debounce may still be pending when the panel closes.
-  useEffect(() => () => { window.clearTimeout(timer.current); commit(); }, []); // eslint-disable-line
-
-  const exec = (cmd: 'bold' | 'italic') => {
-    ref.current?.focus();
-    document.execCommand(cmd);
-    stripAttrs(ref.current!);
-    commitSoon();
-  };
-  return (
-    <span className="flex-1 flex items-start gap-1">
-      <div
-        ref={ref}
-        contentEditable
-        suppressContentEditableWarning
-        data-placeholder={placeholder}
-        className="flex-1 px-2 py-1 rounded-md bg-white text-xs bk-richline"
-        style={{ border: '1px solid var(--cline)', minHeight: '1.75rem' }}
-        onFocus={() => setFocused(true)}
-        onInput={() => { stripAttrs(ref.current!); commitSoon(); }}
-        onKeyDown={e => {
-          // Enter is a LINE BREAK here, never a new paragraph: a slot is one block, and its
-          // breaks are where the type turns, not where a new block starts.
-          if (e.key === 'Enter') { e.preventDefault(); document.execCommand('insertLineBreak'); }
-        }}
-        onBlur={() => { setFocused(false); window.clearTimeout(timer.current); commit(); }}
-      />
-      {/* Shown only while the field has focus — six slots times four languages would be a
-          wall of buttons otherwise. `onMouseDown` preventDefault keeps the caret (and the
-          selection the command applies to) instead of blurring the field. */}
-      {focused && (
-        <span className="flex gap-0.5 shrink-0 pt-0.5">
-          {(['bold', 'italic'] as const).map(cmd => (
-            <button key={cmd} type="button"
-                    onMouseDown={e => e.preventDefault()}
-                    onClick={() => exec(cmd)}
-                    title={cmd === 'bold' ? 'Bold (Ctrl+B)' : 'Italic (Ctrl+I)'}
-                    className="w-5 h-5 rounded text-[11px] text-ink-soft hover:text-lapis hover:bg-cream"
-                    style={{ border: '1px solid var(--cline)',
-                             fontWeight: cmd === 'bold' ? 700 : 400,
-                             fontStyle: cmd === 'italic' ? 'italic' : 'normal' }}>
-              {cmd === 'bold' ? 'B' : 'I'}
-            </button>
-          ))}
-        </span>
-      )}
-    </span>
-  );
-};
-
-/** A furniture body was authored as `<p>`-delimited paragraphs; the rich editor (like the title
- *  slots) speaks `<br>`. Convert paragraph boundaries to line breaks so opening a legacy body in
- *  `RichLine` shows its lines and re-saves them as `<br>` rather than joining them. `splitParagraphs`
- *  renders a `<br>`-only body as one centred block, so the page is unchanged. */
-function bodyToRich(html: string): string {
-  if (!html) return '';
-  return html
-    .replace(/<\/p>\s*<p[^>]*>/gi, '<br>')
-    .replace(/<\/?p[^>]*>/gi, '')
-    .trim();
-}
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -226,6 +123,9 @@ export const DocumentsView: React.FC = () => {
   const [navLang, setNavLang] = useState<string>('');
   const [showVersions, setShowVersions] = useState(false);
   const [latestSemver, setLatestSemver] = useState<string | null>(null);
+  /** Bumped by "fill from the org template" — the only thing that rewrites a furniture body
+   *  from outside its own field, and so the only thing that has to re-seed it. */
+  const [fillEpoch, setFillEpoch] = useState(0);
   const pickPageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -546,6 +446,41 @@ export const DocumentsView: React.FC = () => {
       await open(current.id);
     } catch (e: any) {
       useDocumentStore.setState({ error: e.message || 'Could not fill the cover' });
+    }
+  };
+
+  /**
+   * Fill the back cover from the ORG'S COPYRIGHT TEMPLATE, one language at a time.
+   *
+   * Adding a back cover already seeds it (`_seed_copyright`, backend), which covers the
+   * languages a booklet had at the time. This covers the rest: an edition added afterwards, a
+   * template written after the booklet, and a page whose words have been cleared and wanted
+   * back. It writes only where the org has something to say, and asks before replacing words
+   * the booklet already carries — seeding a copy must never quietly overwrite an author.
+   */
+  const fillCopyrightFrom = async (it: DocumentItem) => {
+    if (!current) return;
+    try {
+      const tpl = await getOrgCopyright();
+      const usable = tpl.filter(t => current.languages.includes(t.lang) && t.body.trim());
+      if (!usable.length) {
+        useDocumentStore.setState({
+          error: 'This organization has no copyright template for these languages yet '
+               + '(Admin → Copyright).' });
+        return;
+      }
+      const occupied = usable.filter(t => furnitureBody(it.id, t.lang).trim());
+      if (occupied.length && !confirm(
+        `Replace the back-cover text already written in ${occupied.map(t => t.lang).join(', ')}?`,
+      )) return;
+      for (const t of usable) await saveFurniture(it.id, t.lang, t.body);
+      // Re-seed the boxes. They are uncontrolled, so without this the old words would sit in
+      // them contradicting the page. Keyed on a COUNTER rather than on the body itself: the
+      // body changes on every debounced keystroke-commit, and re-keying there would remount
+      // the field mid-sentence and drop the caret.
+      setFillEpoch(n => n + 1);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not read the org template' });
     }
   };
 
@@ -1288,6 +1223,24 @@ export const DocumentsView: React.FC = () => {
                         {/* TOC title: a plain one-line field. Other furniture bodies (back cover,
                             image caption) use the same rich editor as the title slots — what you
                             see is what prints, with italic/bold and line breaks, no HTML tags. */}
+                        {/* The org's copyright template. The page was already seeded from it
+                            when it was added; this is for an edition added since, a template
+                            written since, or words cleared and wanted back. */}
+                        {it.kind === 'backcover' && canEditDocs && current.languages.length > 0 && (
+                          <div className="flex items-center gap-1.5 text-[11px]">
+                            <button type="button"
+                                    onClick={() => void fillCopyrightFrom(it)}
+                                    className="px-1.5 py-0.5 rounded text-lapis hover:bg-cream"
+                                    style={{ border: '1px solid var(--cline)' }}
+                                    title={'Copy this organization’s copyright template into '
+                                      + 'every edition below. Set it in Admin → Copyright.'}>
+                              fill from the org template
+                            </button>
+                            <span className="text-ink-soft">
+                              · {'{{version}}'} and {'{{year}}'} resolve when the page prints
+                            </span>
+                          </div>
+                        )}
                         {/* A plain <div>, NOT a <label>: a label around the contentEditable
                             RichLine re-targets the click on mouse-up and blurs it the instant you
                             click in (the title-slot rows are <div>s for the same reason). */}
@@ -1305,7 +1258,7 @@ export const DocumentsView: React.FC = () => {
                               />
                             ) : (
                               <RichLine
-                                key={`body-${it.id}-${code}`}
+                                key={`body-${it.id}-${code}-${fillEpoch}`}
                                 html={bodyToRich(furnitureBody(it.id, code))}
                                 placeholder={it.kind === 'backcover' ? 'e.g. Copyright © …' : 'Caption…'}
                                 onCommit={h => void saveFurniture(it.id, code, h)} />

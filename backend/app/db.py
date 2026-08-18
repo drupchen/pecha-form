@@ -876,6 +876,23 @@ CREATE TABLE IF NOT EXISTS phonetic_styles (
     PRIMARY KEY (org_id, lang)
 );
 
+-- The org's COPYRIGHT TEMPLATE, one body per booklet language — the boilerplate that opens
+-- every new booklet's back cover ("Translations by …, version {{version}} / Copyright © {{year}}
+-- …"). Same markup as the furniture body it seeds (document_furniture, block '') and the same
+-- template variables, so the two are interchangeable.
+--
+-- A template is COPIED, not inherited. A booklet's copyright names its own translator and may
+-- be edited freely afterwards, so this seeds the back cover when one is added and on the
+-- "fill from the org template" gesture — and thereafter the booklet owns its words. That is
+-- the opposite of the seal above, which is inherited live, and deliberately so.
+CREATE TABLE IF NOT EXISTS org_copyright (
+    org_id     INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    lang       TEXT NOT NULL REFERENCES languages(code),
+    body       TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (org_id, lang)
+);
+
 -- ─── Accounts & access (multi-org platform) ────────────────────────────────────
 -- Users are PLATFORM-level; access to data is granted per organization through a
 -- membership carrying one or more roles. A role is an org-editable bundle of

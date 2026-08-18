@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from ..auth import active_org_id
 from ..db import get_db
+from .translations import _sanitize_body
 
 router = APIRouter(prefix="/api", tags=["styles"])
 
@@ -422,6 +423,61 @@ def delete_org_seal(org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
         conn.execute("DELETE FROM org_seal WHERE org_id = ?", (org_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+# ── The org's copyright template, one body per language ──────────────────────
+# The boilerplate a new booklet's back cover opens with. COPIED into the booklet when its
+# back cover is added (and by "fill from the org template"), never inherited live: a
+# booklet's copyright names its own translator and is edited freely from there. Same markup
+# and same `{{version}}`/`{{year}}` variables as the furniture body it seeds.
+
+class CopyrightIn(BaseModel):
+    body: str
+
+
+@router.get("/org-copyright")
+def get_org_copyright(org_id: int = Depends(active_org_id)):
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT lang, body FROM org_copyright WHERE org_id = ? ORDER BY lang",
+            (org_id,)).fetchall()
+        return [{"lang": r["lang"], "body": r["body"]} for r in rows]
+    finally:
+        conn.close()
+
+
+@router.put("/org-copyright/{lang}")
+def put_org_copyright(lang: str, payload: CopyrightIn,
+                      org_id: int = Depends(active_org_id)):
+    # The same sanitizer a furniture body passes through, so a template and the back cover it
+    # seeds can never differ in what markup survives — and `{{version}}`/`{{year}}` come out
+    # the other side untouched (they carry no angle brackets).
+    body = _sanitize_body(payload.body or "")
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM languages WHERE code = ?", (lang,)).fetchone():
+            raise HTTPException(404, f"Unknown language: {lang}")
+        conn.execute(
+            "INSERT INTO org_copyright (org_id, lang, body) VALUES (?, ?, ?) "
+            "ON CONFLICT(org_id, lang) DO UPDATE SET body = excluded.body, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (org_id, lang, body))
+        conn.commit()
+        return {"lang": lang, "body": body}
+    finally:
+        conn.close()
+
+
+@router.delete("/org-copyright/{lang}")
+def delete_org_copyright(lang: str, org_id: int = Depends(active_org_id)):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM org_copyright WHERE org_id = ? AND lang = ?", (org_id, lang))
         conn.commit()
         return {"ok": True}
     finally:

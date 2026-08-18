@@ -216,6 +216,37 @@ def delete_document(document_id: int):
 
 # ─── Items ──────────────────────────────────────────────────────────────────────
 
+def _seed_copyright(conn, document_id: int, item_id: int) -> None:
+    """Open a new back cover with the ORG'S COPYRIGHT TEMPLATE, one body per language.
+
+    This is where a template becomes a booklet's own words. It seeds on the BACK COVER rather
+    than on document creation because a new booklet has no languages yet — they are chosen
+    afterwards — so at creation there is nothing to seed for. Languages added later are the
+    "fill from the org template" gesture's job.
+
+    A COPY, deliberately: the copyright names its translator and its year, and the booklet
+    owns both from here on. Only non-empty templates are written, and only where the page has
+    nothing already — seeding must never overwrite an author's words (INSERT OR IGNORE would
+    be enough today, since the item is one statement old, but the intent is what matters if
+    this is ever called on an existing page).
+    """
+    org_id = conn.execute("SELECT org_id FROM documents WHERE id = ?",
+                          (document_id,)).fetchone()["org_id"]
+    langs = [r["lang"] for r in conn.execute(
+        "SELECT lang FROM document_languages WHERE document_id = ? ORDER BY position",
+        (document_id,)).fetchall()]
+    if not langs:
+        return
+    for row in conn.execute(
+            "SELECT lang, body FROM org_copyright WHERE org_id = ?", (org_id,)).fetchall():
+        if row["lang"] not in langs or not (row["body"] or "").strip():
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO document_furniture "
+            "(document_id, item_id, lang, block, body) VALUES (?, ?, ?, '', ?)",
+            (document_id, item_id, row["lang"], row["body"]))
+
+
 @router.post("/documents/{document_id}/items", response_model=DocumentItemOut)
 def add_item(document_id: int, payload: DocumentItemIn):
     if payload.kind == "text":
@@ -249,6 +280,8 @@ def add_item(document_id: int, payload: DocumentItemIn):
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (document_id, pos, payload.kind, payload.text_id, payload.ref_document_id,
              payload.caption, payload.body))
+        if payload.kind == "backcover":
+            _seed_copyright(conn, document_id, cur.lastrowid)
         _touch(conn, document_id)
         conn.commit()
         row = conn.execute("SELECT * FROM document_items WHERE id = ?", (cur.lastrowid,)).fetchone()
