@@ -19,6 +19,7 @@ import {
   furnitureSpaceOf as furnitureSpaceRead,
   FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
+  yearOf,
   type LineAdj, type WidthTarget, type WidthRange, type BlockWidthOf, type PageSide,
   type DerivedBooklet, type PageUnit, type TocRow,
 } from './bookletRender';
@@ -349,6 +350,7 @@ export const PaginationBench: React.FC<{
   const [showPageFormat, setShowPageFormat] = useState(false);
   // The latest declared (ready) version's semver, for `{{version}}` in the copyright preview.
   const [versionLabel, setVersionLabel] = useState('');
+  const [yearLabel, setYearLabel] = useState(() => yearOf(undefined));
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
@@ -400,8 +402,17 @@ export const PaginationBench: React.FC<{
   useEffect(() => {
     let alive = true;
     getVersions(documentId)
-      .then(vs => { if (alive) setVersionLabel(vs.find(v => v.status === 'ready')?.semver ?? ''); })
-      .catch(() => { if (alive) setVersionLabel(''); });
+      .then(vs => {
+        if (!alive) return;
+        const tip = vs.find(v => v.status === 'ready');
+        setVersionLabel(tip?.semver ?? '');
+        // `{{year}}` is the year the declared version was DECLARED, not the year the page is
+        // being looked at — so a booklet frozen in 2026 still prints 2026 when re-rendered.
+        // With no version yet there is nothing to reproduce, so the current year stands in,
+        // which is exactly what the export does (`_year_of`, documents.py).
+        setYearLabel(yearOf(tip?.created_at));
+      })
+      .catch(() => { if (alive) { setVersionLabel(''); setYearLabel(yearOf(undefined)); } });
     return () => { alive = false; };
   }, [documentId]);
 
@@ -2044,7 +2055,7 @@ export const PaginationBench: React.FC<{
                       groundOf={furnitureGroundOf(item, ed.lang)}
                       spaceOf={furnitureSpaceRead(rows, item.id)}
                       onResizeImage={(mm) => void onResizeImage(item, mm)}
-                      version={versionLabel}
+                      version={versionLabel} year={yearLabel}
                       pageHeightMm={config?.page_height_mm} />
                   </div>
                 </div>
@@ -2063,7 +2074,7 @@ export const PaginationBench: React.FC<{
         slots={furnitureSlotsOf(furniture, item, lang)}
         groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}
         onResizeImage={(mm) => void onResizeImage(item, mm)}
-        version={versionLabel}
+        version={versionLabel} year={yearLabel}
         pageHeightMm={config?.page_height_mm} />
     );
   };

@@ -1174,17 +1174,47 @@ export const TitleContent: React.FC<{
  * stretches instead, so each line spans the text block and narrowing one actually rewraps it.
  * Centred text stays centred: `text-align` does that, not the box's width.
  */
-/** Resolve the booklet's template variables in a body of text. Today just `{{version}}` →
- *  the declared version (empty until one is bumped); the raw token stays in the editor and only
- *  resolves on the page, so the copyright "version {{version}}" follows the versioning system. */
-export function applyDocVars(text: string, version?: string): string {
-  return text.replaceAll('{{version}}', version ?? '');
+/**
+ * THE YEAR `{{year}}` RESOLVES TO: the year the declared version was declared, or — when the
+ * booklet has none yet, so there is nothing to reproduce — the current one.
+ *
+ * One function so the bench and the export cannot drift: the backend applies the same rule in
+ * `_year_of` (documents.py) when it puts `&year=` on the print URL, and this is what the bench
+ * shows beside it. `created_at` arrives as SQLite's 'YYYY-MM-DD HH:MM:SS'; anything else falls
+ * back rather than printing a fragment of a malformed string.
+ */
+export function yearOf(createdAt?: string | null): string {
+  const head = (createdAt ?? '').slice(0, 4);
+  return /^\d{4}$/.test(head) ? head : String(new Date().getFullYear());
+}
+
+/**
+ * Resolve the booklet's template variables in a body of text — the copyright's, and any other
+ * furniture body's. The raw token stays in the editor and resolves only on the page, so
+ * "version {{version}}, © {{year}}" follows the versioning system instead of freezing a copy
+ * of what happened to be true when it was typed.
+ *
+ *   `{{version}}`  the declared version (empty until one is bumped)
+ *   `{{year}}`     the year that version was declared — NOT the current year. Both are passed
+ *                  IN for the same reason: re-rendering a frozen version must reproduce it,
+ *                  and a page that read the clock would quietly print a different copyright
+ *                  every January. The caller supplies the current year only when there is no
+ *                  version yet, i.e. when there is nothing to reproduce.
+ *
+ * An unknown `{{token}}` is left exactly as written — this is a small substitution, not a
+ * template language, and silently blanking something the author typed would be worse than
+ * showing it.
+ */
+export function applyDocVars(text: string, version?: string, year?: string): string {
+  return text
+    .replaceAll('{{version}}', version ?? '')
+    .replaceAll('{{year}}', year ?? '');
 }
 
 const FurnitureLines: React.FC<{
   body: string; block: string; widthOf: BlockWidthOf; className?: string;
-  groundOf?: BlockGroundOf; pageHeightMm?: number; version?: string;
-}> = ({ body, block, widthOf, className, groundOf, pageHeightMm, version }) => {
+  groundOf?: BlockGroundOf; pageHeightMm?: number; version?: string; year?: string;
+}> = ({ body, block, widthOf, className, groundOf, pageHeightMm, version, year }) => {
   const paras = splitParagraphs(body);
   if (!paras.length) return null;
   return (
@@ -1192,7 +1222,7 @@ const FurnitureLines: React.FC<{
       {paras.map((para, i) => (
         <WidthLine key={i} className={className} {...widthOf(`#${block}${i}`)} centred
                    ground={groundOf?.(`#${block}${i}`)} pageHeightMm={pageHeightMm}>
-          <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(applyDocVars(para, version)) }} />
+          <p dangerouslySetInnerHTML={{ __html: sanitizeTranslationHtml(applyDocVars(para, version, year)) }} />
         </WidthLine>
       ))}
     </div>
@@ -1220,9 +1250,11 @@ export const FurnitureContent: React.FC<{
   onResizeImage?: (widthMm: number) => void;
   /** The declared version, for `{{version}}` in a furniture body (see `applyDocVars`). */
   version?: string;
+  /** …and the year it was declared, for `{{year}}` in the same bodies. */
+  year?: string;
   pageHeightMm?: number;
 }> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan, slots,
-        groundOf, spaceOf, onResizeImage, version, pageHeightMm }) => {
+        groundOf, spaceOf, onResizeImage, version, year, pageHeightMm }) => {
   // The booklet's own image, with its placement rail and resize grip (see `BkImage`).
   const bkImage = (
     <BkImage src={withUrlAuth(itemImageUrl(item.id))}
@@ -1269,7 +1301,7 @@ export const FurnitureContent: React.FC<{
           {bkImage}
           {body && (
             <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="caption" widthOf={widthOf}
-                            className="bk-image-caption" version={version} />
+                            className="bk-image-caption" version={version} year={year} />
           )}
         </div>
       )
@@ -1282,7 +1314,7 @@ export const FurnitureContent: React.FC<{
       <div className="bk-backcover">
         {item.has_image && bkImage}
         {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="backcover" widthOf={widthOf}
-                                 className="bk-copyright" version={version} />}
+                                 className="bk-copyright" version={version} year={year} />}
       </div>
     );
   }
@@ -1304,6 +1336,7 @@ export const FurniturePage: React.FC<{
   spaceOf?: BlockGroundOf;
   onResizeImage?: (widthMm: number) => void;
   version?: string;
+  year?: string;
   pageHeightMm?: number;
 }> = (props) => (
   <div className="booklet-spread">

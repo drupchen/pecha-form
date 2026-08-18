@@ -39,8 +39,11 @@ function printModeParams() {
   const id = p.get('print');
   if (!id || !Number.isFinite(Number(id))) return null;
   // `version` = the declared version this render is FOR (a frozen version's own semver, or the
-  // latest for a live export), used to resolve `{{version}}` in the copyright.
-  return { documentId: Number(id), lang: p.get('lang') || 'en', version: p.get('version') || '' };
+  // latest for a live export), used to resolve `{{version}}` in the copyright; `year` the year
+  // that version was declared, for `{{year}}`. Both come in on the URL rather than being read
+  // here, so re-rendering a frozen version reproduces it instead of re-dating it.
+  return { documentId: Number(id), lang: p.get('lang') || 'en',
+           version: p.get('version') || '', year: p.get('year') || '' };
 }
 
 export default function App() {
@@ -49,7 +52,7 @@ export default function App() {
     return (
       <ErrorBoundary>
         <PrintBooklet documentId={printParams.documentId} lang={printParams.lang}
-                      version={printParams.version} />
+                      version={printParams.version} year={printParams.year} />
       </ErrorBoundary>
     );
   }

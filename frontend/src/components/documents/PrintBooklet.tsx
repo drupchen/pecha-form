@@ -9,7 +9,7 @@ import {
   rootVars, Verso, Recto, TitleContent, FurnitureContent,
   deriveBooklet, furnitureBodyOf, pageVars, anchorOf, TIBETAN_LANG, versoGapSuppressed,
   gapFillLang, furnitureGroundOf, furnitureSpaceOf, furnitureSlotsOf,
-  coverFollowedBy, inheritedBodyOf, inheritedGroundOf,
+  coverFollowedBy, inheritedBodyOf, inheritedGroundOf, yearOf,
   type LineAdj, type WidthTarget, type BlockWidthOf, type PageSide,
 } from './bookletRender';
 import { loadBookletStyleCss } from './bookletStyles';
@@ -23,7 +23,13 @@ import '../../styles/booklet.css';
  * so it is the same rendering engine as the bench → WYSIWYG. A `data-booklet-ready`
  * flag + `window.__BOOKLET_READY__` signal the PDF driver that fonts and layout settled.
  */
-export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?: string }> = ({ documentId, lang, version }) => {
+export const PrintBooklet: React.FC<{
+  documentId: number; lang: string; version?: string;
+  /** The year `{{year}}` resolves to, passed in on the print URL exactly as `version` is —
+   *  see `applyDocVars`. Never read from the clock here: re-rendering a frozen version must
+   *  reproduce it. */
+  year?: string;
+}> = ({ documentId, lang, version, year }) => {
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [config, setConfig] = useState<LayoutConfig | null>(null);
   const [rows, setRows] = useState<DocumentLayoutRow[]>([]);
@@ -173,6 +179,9 @@ export const PrintBooklet: React.FC<{ documentId: number; lang: string; version?
           toc={item.kind === 'toc' ? tocRows : []}
           orgSeal={orgSeal}
           version={version}
+          // The export always names a year (`_year_of`); the fallback is for a hand-typed
+          // print URL, where the current year beats printing "Copyright © ." at all.
+          year={year || yearOf(undefined)}
           widthOf={furnitureWidthOf(item)}
           tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
           slots={furnitureSlotsOf(furniture, item, lang)}

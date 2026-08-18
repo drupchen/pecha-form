@@ -6,6 +6,7 @@ furniture pages: cover/blank/toc/copyright/image/backcover) published in a set o
 pagination lands page numbers (D2) and PDF export (D3) come later. The auto-TOC is
 computed from each text page's section tree (reuses tree_nodes.get_nested_tree).
 """
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Request
@@ -875,16 +876,29 @@ def _find_chrome() -> str | None:
     return None
 
 
+def _year_of(created_at) -> str:
+    """The YEAR a version was declared, for `{{year}}`. Stored as SQLite's CURRENT_TIMESTAMP
+    ('YYYY-MM-DD HH:MM:SS'), so the year is its first four characters — and anything that is
+    not that shape falls back to the current year rather than printing a fragment."""
+    text = str(created_at or "")
+    return text[:4] if len(text) >= 4 and text[:4].isdigit() else str(date.today().year)
+
+
 def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label: str = "",
-                        origin: Optional[str] = None) -> bytes:
+                        origin: Optional[str] = None, year_label: str = "") -> bytes:
     """Render ONE edition of the booklet to PDF bytes via headless Chromium, with the
     navigation outline injected. Shared by the live `export_pdf` and the version renderer,
     so a frozen version can never diverge from a live export. Raises HTTPException on failure.
 
-    `version_label` resolves `{{version}}` in the copyright: a frozen version passes its own
-    semver, a live export the latest. The headless Chrome has no session cookie — the print
-    page authenticates every API call with a short-lived signed print token (read-only, bound
-    to the org). It only transits the local process argv."""
+    `version_label` resolves `{{version}}` in the copyright and `year_label` resolves
+    `{{year}}`: a frozen version passes its own semver and the year it was declared, a live
+    export the latest semver and the current year. Both are passed IN rather than computed on
+    the page for the same reason — re-rendering a frozen version years later must reproduce
+    it, and a page that read the clock would quietly print a different copyright.
+
+    The headless Chrome has no session cookie — the print page authenticates every API call
+    with a short-lived signed print token (read-only, bound to the org). It only transits the
+    local process argv."""
     chrome = _find_chrome()
     if not chrome:
         raise HTTPException(500, "No Chrome/Chromium binary found on the server for PDF export.")
@@ -894,9 +908,11 @@ def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label:
         token = mint_print_token(document_id, org_id)
         base = (origin or FRONTEND_URL).rstrip("/")
         url = f"{base}/?print={document_id}&lang={lang}&print_token={token}"
+        from urllib.parse import quote
         if version_label:
-            from urllib.parse import quote
             url += f"&version={quote(version_label)}"
+        if year_label:
+            url += f"&year={quote(year_label)}"
         cmd = [
             chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
             "--no-pdf-header-footer", "--virtual-time-budget=25000",
@@ -941,15 +957,19 @@ def export_pdf(document_id: int, request: Request, lang: str = "en"):
         doc = _require_doc(conn, document_id)
         title = doc["title"]
         org_id = doc["org_id"]
-        # A live export follows the latest declared (ready) version, for `{{version}}`.
+        # A live export follows the latest declared (ready) version, for `{{version}}` — and
+        # for `{{year}}`, the year that version was declared. With no version yet there is
+        # nothing to reproduce, so the year is the current one.
         latest = conn.execute(
-            "SELECT semver FROM document_versions WHERE document_id=? AND status='ready' "
-            "ORDER BY major DESC, minor DESC LIMIT 1", (document_id,)).fetchone()
+            "SELECT semver, created_at FROM document_versions WHERE document_id=? "
+            "AND status='ready' ORDER BY major DESC, minor DESC LIMIT 1",
+            (document_id,)).fetchone()
         version_label = latest["semver"] if latest else ""
+        year_label = _year_of(latest["created_at"]) if latest else str(date.today().year)
     finally:
         conn.close()
     pdf = _render_booklet_pdf(document_id, org_id, lang, version_label,
-                              origin=_frontend_origin(request))
+                              origin=_frontend_origin(request), year_label=year_label)
     safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
     return Response(
         content=pdf, media_type="application/pdf",
@@ -1164,20 +1184,22 @@ def _render_version(version_id: int):
     conn = get_db()
     try:
         v = conn.execute(
-            "SELECT document_id, org_id, langs, semver FROM document_versions WHERE id=?",
-            (version_id,)).fetchone()
+            "SELECT document_id, org_id, langs, semver, created_at FROM document_versions "
+            "WHERE id=?", (version_id,)).fetchone()
         if not v:
             return
         document_id, org_id = v["document_id"], v["org_id"]
         langs = json.loads(v["langs"] or "[]")
         semver = v["semver"]
+        year = _year_of(v["created_at"])
     finally:
         conn.close()
 
     for lang in langs:
         # The frozen PDF bakes in its OWN version — it is rendered while still 'rendering', so
         # "latest ready" would resolve to the previous version.
-        pdf = _render_booklet_pdf(document_id, org_id, lang, semver)  # may raise → worker marks failed
+        pdf = _render_booklet_pdf(document_id, org_id, lang, semver,
+                                  year_label=year)  # may raise → worker marks failed
         page_count = None
         try:
             from pypdf import PdfReader
