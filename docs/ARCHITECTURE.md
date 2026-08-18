@@ -247,8 +247,10 @@ when NULL, so a booklet laid out before they existed renders unchanged.
 - **`source_item_id`** — on a cover, the aligned text it was filled from (`fillCoverFrom`). It
   says two things: whose title this cover **carries**, and whose inner cover **follows** it.
 - **`title_disposition`** — one column read by the two kinds of page that carry a title. On a
-  **text**: `'page'` (it has an inner cover) or `'body'` (its title is not lifted and heads its
-  first page). On a **cover**: `'own'` — *detached*, seeded from no text at all.
+  **text**: `'none'` or NULL (no inner title page, the default), `'page'` (a blank page then
+  an inner cover), `'page_direct'` (the inner cover without the default blank page), or
+  `'body'` (its title is not lifted and heads its first page). On a **cover**:
+  `'own'` — *detached*, seeded from no text at all.
 
 **Everything pivots on `coverSourceItemId`** (`deriveBooklet`): the layout id of the text whose
 title the cover carries — the recorded source, else the first text, and `null` when the cover is
@@ -267,7 +269,9 @@ An inner cover is the cover minus the seal: `coverFollowedBy` → `inheritedBody
 cover's row → the text's title*, with `#image` deliberately excluded (an inner cover has no
 seal) and empty-is-absent throughout, so a cleared field keeps following rather than falling
 silently back to the text. Nothing is copied: re-space the cover and the inner cover moves with
-it, until you touch that block here, which then diverges alone.
+it. The inherited elements are centred as one stack; the inner page may move that complete
+stack with its own `shift_furniture/#title_stack` row. In the item editor a linked inner cover
+shows this inheritance instead of duplicate text fields.
 
 Two gestures that are easily confused, both in the item panel: **detach** ("Its title · its
 own") lets the text go and *keeps* the words; **release** *deletes* every authored slot and the

@@ -134,12 +134,15 @@ describe('the text whose title the cover carries', () => {
   const titlePages = (d: ReturnType<typeof deriveBooklet>) =>
     d.bodyUnits.filter((u) => u.kind === 'title')
       .map((u) => (u as { item: DocumentItem }).item.id);
+  const blankTitlePages = (d: ReturnType<typeof deriveBooklet>) =>
+    d.bodyUnits.filter((u) => u.kind === 'title_blank')
+      .map((u) => (u as { item: DocumentItem }).item.id);
 
-  it('is the FIRST text when nothing says otherwise — and only it goes without a page', () => {
+  it('adds no inner title pages when nothing says otherwise', () => {
     const d = deriveBooklet([cover({ position: 0 }), t1, t2], [], lines, titles);
     expect(d.coverSourceItemId).toBe(2);
     expect(d.mainTitleLines).toBe(title1);
-    expect(titlePages(d)).toEqual([3]);
+    expect(titlePages(d)).toEqual([]);
   });
 
   it('is the text it was FILLED FROM — so the first text gets its page back', () => {
@@ -147,7 +150,7 @@ describe('the text whose title the cover carries', () => {
     const d = deriveBooklet([c, t1, t2], [], lines, titles);
     expect(d.coverSourceItemId).toBe(3);
     expect(d.mainTitleLines).toBe(title2);
-    expect(titlePages(d)).toEqual([2]);
+    expect(titlePages(d)).toEqual([]);
   });
 
   it('resolves a fill recorded through a REUSED text’s layout id', () => {
@@ -155,7 +158,7 @@ describe('the text whose title the cover carries', () => {
     const c = cover({ position: 0, source_item_id: 3 });
     const d = deriveBooklet([c, t1, reused], [], lines, titles);
     expect(d.coverSourceItemId).toBe(3);
-    expect(titlePages(d)).toEqual([2]);
+    expect(titlePages(d)).toEqual([]);
   });
 
   it('is NOBODY once the cover is detached: every text derives its own title page', () => {
@@ -165,7 +168,7 @@ describe('the text whose title the cover carries', () => {
     // No lines to seed from is what makes a blank slot print blank: `TitleContent` reads its
     // fallbacks out of these, so an unauthored slot has nothing to fall back to.
     expect(d.mainTitleLines).toEqual([]);
-    expect(titlePages(d)).toEqual([2, 3]);
+    expect(titlePages(d)).toEqual([]);
     for (const t of [t1, t2]) expect(coverFollowedBy([c, t1, t2], t)).toBeNull();
   });
 
@@ -176,7 +179,7 @@ describe('the text whose title the cover carries', () => {
     const d = deriveBooklet([c, t1, t2], [], lines, titles);
     expect(d.coverSourceItemId).toBeNull();
     expect(d.mainTitleLines).toEqual([]);
-    expect(titlePages(d)).toEqual([2, 3]);
+    expect(titlePages(d)).toEqual([]);
   });
 
   it('still lets a text say where its own title goes, whatever the cover carries', () => {
@@ -184,5 +187,19 @@ describe('the text whose title the cover carries', () => {
     const kept = item({ id: 3, position: 2, text_title: 'Two', title_disposition: 'body' });
     const d = deriveBooklet([cover({ position: 0 }), asked, kept], [], lines, titles);
     expect(titlePages(d)).toEqual([2]);
+    expect(blankTitlePages(d)).toEqual([2]);
+  });
+
+  it('can explicitly put the inner title directly after the preceding page', () => {
+    const direct = item({ id: 2, position: 1, text_title: 'One', title_disposition: 'page_direct' });
+    const d = deriveBooklet([cover({ position: 0 }), direct, t2], [], lines, titles);
+    expect(titlePages(d)).toEqual([2]);
+    expect(blankTitlePages(d)).toEqual([]);
+  });
+
+  it('explicitly suppresses an inner title page with none', () => {
+    const hidden = item({ id: 2, position: 1, text_title: 'One', title_disposition: 'none' });
+    const d = deriveBooklet([cover({ position: 0 }), hidden, t2], [], lines, titles);
+    expect(titlePages(d)).toEqual([]);
   });
 });

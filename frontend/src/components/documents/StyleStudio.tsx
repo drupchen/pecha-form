@@ -407,7 +407,7 @@ export const StyleStudio: React.FC<{
       case 'small_verses': return <div className="bk-line bk-role-small bk-smallkind-verses">{E(0, 'bk-translation')}</div>;
       case 'intro': return <div className="bk-line bk-role-intro">{E(0, 'bk-translation')}</div>;
       case 'copyright': return E(0, 'bk-copyright');
-      case 'toc': return <div className="bk-toc"><div className="bk-toc-entry">{E(0, 'bk-toc-title')}<span className="bk-toc-dots" />{E(1, 'bk-toc-page')}</div></div>;
+      case 'toc': return <div className="bk-toc"><div className="bk-toc-entry"><span className="bk-toc-line">{E(0, 'bk-toc-title', 'span')}<span className="bk-toc-dots" />{E(1, 'bk-toc-page', 'span')}</span></div></div>;
       case 'folio': return <div className="bk-foliobox">{E(0, 'booklet-folio')}</div>;
       case 'image_caption': return E(0, 'bk-image-caption');
       default: return null;

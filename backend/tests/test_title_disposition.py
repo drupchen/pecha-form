@@ -1,10 +1,11 @@
 """Where a title comes from, and which text seeded a cover.
 
-Two nullable columns on `document_items`, both meaning "as it always was" when absent.
+Two nullable columns on `document_items`.
 `title_disposition` reads differently on the two kinds of page that carry a title: on a TEXT,
-'page' = it has an inner cover, 'body' = its title heads its first page; on a COVER, 'own' =
-it stands alone, seeded from no text at all. `source_item_id` is the aligned text a cover was
-filled from — whose title it carries, and whose inner cover follows it.
+'none'/NULL = no inner title page, 'page' = it has an inner cover, 'body' = its title heads its
+first page; on a COVER, 'own' = it stands alone, seeded from no text at all. `source_item_id` is
+the aligned text a cover was filled from — whose title it carries, and whose inner cover follows
+it.
 """
 import os
 import sys
@@ -57,7 +58,9 @@ def test_sets_and_clears_the_disposition():
     finally:
         conn.close()
     assert _patch(item_id, title_disposition="page").title_disposition == "page"
+    assert _patch(item_id, title_disposition="page_direct").title_disposition == "page_direct"
     assert _patch(item_id, title_disposition="body").title_disposition == "body"
+    assert _patch(item_id, title_disposition="none").title_disposition == "none"
     # '' is the sentinel for "back to the default rule" — NULL, not the empty string.
     assert _patch(item_id, title_disposition="").title_disposition is None
 

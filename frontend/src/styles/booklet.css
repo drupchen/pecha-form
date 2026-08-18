@@ -191,15 +191,22 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
   font-size: 11pt; color: #333; }
 .bk-toc { height: 100%; display: flex; flex-direction: column; justify-content: flex-start;
   font-family: var(--font-translation); font-size: 10.5pt; }
-.bk-toc-entry { display: flex; align-items: baseline; padding: 0.9mm 0; }
+.bk-toc-list { position: relative; }
+.bk-toc-entry { padding: 0.9mm 0; }
 .bk-toc-head { font-weight: 600; margin-top: 3mm; }
 .bk-toc-head:first-child { margin-top: 0; }
-/* Truncate over-long titles so the leader dots + page number stay aligned rather than
-   running off the page edge. */
-.bk-toc-title { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; }
-.bk-toc-dots { flex: 1 0 8mm; margin: 0 1mm; border-bottom: 1.2pt dotted #999; transform: translateY(-2px); }
-.bk-toc-page { flex: none; white-space: nowrap; }
+/* The leader belongs to the LAST visual line. It runs behind that line from edge to edge;
+   the inline title fragments and the absolutely-positioned page number mask it, leaving dots
+   only in the gap between the final word and its number. `clone` gives every wrapped title
+   fragment its own clean background without cropping any text. */
+.bk-toc-line { display: block; position: relative; padding-right: 5mm; }
+.bk-toc-title { position: relative; z-index: 1; white-space: normal; overflow-wrap: anywhere;
+  background: #fff; box-shadow: 0 0 0 0.8mm #fff;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.bk-toc-dots { position: absolute; z-index: 0; left: 0; right: 0; bottom: 0.28em;
+  border-bottom: 1.2pt dotted #999; }
+.bk-toc-page { position: absolute; z-index: 1; right: 0; bottom: 0; padding-left: 1mm;
+  background: #fff; white-space: nowrap; }
 /* "Nothing here yet" — not content, so it should not read as content. */
 .bk-placeholder { color: #aaa; font-style: italic; font-size: 10pt; }
 /* The copyright placeholder is the one that carries a ROLE class and `.bk-placeholder` on the
@@ -513,6 +520,14 @@ button.bk-col-label-btn:hover { background: rgba(47, 76, 141, 0.2); }
  * (Verified in Chrome's paged media: the offset survives to the PDF exactly, ink in the
  * margins prints, and ink past the sheet is clipped.) */
 .bk-shift { position: relative; top: var(--page-shift, 0mm); }
+
+/* A linked inner cover inherits the cover's elements, then treats their centred stack as
+ * one movable block. During a drag PageGround previews through --page-shift; at rest the
+ * stored item-level value is --title-stack-shift. */
+.bk-titlepage-stack {
+  position: relative;
+  top: var(--page-shift, var(--title-stack-shift, 0mm));
+}
 
 /* A SPECIAL page places its blocks one by one, so there is no page-level lever here: each
  * block's mm ride `top` on its own `.bk-widthline` (set inline by `WidthLine`, from a

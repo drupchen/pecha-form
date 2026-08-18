@@ -413,7 +413,7 @@ export interface DocumentItem {
    * DETACHED — seeded from no text, so what is authored on it prints and what is not stays
    * blank, and every aligned text derives its own title page from its own content.
    */
-  title_disposition?: 'page' | 'body' | 'own' | null;
+  title_disposition?: 'none' | 'page' | 'page_direct' | 'body' | 'own' | null;
   /** A COVER item: the aligned-text item whose title seeded its content ("fill from the
    *  aligned text"). It says whose title this cover CARRIES — that text prints no title page
    *  of its own — and whose inner cover FOLLOWS this cover, content and block placements
@@ -680,7 +680,7 @@ export const addDocumentItem = (id: number, body: {
 export const patchDocumentItem = (itemId: number, body: {
   text_id?: number | null; caption?: string | null; body?: string | null;
   /** '' clears back to the default rule; 0 clears the cover's source text. */
-  title_disposition?: 'page' | 'body' | 'own' | '';
+  title_disposition?: 'none' | 'page' | 'page_direct' | 'body' | 'own' | '';
   source_item_id?: number;
   /** 0 clears it back to the org's default image for this kind of page. */
   org_image_id?: number;
@@ -1616,4 +1616,3 @@ export async function syncSessions(instanceId: string) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
-

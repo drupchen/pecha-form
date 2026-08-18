@@ -186,6 +186,8 @@ export const PrintBooklet: React.FC<{
           tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
           slots={furnitureSlotsOf(furniture, item, lang)}
           groundOf={furnitureGroundOf(rows, item.id, lang)}
+          tocGround={item.kind === 'toc'
+            ? furnitureGroundOf(rows, item.id, lang)('#toc_stack') : undefined}
           spaceOf={furnitureSpaceOf(rows, item.id)}
           pageHeightMm={config.page_height_mm} />
       </div>
@@ -209,6 +211,11 @@ export const PrintBooklet: React.FC<{
 
       {bodyUnits.map((u, i) => {
         folio = i + 1;
+        if (u.kind === 'title_blank') {
+          return <div key={`u${i}`} className="booklet-page furniture print-page">
+            <div className="booklet-content" />
+          </div>;
+        }
         if (u.kind === 'title') {
           return (
             <div key={`u${i}`} className="booklet-page furniture print-page">
@@ -225,6 +232,9 @@ export const PrintBooklet: React.FC<{
                                 coverOf(u.item)
                                   ? furnitureGroundOf(rows, coverOf(u.item)!.id, lang) : null)}
                               spaceOf={furnitureSpaceOf(rows, u.item.id)}
+                              stackGround={coverOf(u.item)
+                                ? furnitureGroundOf(rows, u.item.id, lang)('#title_stack')
+                                : undefined}
                               pageHeightMm={config.page_height_mm} centreAll />
               </div>
             </div>

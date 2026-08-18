@@ -10,13 +10,12 @@ import {
 } from '../../api/client';
 import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
-  MM_PX, rootVars, Verso, Recto, FurniturePage, FurnitureContent, InternalTitlePage,
+  MM_PX, rootVars, Verso, Recto, FurniturePage, FurnitureContent, InternalTitlePage, TitleContent,
   NavOutline,
   deriveBooklet, furnitureBodyOf, pageVars, gapFillLang, GAP_FILL_KIND,
   PAGE_SHIFT_KIND, anchorOf, splitAnchorOf, TIBETAN_LANG, versoGapSuppressed,
   PageGround, shiftHostOf, inkBlocksOf, furnitureShiftMm, furnitureShiftLang, furnitureSlotsOf,
   coverFollowedBy, inheritedBodyOf, inheritedGroundOf,
-  furnitureSpaceOf as furnitureSpaceRead,
   FURNITURE_SHIFT_KIND, FURNITURE_SPACE_KIND, furnitureSpaceMm, type BlockGroundOf,
   BREAK_AUTO, BREAK_MANUAL, isManualBreak, defaultPairCut, countWordsPlain, countWordsHtml,
   yearOf,
@@ -64,6 +63,7 @@ interface OverviewEdition {
    *  translated title) renders per edition in the overview, not just the on-screen one. */
   tocRows: TocRow[];
   mainTitleLines: DocLine[];
+  titleByItem: Map<number, DocLine[]>;
 }
 
 /**
@@ -403,19 +403,27 @@ export const PaginationBench: React.FC<{
   // chip). A frozen version's own PDF gets its semver from the print URL instead.
   useEffect(() => {
     let alive = true;
-    getVersions(documentId)
+    const apply = (semver: string, createdAt?: string | null) => {
+      if (!alive) return;
+      setVersionLabel(semver);
+      setYearLabel(yearOf(createdAt));
+    };
+    const refresh = () => getVersions(documentId)
       .then(vs => {
         if (!alive) return;
         const tip = vs.find(v => v.status === 'ready');
-        setVersionLabel(tip?.semver ?? '');
-        // `{{year}}` is the year the declared version was DECLARED, not the year the page is
-        // being looked at — so a booklet frozen in 2026 still prints 2026 when re-rendered.
-        // With no version yet there is nothing to reproduce, so the current year stands in,
-        // which is exactly what the export does (`_year_of`, documents.py).
-        setYearLabel(yearOf(tip?.created_at));
+        apply(tip?.semver ?? '', tip?.created_at);
       })
       .catch(() => { if (alive) { setVersionLabel(''); setYearLabel(yearOf(undefined)); } });
-    return () => { alive = false; };
+    const changed = (event: Event) => {
+      const d = (event as CustomEvent<{
+        documentId: number; semver: string; createdAt?: string | null;
+      }>).detail;
+      if (d?.documentId === documentId) apply(d.semver, d.createdAt);
+    };
+    void refresh();
+    window.addEventListener('booklet-version-changed', changed);
+    return () => { alive = false; window.removeEventListener('booklet-version-changed', changed); };
   }, [documentId]);
 
   // ── The editions this page is laid out in ──
@@ -642,13 +650,14 @@ export const PaginationBench: React.FC<{
   }, [doc, rows, rectoSrc, lines, titleByItem, headingsByItem, furniture, lang, splitMode,
       renderLines]);
 
-  // How many physical pages this lays out to, counted exactly as the print page renders them:
-  // one sheet per front/back-matter item, two per spread, one per internal title page. Only
-  // the bench can work this out — it needs the whole line stream and the stored breaks — so it
-  // tells the server, and the documents list reads it back. An ITEM count cannot stand in: an
-  // aligned text is a single item and a great many pages.
-  const pageCount = frontMatter.length + backMatter.length
-    + bodyUnits.reduce((n, u) => n + (u.kind === 'spread' ? 2 : 1), 0);
+  // The catalogue count describes CONTENT pages, not binding furniture: explicit blank items,
+  // the blank before an inner title, and the inner title itself do not contribute. They still
+  // remain real physical sheets in preview/PDF and in the TOC's page-position calculation.
+  // Other furniture (cover, TOC, image and back cover) keeps counting as before.
+  const countedFurniture = [...frontMatter, ...backMatter]
+    .filter((it) => it.kind !== 'blank').length;
+  const pageCount = countedFurniture
+    + bodyUnits.reduce((n, u) => n + (u.kind === 'spread' ? 2 : 0), 0);
   useEffect(() => {
     if (!doc || loading || !bodyUnits.length) return;      // nothing laid out yet: say nothing
     if (doc.page_count === pageCount) return;
@@ -670,7 +679,8 @@ export const PaginationBench: React.FC<{
   // `renderLines`, so a click at index i in any column resolves through the same anchor.
   // `splitMode` is passed live (unlike the seed) so recto word-picking works in every column.
   const overviewEditions: OverviewEdition[] = useMemo(() => {
-    const empty = { tocRows: [] as TocRow[], mainTitleLines: [] as DocLine[] };
+    const empty = { tocRows: [] as TocRow[], mainTitleLines: [] as DocLine[],
+                    titleByItem: new Map<number, DocLine[]>() };
     if (!overview || !doc || !allCompiles) {
       return overview && doc
         ? doc.languages.map((lg) => ({ lang: lg, lines: null, rectoLines: null, outOfStep: false, error: false, ...empty }))
@@ -694,7 +704,8 @@ export const PaginationBench: React.FC<{
       // the stream, so an out-of-step edition still shows its furniture.
       return { lang: lg, lines: outOfStep ? null : d.lines,
                rectoLines: outOfStep ? null : rectoLines, outOfStep, error: false,
-               tocRows: d.tocRows, mainTitleLines: d.mainTitleLines };
+               tocRows: d.tocRows, mainTitleLines: d.mainTitleLines,
+               titleByItem: c.titleByItem };
     });
   }, [overview, doc, allCompiles, rows, furniture, splitMode, renderLines]);
   // Placeholder columns are named in the toolbar too — a column that says nothing reads as
@@ -1572,6 +1583,8 @@ export const PaginationBench: React.FC<{
     return inheritedGroundOf(furnitureGroundOf(item, forLang),
                              cover ? furnitureGroundOf(cover, forLang) : null);
   };
+  const innerCoverStackGroundOf = (item: DocumentItem, forLang = lang) =>
+    furnitureGroundOf(item, forLang)('#title_stack');
 
   const WIDTH_KIND: Record<WidthTarget, DocumentLayoutKind> = {
     tibetan: 'width_tibetan', phonetics: 'width_phonetics',
@@ -1769,6 +1782,7 @@ export const PaginationBench: React.FC<{
   const viewAnchor = useRef<{ key: string; lineIdx: number; offsetPx: number } | null>(null);
   const unitKeyOf = (u: PageUnit): string => {
     if (u.kind === 'title') return `title:${u.item.id}`;
+    if (u.kind === 'title_blank') return `title-blank:${u.item.id}`;
     const l = renderLines[u.s.start];
     return l ? `${l.itemId}:${anchorOf(l)}` : '';
   };
@@ -2055,7 +2069,12 @@ export const PaginationBench: React.FC<{
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
                       groundOf={furnitureGroundOf(item, ed.lang)}
-                      spaceOf={furnitureSpaceRead(rows, item.id)}
+                      tocGround={item.kind === 'toc'
+                        ? furnitureGroundOf(item, ed.lang)('#toc_stack') : undefined}
+                      // Tibetan is shared across editions, but each overview copy must still
+                      // expose the same live spacing control. All columns write the one
+                      // language-independent row, exactly like the detailed cover.
+                      spaceOf={furnitureSpaceOf(item)}
                       onResizeImage={(mm) => void onResizeImage(item, mm)}
                       version={versionLabel} year={yearLabel}
                       pageHeightMm={config?.page_height_mm} />
@@ -2075,6 +2094,7 @@ export const PaginationBench: React.FC<{
         tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
         slots={furnitureSlotsOf(furniture, item, lang)}
         groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}
+        tocGround={item.kind === 'toc' ? furnitureGroundOf(item)('#toc_stack') : undefined}
         onResizeImage={(mm) => void onResizeImage(item, mm)}
         version={versionLabel} year={yearLabel}
         pageHeightMm={config?.page_height_mm} />
@@ -2543,7 +2563,43 @@ export const PaginationBench: React.FC<{
             // furniture pages' `height: 100%` children, which a block in between would
             // un-centre). The gap fill's stop is the room LEFT, so its reach is what is
             // already spent plus what remains.
-            const inner = u.kind === 'title' ? (
+            const linkedCover = u.kind === 'title' ? coverFor(u.item) : null;
+            const inner = u.kind === 'title_blank' && overview ? (
+              <div className="booklet-spread">
+                {overviewEditions.map((ed) => (
+                  <div key={ed.lang} className="booklet-page furniture" data-plang={ed.lang}>
+                    <button type="button" className="bk-col-label bk-col-label-btn"
+                            style={{ fontSize: 11 / ovScale }}
+                            onClick={() => { setLang(ed.lang); setOverview(false); }}>{ed.lang}</button>
+                    <div className="booklet-content" />
+                  </div>
+                ))}
+              </div>
+            ) : u.kind === 'title_blank' ? (
+              <div className="booklet-spread"><div className="booklet-page furniture">
+                <div className="booklet-content" />
+              </div></div>
+            ) : u.kind === 'title' && overview ? (
+              <div className="booklet-spread">
+                {overviewEditions.map((ed) => (
+                  <div key={ed.lang} className="booklet-page furniture" data-plang={ed.lang}>
+                    <button type="button" className="bk-col-label bk-col-label-btn"
+                            style={{ fontSize: 11 / ovScale }}
+                            onClick={() => { setLang(ed.lang); setOverview(false); }}>{ed.lang}</button>
+                    <div className="booklet-content">
+                      <TitleContent
+                        titleLines={ed.titleByItem.get(u.item.layout_item_id ?? u.item.id) ?? u.titleLines}
+                        widthOf={furnitureWidthOf(u.item, ed.lang)}
+                        tibetan={inheritedBodyOf(furniture, u.item, linkedCover, TIBETAN_LANG)}
+                        slots={furnitureSlotsOf(furniture, u.item, ed.lang, linkedCover)}
+                        groundOf={innerCoverGroundOf(u.item, ed.lang)}
+                        spaceOf={furnitureSpaceOf(u.item)} pageHeightMm={config.page_height_mm}
+                        centreAll stackGround={linkedCover ? innerCoverStackGroundOf(u.item, ed.lang) : undefined} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : u.kind === 'title' ? (
               <InternalTitlePage titleLines={u.titleLines}
                                  widthOf={furnitureWidthOf(u.item)}
                                  tibetan={inheritedBodyOf(furniture, u.item,
@@ -2551,6 +2607,7 @@ export const PaginationBench: React.FC<{
                                  slots={furnitureSlotsOf(furniture, u.item, lang, coverFor(u.item))}
                                  groundOf={innerCoverGroundOf(u.item)}
                                  spaceOf={furnitureSpaceOf(u.item)}
+                                 stackGround={linkedCover ? innerCoverStackGroundOf(u.item) : undefined}
                                  pageHeightMm={config.page_height_mm} />
             ) : (
               <div className="booklet-spread" data-unit={si}>

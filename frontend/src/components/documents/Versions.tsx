@@ -25,7 +25,14 @@ export const VersionsPanel: React.FC<{
 
   const load = useCallback(async () => {
     try {
-      setVersions(await getVersions(documentId));
+      const next = await getVersions(documentId);
+      setVersions(next);
+      // The pagination bench stays mounted behind this drawer. Tell it whenever polling sees
+      // a new ready tip so its {{version}}/{{year}} preview updates without a page reload.
+      const tip = next.find(v => v.status === 'ready');
+      window.dispatchEvent(new CustomEvent('booklet-version-changed', {
+        detail: { documentId, semver: tip?.semver ?? '', createdAt: tip?.created_at ?? null },
+      }));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

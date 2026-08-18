@@ -1076,8 +1076,10 @@ export const TitleContent: React.FC<{
    * sub-title and all, optically balanced on the sheet. So it puts the box back in flow.
    */
   centreAll?: boolean;
+  /** Move a linked inner cover's complete centred stack as one block. */
+  stackGround?: { valueMm: number; onCommit?: (mm: number) => void };
 }> = ({ titleLines, seal, image, widthOf = NO_WIDTH, groundOf, spaceOf, pageHeightMm, centreAll,
-        tibetan, slots }) => {
+        tibetan, slots, stackGround }) => {
   // The booklet's own lines, or the text's. An override is plain text — it has no syllables,
   // so its lines anchor their widths on a block key instead (see `anchorOf`).
   const ownLines = (tibetan ?? '').split('\n').map((t) => t.trim()).filter(Boolean);
@@ -1087,7 +1089,16 @@ export const TitleContent: React.FC<{
   const trans = (titleLines.find((t) => t.paragraphs?.length)?.paragraphs)
     ?? titleLines.map((t) => t.translation).filter((x): x is string => !!x);
   return (
-    <div className="bk-titlepage">
+    <div className={`bk-titlepage${stackGround ? ' bk-titlepage-stack' : ''}`}
+         style={stackGround ? {
+           ['--title-stack-shift' as string]: `${stackGround.valueMm}mm`,
+         } : undefined}>
+      {stackGround?.onCommit && (
+        <PageGround valueMm={stackGround.valueMm} tone="edition"
+                    title="Move the complete title block up or down. Double-click to re-centre it."
+                    ariaLabel="Move the complete title block up or down"
+                    pageHeightMm={pageHeightMm} onCommit={stackGround.onCommit} />
+      )}
       {/* The cover image / org seal is a `BkImage`, self-contained: it carries its own placement
           rail (and, for the booklet's own image, a resize grip). The ༀ fallback glyph has no
           size of its own, so it keeps the plain `WidthLine` placement rail. */}
@@ -1254,8 +1265,10 @@ export const FurnitureContent: React.FC<{
   /** …and the year it was declared, for `{{year}}` in the same bodies. */
   year?: string;
   pageHeightMm?: number;
+  /** Move the complete TOC list together instead of placing entries independently. */
+  tocGround?: { valueMm: number; onCommit?: (mm: number) => void };
 }> = ({ item, titleLines, body, toc, orgImages = [], widthOf = NO_WIDTH, tibetan, slots,
-        groundOf, spaceOf, onResizeImage, version, year, pageHeightMm }) => {
+        groundOf, spaceOf, onResizeImage, version, year, pageHeightMm, tocGround }) => {
   // The booklet's own image, with its placement rail and resize grip (see `BkImage`).
   const bkImage = (
     <BkImage src={withUrlAuth(itemImageUrl(item.id))}
@@ -1280,19 +1293,27 @@ export const FurnitureContent: React.FC<{
   if (item.kind === 'toc') {
     return (
       <div className="bk-toc">
-        {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
-        {toc.map((e, i) => (
-          <WidthLine key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
-                     style={{ paddingLeft: `${e.level * 5}mm` }}
-                     {...widthOf(`#toc:${e.itemId ?? i}`)}
-                     ground={groundOf?.(`#toc:${e.itemId ?? i}`)} pageHeightMm={pageHeightMm}>
-            {/* Inner HTML (block tags already flattened) so entities/emphasis render as
-                on the body headings, not as raw &#x27; text. */}
-            <span className="bk-toc-title" dangerouslySetInnerHTML={{ __html: e.title }} />
-            <span className="bk-toc-dots" />
-            <span className="bk-toc-page">{e.page}</span>
-          </WidthLine>
-        ))}
+        <div className="bk-toc-list bk-widthline"
+             style={tocGround?.valueMm ? { top: `${tocGround.valueMm}mm` } : undefined}>
+          {tocGround?.onCommit && (
+            <BlockGround valueMm={tocGround.valueMm} pageHeightMm={pageHeightMm}
+                         onCommit={tocGround.onCommit} />
+          )}
+          {toc.length === 0 && <div className="bk-placeholder">No sections yet.</div>}
+          {toc.map((e, i) => (
+            <WidthLine key={i} className={`bk-toc-entry${e.isTextHeader ? ' bk-toc-head' : ''}`}
+                       style={{ paddingLeft: `${e.level * 5}mm` }}
+                       {...widthOf(`#toc:${e.itemId ?? i}`)} pageHeightMm={pageHeightMm}>
+              {/* Inner HTML (block tags already flattened) so entities/emphasis render as
+                  on the body headings, not as raw &#x27; text. */}
+              <span className="bk-toc-line">
+                <span className="bk-toc-title" dangerouslySetInnerHTML={{ __html: e.title }} />
+                <span className="bk-toc-dots" aria-hidden />
+                <span className="bk-toc-page">{e.page}</span>
+              </span>
+            </WidthLine>
+          ))}
+        </div>
       </div>
     );
   }
@@ -1377,6 +1398,7 @@ export const FurniturePage: React.FC<{
   version?: string;
   year?: string;
   pageHeightMm?: number;
+  tocGround?: { valueMm: number; onCommit?: (mm: number) => void };
 }> = (props) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
@@ -1393,13 +1415,14 @@ export const InternalTitlePage: React.FC<{
   groundOf?: BlockGroundOf;
   spaceOf?: BlockGroundOf;
   pageHeightMm?: number;
-}> = ({ titleLines, widthOf, tibetan, slots, groundOf, spaceOf, pageHeightMm }) => (
+  stackGround?: { valueMm: number; onCommit?: (mm: number) => void };
+}> = ({ titleLines, widthOf, tibetan, slots, groundOf, spaceOf, pageHeightMm, stackGround }) => (
   <div className="booklet-spread">
     <div className="booklet-page furniture">
       <div className="booklet-content">
         <TitleContent titleLines={titleLines} widthOf={widthOf} tibetan={tibetan}
                       slots={slots} groundOf={groundOf} spaceOf={spaceOf}
-                      pageHeightMm={pageHeightMm} centreAll />
+                      pageHeightMm={pageHeightMm} centreAll stackGround={stackGround} />
       </div>
     </div>
   </div>
@@ -1409,6 +1432,7 @@ export const InternalTitlePage: React.FC<{
 
 export type PageUnit =
   | { kind: 'spread'; s: { start: number; end: number } }
+  | { kind: 'title_blank'; item: DocumentItem }
   | { kind: 'title'; item: DocumentItem; titleLines: DocLine[] };
 
 /** A node in the PDF navigation outline (bookmarks): plain-text title, the 0-based
@@ -1950,12 +1974,12 @@ export function deriveBooklet(
       //   'page' says yes, whichever text it is: the text whose title the cover carries has
       //          one only if asked, since that title is already on the cover;
       //   'body' says no, and the title is in the stream below anyway (see `compileDocument`);
-      //   unset  is the rule generalised: every text EXCEPT the one whose title the cover
-      //          carries. That used to be spelt "every text but the first", which assumed the
-      //          cover follows the first text — so a detached cover ('own', carrying nobody's
-      //          title) now gives every text its own page, each from its own content.
-      if (item && tl.length && (item.title_disposition ?? null) !== 'body'
-          && ((item.title_disposition ?? null) === 'page' || startItemId !== coverSourceItemId)) {
+      //   'none'/unset says no, and compileDocument lifts the title out of the body as well.
+      if (item && tl.length
+          && (item.title_disposition === 'page' || item.title_disposition === 'page_direct')) {
+        if (item.title_disposition !== 'page_direct') {
+          bodyUnits.push({ kind: 'title_blank', item });
+        }
         bodyUnits.push({ kind: 'title', item, titleLines: tl });
       }
     }

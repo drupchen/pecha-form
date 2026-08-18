@@ -265,21 +265,14 @@ export const DocumentsView: React.FC = () => {
    *
    * `'page'` — the text has an INNER COVER, a title page of its own before its first page.
    * `'body'` — no page; the title stays in the text and heads its first page.
-   * Unset, the rule: every text EXCEPT the one whose title the cover carries, whose title is
-   * lifted onto the cover and appears there alone. So the default reads 'body' for that one
-   * text only in the sense that it prints no page of its own — which is why the control below
-   * names the two states rather than three. Detach the cover and it carries nobody's title, so
-   * every text gets a page, each from its own content.
+   * `'none'` (and unset) — no inner title page and no title heading; this is the default.
    *
-   * Must agree with `deriveBooklet`, which decides the same thing for the page itself — and
-   * does so against the id the LINES carry, which is the id read back into
-   * `coverSourceItemId`.
+   * Must agree with `deriveBooklet`, which decides the same thing for the page itself.
    */
-  const innerCoverOn = (it: DocumentItem): boolean => {
-    const d = it.title_disposition ?? null;
-    if (d) return d === 'page';
-    return (it.layout_item_id ?? it.id) !== coverSourceItemId;
-  };
+  const titleDisposition = (it: DocumentItem): 'none' | 'page' | 'body' =>
+    it.title_disposition === 'page' || it.title_disposition === 'page_direct'
+      ? 'page' : it.title_disposition === 'body' ? 'body' : 'none';
+  const innerCoverOn = (it: DocumentItem): boolean => titleDisposition(it) === 'page';
   /** Pages that RENDER a text: the booklet's own ('text') and a reused aligned text page
    *  ('textpage'). Both get a table-of-contents entry, which is why this and not `kind`. */
   const isTextRow = (it: DocumentItem): boolean => it.text_id != null;
@@ -387,15 +380,25 @@ export const DocumentsView: React.FC = () => {
     }
   };
 
-  const setDisposition = async (it: DocumentItem, on: boolean) => {
+  const setDisposition = async (it: DocumentItem, disposition: 'none' | 'page' | 'body') => {
     if (!current) return;
     try {
       // Written explicitly either way — never left to the default once the user has said so,
       // or adding a text above would silently change what an untouched page does.
-      await patchDocumentItem(it.id, { title_disposition: on ? 'page' : 'body' });
+      await patchDocumentItem(it.id, { title_disposition: disposition });
       await open(current.id);
     } catch (e: any) {
       useDocumentStore.setState({ error: e.message || 'Could not change the title page' });
+    }
+  };
+
+  const setBlankBeforeTitle = async (it: DocumentItem, enabled: boolean) => {
+    if (!current) return;
+    try {
+      await patchDocumentItem(it.id, { title_disposition: enabled ? 'page' : 'page_direct' });
+      await open(current.id);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not change the page before the title' });
     }
   };
 
@@ -1017,19 +1020,25 @@ export const DocumentsView: React.FC = () => {
                           <div className="flex items-center gap-2 pb-1.5 mb-0.5 text-[11px]"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             <span className="text-ink-soft">Its title</span>
-                            {([[true, 'on a page of its own'],
-                               [false, 'heading its first page']] as const).map(([on, label]) => (
+                            {([['none', 'no inner title page'],
+                               ['page', 'on a page of its own'],
+                               ['body', 'heading its first page']] as const).map(([disposition, label]) => (
                               <button key={label} type="button"
-                                      onClick={() => void setDisposition(it, on)}
+                                      onClick={() => void setDisposition(it, disposition)}
                                       className={`px-2 py-0.5 rounded-md ${
-                                        innerCoverOn(it) === on
+                                        titleDisposition(it) === disposition
                                           ? 'bg-lapis text-white' : 'text-lapis hover:bg-cream'}`}
                                       style={{ border: '1px solid var(--cline)' }}>
                                 {label}
                               </button>
                             ))}
-                            {it.title_disposition == null && (
-                              <span className="text-ink-soft">— by default</span>
+                            {titleDisposition(it) === 'page' && (
+                              <label className="ml-1 flex items-center gap-1 text-lapis cursor-pointer">
+                                <input type="checkbox"
+                                       checked={it.title_disposition !== 'page_direct'}
+                                       onChange={e => void setBlankBeforeTitle(it, e.target.checked)} />
+                                empty page before
+                              </label>
                             )}
                           </div>
                         )}
@@ -1237,7 +1246,15 @@ export const DocumentsView: React.FC = () => {
                             })}
                           </div>
                         )}
-                        {hasTitleBlocks(it) && (
+                        {hasTitleBlocks(it) && followedCover(it) && (
+                          <div className="text-[11px] text-jade pb-1.5 mb-0.5"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            Content and placement are drawn from the linked cover page, without
+                            its seal. The complete title block is centred on the page; adjust it
+                            vertically in the booklet preview.
+                          </div>
+                        )}
+                        {hasTitleBlocks(it) && !followedCover(it) && (
                           <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             <div className="text-[11px] text-ink-soft flex items-center gap-2">
@@ -1287,7 +1304,7 @@ export const DocumentsView: React.FC = () => {
                             Each follows the text until it is overridden, exactly as the
                             Tibetan above does — so this panel now mirrors the page instead of
                             offering one field that did nothing. */}
-                        {hasTitleBlocks(it) && current.languages.length > 0 && (
+                        {hasTitleBlocks(it) && !followedCover(it) && current.languages.length > 0 && (
                           <div className="flex flex-col gap-2 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
                             {/* A cover already follows the booklet's FIRST aligned text. This

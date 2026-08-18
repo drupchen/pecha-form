@@ -194,7 +194,7 @@ def update_document(document_id: int, payload: DocumentUpdate):
         raise HTTPException(400, "Title required")
     conn = get_db()
     try:
-        _require_doc(conn, document_id)
+        doc = _require_doc(conn, document_id)
         conn.execute("UPDATE documents SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                      (title, document_id))
         conn.commit()
@@ -373,8 +373,10 @@ def patch_item(item_id: int, payload: DocumentItemPatch):
         # this cover's title is its own, seeded from no text at all, so an empty slot on it
         # stays empty instead of falling back to an aligned text's words.
         if payload.title_disposition is not None:
-            if payload.title_disposition not in ("", "page", "body", "own"):
-                raise HTTPException(400, "title_disposition must be 'page', 'body', 'own' or ''")
+            if payload.title_disposition not in ("", "none", "page", "page_direct", "body", "own"):
+                raise HTTPException(
+                    400, "title_disposition must be 'none', 'page', 'page_direct', "
+                         "'body', 'own' or ''")
             sets.append("title_disposition = ?")
             args.append(payload.title_disposition or None)
         if payload.source_item_id is not None:
@@ -923,6 +925,12 @@ def _year_of(created_at) -> str:
     return text[:4] if len(text) >= 4 and text[:4].isdigit() else str(date.today().year)
 
 
+def _safe_download_stem(title: str | None) -> str:
+    """A filesystem-friendly booklet title shared by live and frozen PDF downloads."""
+    kept = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_")
+    return " ".join(kept.split()) or "booklet"
+
+
 def _render_booklet_pdf(document_id: int, org_id: int, lang: str, version_label: str = "",
                         origin: Optional[str] = None, year_label: str = "") -> bytes:
     """Render ONE edition of the booklet to PDF bytes via headless Chromium, with the
@@ -1009,10 +1017,12 @@ def export_pdf(document_id: int, request: Request, lang: str = "en"):
         conn.close()
     pdf = _render_booklet_pdf(document_id, org_id, lang, version_label,
                               origin=_frontend_origin(request), year_label=year_label)
-    safe = "".join(c for c in (title or "booklet") if c.isalnum() or c in " -_").strip() or "booklet"
+    safe = _safe_download_stem(title)
+    version_part = f"-v{version_label}" if version_label else ""
     return Response(
         content=pdf, media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe}-{lang}.pdf"'},
+        headers={"Content-Disposition":
+                 f'attachment; filename="{safe}{version_part}-{lang}.pdf"'},
     )
 
 
@@ -1182,7 +1192,7 @@ def set_item_image_size(item_id: int, payload: ImageSizeIn):
 # bumps. ASSUMES a single uvicorn worker (in-process queue). Stuck 'rendering' rows
 # left by a restart are marked failed in init_db (db.py).
 
-_version_render_q: "_queue.Queue[int]" = _queue.Queue()
+_version_render_q: "_queue.Queue[tuple[int, str]]" = _queue.Queue()
 _version_worker_started = False
 _version_worker_lock = threading.Lock()
 
@@ -1199,9 +1209,9 @@ def _start_version_worker():
 
 def _version_worker_loop():
     while True:
-        version_id = _version_render_q.get()
+        version_id, origin = _version_render_q.get()
         try:
-            _render_version(version_id)
+            _render_version(version_id, origin)
         except Exception as e:  # never let the worker thread die
             conn = get_db()
             try:
@@ -1217,7 +1227,7 @@ def _version_worker_loop():
             _version_render_q.task_done()
 
 
-def _render_version(version_id: int):
+def _render_version(version_id: int, origin: str):
     """Render every edition of a version to frozen PDF bytes. Own DB connection
     (runs off the request thread); a token is minted per edition."""
     conn = get_db()
@@ -1238,7 +1248,7 @@ def _render_version(version_id: int):
         # The frozen PDF bakes in its OWN version — it is rendered while still 'rendering', so
         # "latest ready" would resolve to the previous version.
         pdf = _render_booklet_pdf(document_id, org_id, lang, semver,
-                                  year_label=year)  # may raise → worker marks failed
+                                  origin=origin, year_label=year)  # may raise → failed
         page_count = None
         try:
             from pypdf import PdfReader
@@ -1413,14 +1423,15 @@ def _store_snapshot(conn, version_id: int, document_id: int):
     # restore needs to put each image back where it belongs. The column is free text and the PK
     # is (version_id, kind, ref), so this needed no schema change.
     for img in conn.execute(
-            "SELECT id, name, mime, data, width_mm, height_mm, default_for FROM org_images "
-            "WHERE org_id=?", (org_id,)).fetchall():
+            "SELECT id, kind, name, mime, data, width_mm, height_mm, is_default "
+            "FROM org_images WHERE org_id=?", (org_id,)).fetchall():
         conn.execute(
             "INSERT OR REPLACE INTO document_version_asset "
             "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', ?, ?, ?, ?)",
             (version_id, str(img["id"]), img["mime"],
-             json.dumps({"name": img["name"], "width_mm": img["width_mm"],
-                         "height_mm": img["height_mm"], "default_for": img["default_for"]}),
+             json.dumps({"kind": img["kind"], "name": img["name"],
+                         "width_mm": img["width_mm"], "height_mm": img["height_mm"],
+                         "is_default": bool(img["is_default"])}),
              img["data"]))
     for font in conn.execute(
             "SELECT id, family, weight, italic, mime, data FROM org_fonts WHERE org_id=?",
@@ -1463,7 +1474,7 @@ def list_versions(document_id: int):
 
 
 @router.post("/documents/{document_id}/versions", response_model=DocumentVersionOut)
-def create_version(document_id: int, payload: DocumentVersionCreate):
+def create_version(document_id: int, payload: DocumentVersionCreate, request: Request):
     """Bump the booklet. Synchronously: freeze a lossless data snapshot (of the exact
     current DB), prune old same-major snapshots, insert the version row; then enqueue
     the (slow) PDF render off-thread. Returns the row in 'rendering'."""
@@ -1493,7 +1504,7 @@ def create_version(document_id: int, payload: DocumentVersionCreate):
     finally:
         conn.close()
     _start_version_worker()
-    _version_render_q.put(version_id)
+    _version_render_q.put((version_id, _frontend_origin(request)))
     return _version_out(row)
 
 
@@ -1501,7 +1512,7 @@ def create_version(document_id: int, payload: DocumentVersionCreate):
 def get_version_pdf(document_id: int, version_id: int, lang: str = "en", download: int = 0):
     conn = get_db()
     try:
-        _require_doc(conn, document_id)
+        doc = _require_doc(conn, document_id)
         v = conn.execute(
             "SELECT semver FROM document_versions WHERE id=? AND document_id=?",
             (version_id, document_id)).fetchone()
@@ -1514,17 +1525,20 @@ def get_version_pdf(document_id: int, version_id: int, lang: str = "en", downloa
             raise HTTPException(404, "No PDF for this version/edition (still rendering, or failed).")
         pdf = row["pdf"]
         semver = v["semver"]
+        title = doc["title"]
     finally:
         conn.close()
     disp = "attachment" if download else "inline"
+    safe = _safe_download_stem(title)
     return Response(
         content=pdf, media_type="application/pdf",
-        headers={"Content-Disposition": f'{disp}; filename="v{semver}-{lang}.pdf"'})
+        headers={"Content-Disposition":
+                 f'{disp}; filename="{safe}-snapshot-v{semver}-{lang}.pdf"'})
 
 
 @router.post("/documents/{document_id}/versions/{version_id}/retry",
              response_model=DocumentVersionOut)
-def retry_version(document_id: int, version_id: int):
+def retry_version(document_id: int, version_id: int, request: Request):
     conn = get_db()
     try:
         _require_doc(conn, document_id)
@@ -1542,7 +1556,7 @@ def retry_version(document_id: int, version_id: int):
     finally:
         conn.close()
     _start_version_worker()
-    _version_render_q.put(version_id)
+    _version_render_q.put((version_id, _frontend_origin(request)))
     return _version_out(row)
 
 

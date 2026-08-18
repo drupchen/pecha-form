@@ -18,7 +18,7 @@ from app import db as _dbmod  # noqa: E402
 _dbmod.DB_PATH = _tmp.name
 
 from app.db import init_db  # noqa: E402
-from app.routers.documents import _frontend_origin, FRONTEND_URL  # noqa: E402
+from app.routers.documents import _frontend_origin, _safe_download_stem, FRONTEND_URL  # noqa: E402
 
 init_db()
 
@@ -50,3 +50,8 @@ def test_falls_back_when_there_is_no_request_at_all():
     # The version worker renders on a background thread, with no browser to ask.
     assert _frontend_origin(None) == FRONTEND_URL
     assert _frontend_origin(_Req()) == FRONTEND_URL
+
+
+def test_pdf_download_stem_keeps_the_booklet_name_filesystem_safe():
+    assert _safe_download_stem("RPN: Kurukulle / practice") == "RPN Kurukulle practice"
+    assert _safe_download_stem(None) == "booklet"
