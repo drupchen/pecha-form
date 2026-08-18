@@ -155,8 +155,22 @@ const Editable: React.FC<{
               onInput={() => { stripAttrs(ref.current!); onChange(cleanSpecimenHtml(ref.current!.innerHTML)); }} />;
   };
 
-export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> = ({ documentId, onClose }) => {
-  const [scope, setScope] = useState<Scope>('doc');
+export const StyleStudio: React.FC<{
+  /**
+   * The booklet whose overrides are being edited, and whose page geometry the specimen is laid
+   * out on. OMIT IT to open the studio on the ORGANIZATION alone — the org settings page does,
+   * where there is no booklet in hand. Without one the scope is locked to 'org' (there are no
+   * document overrides to edit), the specimen is laid out on the org's own page format, and
+   * every document-scoped call is skipped rather than sent with a missing id.
+   */
+  documentId?: number;
+  /** Absent when the studio is a settings TAB rather than a takeover — there is nothing to
+   *  close back to. */
+  onClose?: () => void;
+}> = ({ documentId, onClose }) => {
+  // With no booklet there is nothing but the template to edit, so 'org' is not merely the
+  // starting scope — it is the only one, and the segmented control below does not render.
+  const [scope, setScope] = useState<Scope>(documentId == null ? 'org' : 'doc');
   const [layout, setLayout] = useState<StudioFormat>('twopage');
   const [org, setOrg] = useState<StyleMap>({});
   const [doc, setDoc] = useState<StyleMap>({});
@@ -187,13 +201,20 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   const saveOrgLayout = async (key: keyof OrgLayout, mm: number) => {
     if (!Number.isFinite(mm) || mm <= 0) { void getOrgLayout().then(setOrgLayout).catch(() => {}); return; }
     try {
-      setOrgLayout(await putOrgLayout({ [key]: mm }));
-      setConfig((await getDocumentLayout(documentId)).config);
+      const next = await putOrgLayout({ [key]: mm });
+      setOrgLayout(next);
+      // The specimen is laid out on the booklet's geometry when there is one (a booklet may
+      // override the org's), and on the org's own when there is not.
+      setConfig(documentId != null ? (await getDocumentLayout(documentId)).config : next);
     } catch (e) { setMsg(`Page format: ${(e as Error).message}`.slice(0, 140)); }
   };
 
   useEffect(() => {
-    void getDocumentLayout(documentId).then(l => setConfig(l.config)).catch(() => {});
+    // `getOrgLayout` always answers complete — the endpoint fills it from the built-in
+    // geometry before it replies — so there is no blank here that could mean "inherit".
+    void (documentId != null
+      ? getDocumentLayout(documentId).then(l => l.config)
+      : getOrgLayout()).then(setConfig).catch(() => {});
   }, [documentId]);
 
   // How many page frames the guides need. The specimen grows as you type — and `Editable` is
@@ -210,7 +231,9 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
   }, [config, blocks]);
 
   useEffect(() => {
-    void Promise.all([getOrgStyles(), getDocStyles(documentId), getOrgFonts(), getStyleSample()])
+    void Promise.all([getOrgStyles(),
+                      documentId != null ? getDocStyles(documentId) : Promise.resolve({}),
+                      getOrgFonts(), getStyleSample()])
       .then(([o, d, f, s]) => {
         setOrg(o as StyleMap); setDoc(d as StyleMap); setFonts(f);
         try {
@@ -282,8 +305,10 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     if (value === '' || value == null) delete next[key]; else (next as any)[key] = value;
     setScopeMap(m => ({ ...m, [role]: next }));
     try {
-      if (Object.keys(next).length === 0) scope === 'org' ? await deleteOrgStyle(role) : await deleteDocStyle(documentId, role);
-      else scope === 'org' ? await putOrgStyle(role, next as any) : await putDocStyle(documentId, role, next as any);
+      // `documentId!` is safe: 'doc' scope is unreachable without a booklet (see the state
+      // above, and the segmented control that does not render).
+      if (Object.keys(next).length === 0) scope === 'org' ? await deleteOrgStyle(role) : await deleteDocStyle(documentId!, role);
+      else scope === 'org' ? await putOrgStyle(role, next as any) : await putDocStyle(documentId!, role, next as any);
     } catch { /* ignore */ }
   };
   const resetRole = async (role: string) => {
@@ -296,7 +321,7 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
       return;
     }
     setScopeMap(m => { const n = { ...m }; delete n[role]; return n; });
-    try { await deleteDocStyle(documentId, role); } catch { /* ignore */ }
+    try { await deleteDocStyle(documentId!, role); } catch { /* ignore */ }
   };
 
   const doUpload = async (file?: File) => {
@@ -329,7 +354,8 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     setBusy(true); setMsg('Importing…');
     try {
       const r = await importStyleTemplate(file, scopeTarget, scope === 'doc' ? documentId : undefined);
-      const [o, d] = await Promise.all([getOrgStyles(), getDocStyles(documentId)]);
+      const [o, d] = await Promise.all([
+        getOrgStyles(), documentId != null ? getDocStyles(documentId) : Promise.resolve({})]);
       setOrg(o as StyleMap); setDoc(d as StyleMap);
       setMsg(`Imported ${r.count} roles: ${r.applied.join(', ')}`);
     } catch (e) { setMsg(`Import failed: ${(e as Error).message}`.slice(0, 140)); }
@@ -429,10 +455,14 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
     <div className="flex-1 flex flex-col overflow-hidden bg-cream-hi">
       <div className="px-4 py-2 flex items-center gap-3 text-xs shrink-0" style={{ borderBottom: '1px solid var(--cline)' }}>
         <span className="font-display text-base text-lapis">Style studio</span>
-        <div className="flex rounded-md overflow-hidden" style={border}>
-          <button type="button" onClick={() => setScope('org')} className={`px-2 py-0.5 ${scope === 'org' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>Organization</button>
-          <button type="button" onClick={() => setScope('doc')} className={`px-2 py-0.5 ${scope === 'doc' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>This document</button>
-        </div>
+        {/* No booklet, no choice of scope: there is nothing but the template to edit, so the
+            control would offer a state that cannot be entered. */}
+        {documentId != null && (
+          <div className="flex rounded-md overflow-hidden" style={border}>
+            <button type="button" onClick={() => setScope('org')} className={`px-2 py-0.5 ${scope === 'org' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>Organization</button>
+            <button type="button" onClick={() => setScope('doc')} className={`px-2 py-0.5 ${scope === 'doc' ? 'bg-lapis text-cream-hi' : 'text-ink-soft'}`}>This document</button>
+          </div>
+        )}
         <span className="text-ink-soft">
           {scope === 'org' ? 'editing the org-wide template' : 'editing this booklet’s overrides'}
         </span>
@@ -449,7 +479,9 @@ export const StyleStudio: React.FC<{ documentId: number; onClose: () => void }> 
         <div className="flex-1" />
         <button type="button" onClick={resetSpecimen} className="px-2 py-1 rounded-md hover:bg-cream" style={border}
                 title="Replace the specimen with the built-in template content (from template.docx)">Reset content</button>
-        <button type="button" onClick={onClose} className="px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream" style={border}><X size={13} /> done</button>
+        {onClose && (
+          <button type="button" onClick={onClose} className="px-2 py-1 rounded-md flex items-center gap-1 hover:bg-cream" style={border}><X size={13} /> done</button>
+        )}
       </div>
 
       <div className="flex-1 flex overflow-hidden">

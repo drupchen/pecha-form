@@ -815,17 +815,25 @@ CREATE TABLE IF NOT EXISTS org_fonts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- The org's cover ornament (seal/logo) — part of the template, like the fonts. It prints at
--- the ༀ placeholder on EVERY booklet's cover; a booklet that uploads its own cover image
--- (document_images) overrides it, and with neither the ༀ glyph shows. One row per org;
+-- The org's furniture images — part of the template, like the fonts. One row per SLOT:
+--   'cover'     the cover ornament (seal/logo). It prints at the ༀ placeholder on EVERY
+--               booklet's cover; a booklet that uploads its own cover image (document_images)
+--               overrides it, and with neither the ༀ glyph shows.
+--   'backcover' the same arrangement on the back cover, which has no placeholder glyph: a
+--               booklet with no back-cover image of its own prints this, and with neither the
+--               page simply has no image.
+-- The slot was added after the fact (see _rebuild_org_seal_slots); every pre-existing row is
+-- a cover seal, which is why 'cover' is the default a caller that names no slot gets.
 -- width/height in mm (NULL = the image's natural size).
 CREATE TABLE IF NOT EXISTS org_seal (
-    org_id     INTEGER PRIMARY KEY DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    slot       TEXT NOT NULL DEFAULT 'cover' CHECK (slot IN ('cover', 'backcover')),
     mime       TEXT NOT NULL,
     data       BLOB NOT NULL,
     width_mm   REAL,
     height_mm  REAL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (org_id, slot)
 );
 
 -- The org's page format and guides: sheet size and the four margins the text block and the
@@ -1260,6 +1268,33 @@ def _rebuild_document_furniture_block(conn) -> None:
         SELECT document_id, item_id, lang, '', body FROM document_furniture""")
     conn.execute("DROP TABLE document_furniture")
     conn.execute("ALTER TABLE document_furniture_new RENAME TO document_furniture")
+
+
+def _rebuild_org_seal_slots(conn) -> None:
+    """Give a pre-existing `org_seal` its `slot` dimension. The PK grows from `org_id` to
+    `(org_id, slot)` — SQLite can't alter a PK in place, so rebuild. Every existing row is the
+    COVER ornament, which is what the org seal has always meant, so the carry-over is total
+    and lossless: the back-cover slot simply starts empty everywhere. No-op once `slot`
+    exists (incl. fresh DBs created from SCHEMA)."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(org_seal)")}
+    if not cols or "slot" in cols:
+        return
+    conn.execute("""
+        CREATE TABLE org_seal_new (
+            org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+            slot       TEXT NOT NULL DEFAULT 'cover' CHECK (slot IN ('cover', 'backcover')),
+            mime       TEXT NOT NULL,
+            data       BLOB NOT NULL,
+            width_mm   REAL,
+            height_mm  REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (org_id, slot)
+        )""")
+    conn.execute("""
+        INSERT INTO org_seal_new (org_id, slot, mime, data, width_mm, height_mm, updated_at)
+        SELECT org_id, 'cover', mime, data, width_mm, height_mm, updated_at FROM org_seal""")
+    conn.execute("DROP TABLE org_seal")
+    conn.execute("ALTER TABLE org_seal_new RENAME TO org_seal")
 
 
 def _rebuild_text_groups_org(conn) -> None:
@@ -2034,6 +2069,8 @@ def init_db():
         # retries to re-render). The table only exists after the schema above.
         conn.execute("UPDATE document_versions SET status = 'failed', "
                      "error = 'interrupted by restart' WHERE status = 'rendering'")
+        # The org's single seal became one image per slot (cover / back cover).
+        _rebuild_org_seal_slots(conn)
         # The copyright page folded into the back cover — move its content over and drop it.
         _fold_copyright_into_backcover(conn)
         # The cover image's placement became shared across editions — fold the per-edition rows.

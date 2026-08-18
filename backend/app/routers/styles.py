@@ -162,12 +162,17 @@ def delete_org_style(role: str, org_id: int = Depends(active_org_id)):
 
 @router.get("/org-layout")
 def get_org_layout(org_id: int = Depends(active_org_id)):
-    """The org's page format. Always complete: the built-in geometry, then whatever the org
-    has said, so the caller never has to render the word "inherit"."""
+    """WHAT A BOOKLET INHERITS FROM THE HOUSE — the full layout config, always complete: the
+    built-in defaults, then whatever geometry the org has said. The caller never has to render
+    the word "inherit", and a specimen with no booklet in hand (the org settings' style tab)
+    has a whole config to lay itself out on rather than six fields and four holes.
+
+    Only the geometry is EDITABLE here (`ORG_LAYOUT_KEYS`, and the PUT below refuses the rest):
+    type sizes belong to the roles. The non-geometry keys ride along as the defaults they are."""
     from .documents import DEFAULT_LAYOUT_CONFIG, ORG_LAYOUT_KEYS
     conn = get_db()
     try:
-        cfg = {k: DEFAULT_LAYOUT_CONFIG[k] for k in ORG_LAYOUT_KEYS}
+        cfg = dict(DEFAULT_LAYOUT_CONFIG)
         row = conn.execute("SELECT config FROM org_layout WHERE org_id = ?", (org_id,)).fetchone()
         if row and row["config"]:
             try:
@@ -212,7 +217,9 @@ def put_org_layout(payload: OrgLayoutIn, org_id: int = Depends(active_org_id)):
             "ON CONFLICT(org_id) DO UPDATE SET config = excluded.config",
             (org_id, json.dumps(cfg)))
         conn.commit()
-        return cfg
+        # STORE the geometry, ANSWER the whole config — the same thing the GET answers, so a
+        # caller can set `state = await putOrgLayout(…)` and still hold a usable layout.
+        return {**DEFAULT_LAYOUT_CONFIG, **cfg}
     finally:
         conn.close()
 
@@ -349,12 +356,26 @@ class SealSizeIn(BaseModel):
     height_mm: Optional[float] = None
 
 
+# The org's furniture images, one per slot. `slot` is a QUERY parameter defaulting to 'cover'
+# — the seal these endpoints served before there was more than one — so every caller written
+# against the single-image API keeps addressing the cover without knowing a slot exists.
+SEAL_SLOTS = ("cover", "backcover")
+
+
+def _seal_slot(slot: str) -> str:
+    if slot not in SEAL_SLOTS:
+        raise HTTPException(400, f"slot must be one of {', '.join(SEAL_SLOTS)}")
+    return slot
+
+
 @router.get("/org-seal", response_model=SealOut)
-def get_org_seal(org_id: int = Depends(active_org_id)):
+def get_org_seal(slot: str = "cover", org_id: int = Depends(active_org_id)):
+    slot = _seal_slot(slot)
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ? AND slot = ?",
+            (org_id, slot)).fetchone()
         if not row:
             return SealOut()
         return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
@@ -363,11 +384,13 @@ def get_org_seal(org_id: int = Depends(active_org_id)):
 
 
 @router.get("/org-seal/file")
-def get_org_seal_file(org_id: int = Depends(active_org_id)):
+def get_org_seal_file(slot: str = "cover", org_id: int = Depends(active_org_id)):
+    slot = _seal_slot(slot)
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT mime, data FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+            "SELECT mime, data FROM org_seal WHERE org_id = ? AND slot = ?",
+            (org_id, slot)).fetchone()
         if not row:
             raise HTTPException(404, "No seal for this organization")
         return Response(content=row["data"], media_type=row["mime"],
@@ -377,7 +400,9 @@ def get_org_seal_file(org_id: int = Depends(active_org_id)):
 
 
 @router.put("/org-seal", response_model=SealOut)
-async def upload_org_seal(file: UploadFile = File(...), org_id: int = Depends(active_org_id)):
+async def upload_org_seal(file: UploadFile = File(...), slot: str = "cover",
+                          org_id: int = Depends(active_org_id)):
+    slot = _seal_slot(slot)
     data = await file.read()
     mime = file.content_type or ""
     if mime not in ALLOWED_IMAGE_MIME:
@@ -390,28 +415,32 @@ async def upload_org_seal(file: UploadFile = File(...), org_id: int = Depends(ac
     try:
         # A replacement keeps the size the designer already set (only the bytes change).
         conn.execute(
-            "INSERT INTO org_seal (org_id, mime, data) VALUES (?, ?, ?) "
-            "ON CONFLICT(org_id) DO UPDATE SET mime = excluded.mime, data = excluded.data, "
-            "updated_at = CURRENT_TIMESTAMP",
-            (org_id, mime, data))
+            "INSERT INTO org_seal (org_id, slot, mime, data) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(org_id, slot) DO UPDATE SET mime = excluded.mime, "
+            "data = excluded.data, updated_at = CURRENT_TIMESTAMP",
+            (org_id, slot, mime, data))
         conn.commit()
         row = conn.execute(
-            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ? AND slot = ?",
+            (org_id, slot)).fetchone()
         return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
     finally:
         conn.close()
 
 
 @router.patch("/org-seal", response_model=SealOut)
-def set_org_seal_size(payload: SealSizeIn, org_id: int = Depends(active_org_id)):
+def set_org_seal_size(payload: SealSizeIn, slot: str = "cover",
+                      org_id: int = Depends(active_org_id)):
+    slot = _seal_slot(slot)
     conn = get_db()
     try:
-        row = conn.execute("SELECT 1 FROM org_seal WHERE org_id = ?", (org_id,)).fetchone()
+        row = conn.execute("SELECT 1 FROM org_seal WHERE org_id = ? AND slot = ?",
+                           (org_id, slot)).fetchone()
         if not row:
             raise HTTPException(404, "No seal for this organization")
         conn.execute(
             "UPDATE org_seal SET width_mm = ?, height_mm = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE org_id = ?", (payload.width_mm, payload.height_mm, org_id))
+            "WHERE org_id = ? AND slot = ?", (payload.width_mm, payload.height_mm, org_id, slot))
         conn.commit()
         return SealOut(has_image=True, width_mm=payload.width_mm, height_mm=payload.height_mm)
     finally:
@@ -419,10 +448,11 @@ def set_org_seal_size(payload: SealSizeIn, org_id: int = Depends(active_org_id))
 
 
 @router.delete("/org-seal")
-def delete_org_seal(org_id: int = Depends(active_org_id)):
+def delete_org_seal(slot: str = "cover", org_id: int = Depends(active_org_id)):
+    slot = _seal_slot(slot)
     conn = get_db()
     try:
-        conn.execute("DELETE FROM org_seal WHERE org_id = ?", (org_id,))
+        conn.execute("DELETE FROM org_seal WHERE org_id = ? AND slot = ?", (org_id, slot))
         conn.commit()
         return {"ok": True}
     finally:

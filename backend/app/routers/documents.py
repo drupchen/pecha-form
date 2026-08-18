@@ -1402,12 +1402,15 @@ def _store_snapshot(conn, version_id: int, document_id: int):
             (version_id, str(img["item_id"]), img["mime"],
              json.dumps({"width_mm": img["width_mm"], "height_mm": img["height_mm"]}),
              img["data"]))
-    seal = conn.execute("SELECT mime, data FROM org_seal WHERE org_id=?", (org_id,)).fetchone()
-    if seal:
+    # One row per SLOT. `ref` was '' when the org had a single seal; it now carries the slot,
+    # which is what a restore needs to put each image back where it belongs. The column is
+    # free text and the PK is (version_id, kind, ref), so this needed no schema change.
+    for seal in conn.execute(
+            "SELECT slot, mime, data FROM org_seal WHERE org_id=?", (org_id,)).fetchall():
         conn.execute(
             "INSERT OR REPLACE INTO document_version_asset "
-            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', '', ?, '{}', ?)",
-            (version_id, seal["mime"], seal["data"]))
+            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', ?, ?, '{}', ?)",
+            (version_id, seal["slot"], seal["mime"], seal["data"]))
     for font in conn.execute(
             "SELECT id, family, weight, italic, mime, data FROM org_fonts WHERE org_id=?",
             (org_id,)).fetchall():

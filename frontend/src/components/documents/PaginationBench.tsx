@@ -307,6 +307,9 @@ export const PaginationBench: React.FC<{
   // The org's cover seal travels with the styles: it is part of the template, and the studio
   // can change it, so it is re-read whenever the styles are.
   const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
+  // The org's BACK-COVER image — the same template arrangement one page later (see the
+  // backcover branch of `FurnitureContent`).
+  const [orgBackImage, setOrgBackImage] = useState<OrgSeal | null>(null);
   const [showStyles, setShowStyles] = useState(false);
   const [splitMode, setSplitMode] = useState(false);
   // Overview: every edition side by side — the shared Tibetan verso plus one recto per
@@ -354,6 +357,7 @@ export const PaginationBench: React.FC<{
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
     void getOrgSeal().then(setOrgSeal).catch(() => {});
+    void getOrgSeal('backcover').then(setOrgBackImage).catch(() => {});
   };
   const measureRef = useRef<HTMLDivElement>(null);
 
@@ -2049,7 +2053,8 @@ export const PaginationBench: React.FC<{
                       titleLines={item.kind === 'cover' ? ed.mainTitleLines : []}
                       body={furnitureBodyOf(furniture, item, ed.lang)}
                       toc={item.kind === 'toc' ? ed.tocRows : []}
-                      orgSeal={orgSeal} widthOf={furnitureWidthOf(item, ed.lang)}
+                      orgSeal={orgSeal} orgBackImage={orgBackImage}
+                      widthOf={furnitureWidthOf(item, ed.lang)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
                       groundOf={furnitureGroundOf(item, ed.lang)}
@@ -2069,7 +2074,7 @@ export const PaginationBench: React.FC<{
       <FurniturePage key={`f${item.id}`} item={item}
         titleLines={item.kind === 'cover' ? mainTitleLines : []}
         body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
-        orgSeal={orgSeal} widthOf={furnitureWidthOf(item)}
+        orgSeal={orgSeal} orgBackImage={orgBackImage} widthOf={furnitureWidthOf(item)}
         tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
         slots={furnitureSlotsOf(furniture, item, lang)}
         groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}

@@ -1,16 +1,30 @@
 import React, { useState } from 'react';
-import { Users, Shield, Mail, Building2, Globe } from 'lucide-react';
+import { Users, Shield, Mail, Building2, Globe, Type, Copyright, Image } from 'lucide-react';
 import { useAuthStore } from '../../store/useAuthStore';
 import { MembersPanel } from './MembersPanel';
 import { RolesPanel } from './RolesPanel';
 import { InvitesPanel } from './InvitesPanel';
 import { PlatformOrgsPanel } from './PlatformOrgsPanel';
 import { PlatformUsersPanel } from './PlatformUsersPanel';
+import { StylesPanel } from './StylesPanel';
+import { CopyrightPanel } from './CopyrightPanel';
+import { ImagesPanel } from './ImagesPanel';
 
-type Panel = 'members' | 'roles' | 'invites' | 'orgs' | 'users';
+type Panel = 'members' | 'roles' | 'invites' | 'styles' | 'copyright' | 'images'
+           | 'orgs' | 'users';
 
-/** Administration: org-scoped panels (members / roles / invites) for org admins,
- *  plus platform-wide panels (organizations / users) for superusers. */
+/** Panels that want the whole area — the Style Studio is a specimen page beside a roles
+ *  panel, and both want the height. The rest are cards in a comfortable margin. */
+const FULL_BLEED: Panel[] = ['styles'];
+
+/** ORGANIZATION SETTINGS, plus platform administration.
+ *
+ *  Everything that belongs to the organization rather than to one booklet: who is in it and
+ *  what they may do (members / roles / invites), and what every booklet it publishes inherits
+ *  — the style template, the copyright boilerplate, the cover and back-cover marks. Those
+ *  last three were reachable only from inside a booklet's pagination bench, or not at all.
+ *
+ *  Superusers additionally get the platform-wide panels (organizations / users). */
 export const AdminView: React.FC = () => {
   const isSuperuser = useAuthStore(s => s.user?.is_superuser === true);
   const orgName = useAuthStore(s => s.orgs.find(o => o.id === s.activeOrgId)?.name);
@@ -20,6 +34,9 @@ export const AdminView: React.FC = () => {
     { key: 'members', label: 'Members', icon: <Users size={15} /> },
     { key: 'roles', label: 'Roles', icon: <Shield size={15} /> },
     { key: 'invites', label: 'Invites', icon: <Mail size={15} /> },
+    { key: 'styles', label: 'Styles', icon: <Type size={15} /> },
+    { key: 'copyright', label: 'Copyright', icon: <Copyright size={15} /> },
+    { key: 'images', label: 'Cover & back', icon: <Image size={15} /> },
     { key: 'orgs', label: 'Organizations', icon: <Building2 size={15} />, platform: true },
     { key: 'users', label: 'All users', icon: <Globe size={15} />, platform: true },
   ];
@@ -49,10 +66,14 @@ export const AdminView: React.FC = () => {
           </>
         )}
       </aside>
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className={`flex-1 flex flex-col ${
+        FULL_BLEED.includes(panel) ? 'overflow-hidden' : 'overflow-y-auto p-6'}`}>
         {panel === 'members' && <MembersPanel />}
         {panel === 'roles' && <RolesPanel />}
         {panel === 'invites' && <InvitesPanel />}
+        {panel === 'styles' && <StylesPanel />}
+        {panel === 'copyright' && <CopyrightPanel />}
+        {panel === 'images' && <ImagesPanel />}
         {panel === 'orgs' && isSuperuser && <PlatformOrgsPanel />}
         {panel === 'users' && isSuperuser && <PlatformUsersPanel />}
       </div>

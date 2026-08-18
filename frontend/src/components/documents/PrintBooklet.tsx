@@ -42,20 +42,22 @@ export const PrintBooklet: React.FC<{
   const [ready, setReady] = useState(false);
   const [styleCss, setStyleCss] = useState('');
   const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
+  const [orgBackImage, setOrgBackImage] = useState<OrgSeal | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [d, lay, furn, css, seal] = await Promise.all([
+      const [d, lay, furn, css, seal, backImage] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null),
+        getOrgSeal('backcover').catch(() => null)]);
       if (!alive) return;
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       const compiled = await compileDocument(d.items, edition);
       if (!alive) return;
       setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn);
       setStyleCss(css);
-      setOrgSeal(seal);
+      setOrgSeal(seal); setOrgBackImage(backImage);
       setLines(compiled.lines); setRectoSrc(compiled.rectoLines);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -178,6 +180,7 @@ export const PrintBooklet: React.FC<{
           body={furnitureBodyOf(furniture, item, lang)}
           toc={item.kind === 'toc' ? tocRows : []}
           orgSeal={orgSeal}
+          orgBackImage={orgBackImage}
           version={version}
           // The export always names a year (`_year_of`); the fallback is for a hand-typed
           // print URL, where the current year beats printing "Copyright © ." at all.

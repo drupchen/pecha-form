@@ -1175,20 +1175,6 @@ export const TitleContent: React.FC<{
  * Centred text stays centred: `text-align` does that, not the box's width.
  */
 /**
- * THE YEAR `{{year}}` RESOLVES TO: the year the declared version was declared, or — when the
- * booklet has none yet, so there is nothing to reproduce — the current one.
- *
- * One function so the bench and the export cannot drift: the backend applies the same rule in
- * `_year_of` (documents.py) when it puts `&year=` on the print URL, and this is what the bench
- * shows beside it. `created_at` arrives as SQLite's 'YYYY-MM-DD HH:MM:SS'; anything else falls
- * back rather than printing a fragment of a malformed string.
- */
-export function yearOf(createdAt?: string | null): string {
-  const head = (createdAt ?? '').slice(0, 4);
-  return /^\d{4}$/.test(head) ? head : String(new Date().getFullYear());
-}
-
-/**
  * Resolve the booklet's template variables in a body of text — the copyright's, and any other
  * furniture body's. The raw token stays in the editor and resolves only on the page, so
  * "version {{version}}, © {{year}}" follows the versioning system instead of freezing a copy
@@ -1205,6 +1191,20 @@ export function yearOf(createdAt?: string | null): string {
  * template language, and silently blanking something the author typed would be worse than
  * showing it.
  */
+/**
+ * THE YEAR `{{year}}` RESOLVES TO: the year the declared version was declared, or — when the
+ * booklet has none yet, so there is nothing to reproduce — the current one.
+ *
+ * One function so the bench and the export cannot drift: the backend applies the same rule in
+ * `_year_of` (documents.py) when it puts `&year=` on the print URL, and this is what the bench
+ * shows beside it. `created_at` arrives as SQLite's 'YYYY-MM-DD HH:MM:SS'; anything else falls
+ * back rather than printing a fragment of a malformed string.
+ */
+export function yearOf(createdAt?: string | null): string {
+  const head = (createdAt ?? '').slice(0, 4);
+  return /^\d{4}$/.test(head) ? head : String(new Date().getFullYear());
+}
+
 export function applyDocVars(text: string, version?: string, year?: string): string {
   return text
     .replaceAll('{{version}}', version ?? '')
@@ -1234,8 +1234,12 @@ const FurnitureLines: React.FC<{
  *  wrap it in their own page element. */
 export const FurnitureContent: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
-  /** The ORG's seal (Style Studio) — the cover ornament of every booklet in the template. */
+  /** The ORG's cover ornament (the seal) — the cover image of every booklet in the template. */
   orgSeal?: OrgSeal | null;
+  /** The ORG's BACK-COVER image, the same arrangement one page later. Unlike the cover, the
+   *  back cover has no placeholder glyph to fall back to: with neither image the page simply
+   *  carries none. */
+  orgBackImage?: OrgSeal | null;
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
   widthOf?: BlockWidthOf;
   /** This booklet's own Tibetan for the cover title (see `TitleContent`). */
@@ -1253,7 +1257,7 @@ export const FurnitureContent: React.FC<{
   /** …and the year it was declared, for `{{year}}` in the same bodies. */
   year?: string;
   pageHeightMm?: number;
-}> = ({ item, titleLines, body, toc, orgSeal, widthOf = NO_WIDTH, tibetan, slots,
+}> = ({ item, titleLines, body, toc, orgSeal, orgBackImage, widthOf = NO_WIDTH, tibetan, slots,
         groundOf, spaceOf, onResizeImage, version, year, pageHeightMm }) => {
   // The booklet's own image, with its placement rail and resize grip (see `BkImage`).
   const bkImage = (
@@ -1308,11 +1312,21 @@ export const FurnitureContent: React.FC<{
       : <div className="bk-placeholder">Image page — add an image in the Documents tab.</div>;
   }
   if (item.kind === 'backcover') {
+    // The same precedence the cover keeps: this booklet's own image if it has one, else the
+    // org's back-cover image from the template — and, with neither, no image at all (there is
+    // no ༀ here to stand in). Sized in the org settings, so it takes a placement rail but no
+    // resize grip, exactly as the seal does.
+    const orgImage = orgBackImage?.has_image
+      ? <BkImage src={withUrlAuth(orgSealUrl('backcover'))}
+                 widthMm={orgBackImage.width_mm} heightMm={orgBackImage.height_mm}
+                 ground={groundOf?.('#image')} pageHeightMm={pageHeightMm} />
+      : null;
+    const image = item.has_image ? bkImage : orgImage;
     // Optional image and/or per-language text, centred; empty otherwise.
-    if (!item.has_image && !body) return null;
+    if (!image && !body) return null;
     return (
       <div className="bk-backcover">
-        {item.has_image && bkImage}
+        {image}
         {body && <FurnitureLines groundOf={groundOf} pageHeightMm={pageHeightMm} body={body} block="backcover" widthOf={widthOf}
                                  className="bk-copyright" version={version} year={year} />}
       </div>
@@ -1325,6 +1339,7 @@ export const FurnitureContent: React.FC<{
 export const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
   orgSeal?: OrgSeal | null;
+  orgBackImage?: OrgSeal | null;
   widthOf?: BlockWidthOf;
   tibetan?: string | null;
   /** This page's authored title slots (see `TitleContent`). */

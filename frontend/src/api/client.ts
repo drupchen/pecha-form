@@ -466,11 +466,14 @@ export const deleteOrgStyle = (role: string) =>
 /** The org's page format and guides: sheet size + the four margins the text block and the
  *  binding/folio guides are drawn from. Always complete — never a blank meaning "inherit".
  *  A booklet that states no geometry of its own follows this. */
-export type OrgLayout = {
-  page_width_mm: number; page_height_mm: number;
-  margin_top_mm: number; margin_bottom_mm: number;
-  margin_bind_mm: number; margin_outer_mm: number;
-};
+/**
+ * What a booklet inherits from the house: the FULL layout config, always complete (the
+ * built-in defaults with the org's geometry merged over them). Only the six geometry fields
+ * are editable here — `PAGE_GEOMETRY_FIELDS` below names them, and the endpoint refuses to
+ * store anything else, because type sizes belong to the roles. The rest rides along so a
+ * specimen with no booklet in hand has a whole config to lay itself out on.
+ */
+export type OrgLayout = LayoutConfig;
 /** The physical-page geometry keys shared by OrgLayout (house default) and LayoutConfig
  *  (per-booklet), in reading order — the sheet, then its margins. One list so the org and
  *  per-booklet page-format editors can't drift. */
@@ -526,29 +529,38 @@ export const deleteOrgFont = (fontId: number) =>
  *  booklet's cover. A booklet's own cover image (uploadItemImage) overrides it. */
 export interface OrgSeal { has_image: boolean; width_mm: number | null; height_mm: number | null }
 
-export const getOrgSeal = (): Promise<OrgSeal> =>
-  jfetch<OrgSeal>(`${API_BASE}/org-seal`);
+/**
+ * WHICH ORG IMAGE. The org keeps one furniture image per slot: `'cover'` is the seal that
+ * prints at the ༀ placeholder, `'backcover'` the same arrangement on the back cover. Every
+ * call below defaults to `'cover'` — the image these endpoints served when there was only
+ * one — so a caller that names no slot still addresses the seal it always addressed.
+ */
+export type SealSlot = 'cover' | 'backcover';
+
+export const getOrgSeal = (slot: SealSlot = 'cover'): Promise<OrgSeal> =>
+  jfetch<OrgSeal>(`${API_BASE}/org-seal?slot=${slot}`);
 // URL-loaded (<img src>) — a pure builder; call sites wrap it in `withUrlAuth` to add the
 // active org (or the print token in print mode), since an <img> sends no headers.
-export const orgSealUrl = () => `${API_BASE}/org-seal/file`;
-export async function uploadOrgSeal(file: File): Promise<OrgSeal> {
+export const orgSealUrl = (slot: SealSlot = 'cover') =>
+  `${API_BASE}/org-seal/file?slot=${slot}`;
+export async function uploadOrgSeal(file: File, slot: SealSlot = 'cover'): Promise<OrgSeal> {
   const fd = new FormData();
   fd.append('file', file);
-  const res = await apiFetch(`${API_BASE}/org-seal`, { method: 'PUT', body: fd });
+  const res = await apiFetch(`${API_BASE}/org-seal?slot=${slot}`, { method: 'PUT', body: fd });
   return res.json();
 }
 /** Display size in mm; null on a dimension = the image's natural size. */
 export async function setOrgSealSize(
-  widthMm: number | null, heightMm: number | null,
+  widthMm: number | null, heightMm: number | null, slot: SealSlot = 'cover',
 ): Promise<OrgSeal> {
-  const res = await apiFetch(`${API_BASE}/org-seal`, {
+  const res = await apiFetch(`${API_BASE}/org-seal?slot=${slot}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
   });
   return res.json();
 }
-export const deleteOrgSeal = () =>
-  apiFetch(`${API_BASE}/org-seal`, { method: 'DELETE' });
+export const deleteOrgSeal = (slot: SealSlot = 'cover') =>
+  apiFetch(`${API_BASE}/org-seal?slot=${slot}`, { method: 'DELETE' });
 
 /**
  * THE ORG'S COPYRIGHT TEMPLATE, one body per language.

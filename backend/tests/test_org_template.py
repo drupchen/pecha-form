@@ -5,7 +5,9 @@ Two arrangements that must not be confused, and are tested as opposites here:
   * the COPYRIGHT template is COPIED — adding a back cover writes the org's words into the
     booklet, which owns them from then on. Editing the template later changes what the NEXT
     booklet opens with and nothing already on a page.
-  * the org IMAGES are INHERITED — printed by every booklet that has not uploaded its own.
+  * the org IMAGES are INHERITED — one row per slot, printed by every booklet that has not
+    uploaded its own. `slot` arrived after the fact, so the compatibility guarantee (a caller
+    that names none still addresses the cover seal) is asserted too.
 """
 import os
 import sys
@@ -159,3 +161,56 @@ def test_an_empty_template_seeds_nothing_rather_than_a_blank_paragraph():
         conn.close()
     item = _add_backcover(doc_id)
     assert _bodies(doc_id, item.id) == {}
+
+
+# ── The org images ───────────────────────────────────────────────────────────
+
+def _put_image(slot, data):
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO org_seal (org_id, slot, mime, data) VALUES (1, ?, 'image/png', ?) "
+            "ON CONFLICT(org_id, slot) DO UPDATE SET data = excluded.data", (slot, data))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_naming_no_slot_still_means_the_cover_seal():
+    """The compatibility guarantee. Every caller written before there was more than one image
+    addresses the cover, and must go on addressing it."""
+    from app.routers.styles import get_org_seal, get_org_seal_file
+    _put_image("cover", b"COVERBYTES")
+    assert get_org_seal(org_id=1).has_image is True
+    assert get_org_seal_file(org_id=1).body == b"COVERBYTES"
+
+
+def test_the_two_slots_are_independent():
+    from app.routers.styles import get_org_seal, get_org_seal_file, delete_org_seal
+    _put_image("cover", b"COVERBYTES")
+    _put_image("backcover", b"BACKBYTES")
+    assert get_org_seal_file(slot="backcover", org_id=1).body == b"BACKBYTES"
+    delete_org_seal(slot="backcover", org_id=1)
+    assert get_org_seal(slot="backcover", org_id=1).has_image is False
+    assert get_org_seal(slot="cover", org_id=1).has_image is True   # untouched
+
+
+def test_an_unknown_slot_is_refused():
+    from fastapi import HTTPException
+    from app.routers.styles import get_org_seal
+    try:
+        get_org_seal(slot="spine", org_id=1)
+        raise AssertionError("expected a 400")
+    except HTTPException as e:
+        assert e.status_code == 400
+
+
+def test_the_org_layout_answers_a_whole_config():
+    """A specimen with no booklet in hand lays itself out on this, so the six editable
+    geometry fields are not enough — the type defaults must ride along."""
+    from app.routers.styles import get_org_layout
+    cfg = get_org_layout(org_id=1)
+    for key in ("page_width_mm", "page_height_mm", "margin_top_mm", "margin_bottom_mm",
+                "margin_bind_mm", "margin_outer_mm", "tibetan_pt", "phonetics_pt",
+                "translation_pt", "leading"):
+        assert key in cfg, key

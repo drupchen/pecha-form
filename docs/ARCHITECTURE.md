@@ -264,6 +264,43 @@ Two gestures that are easily confused, both in the item panel: **detach** ("Its 
 own") lets the text go and *keeps* the words; **release** *deletes* every authored slot and the
 Tibetan and then follows the text again.
 
+### The organization template
+
+Everything a booklet inherits from the house, edited on one page (Admin → the org group in the
+sidebar). Two arrangements live here, and confusing them is the trap:
+
+| | Mechanism | Editing it later |
+|---|---|---|
+| Styles, page geometry, fonts (`style_roles`, `org_layout`, `org_fonts`) | inherited | changes every booklet |
+| Cover & back-cover images (`org_seal`, one row per `slot`) | inherited | changes every booklet |
+| **Copyright text** (`org_copyright`, one body per language) | **copied** | changes only the NEXT booklet |
+
+**The copyright is a template, not an inheritance.** A booklet's copyright names its own
+translator, and a house that republishes an old booklet must not find it silently rewritten. So
+the org's body is copied in — by `_seed_copyright` when a `backcover` item is added, and by
+"fill from the org template" in that page's panel — and the booklet owns the words from there.
+Seeding hangs off the **back cover**, not off document creation: a new booklet has no languages
+until they are chosen, so at creation there is nothing to seed for.
+
+**The images are the opposite,** and read as one mechanism with two slots: `'cover'` prints at
+the ༀ placeholder, `'backcover'` on the back cover (which has no glyph to fall back to). A
+booklet's own image wins in both. `slot` arrived after the fact (`_rebuild_org_seal_slots`), so
+every endpoint and client fn defaults to `'cover'` — a caller that names no slot still addresses
+the seal it always addressed. The freeze writes the slot into `document_version_asset.ref`,
+which was already free text.
+
+**Template variables** resolve in `applyDocVars`, called only from `FurnitureLines` (so: the
+back cover and image captions, not titles or body text). `{{version}}` and `{{year}}` are both
+**passed in, never computed on the page** — re-rendering a frozen version must reproduce it, and
+a page that read the clock would print a different copyright every January. The year is the year
+the declared version was declared, falling back to the current year only when there is no
+version to reproduce; one rule, applied by `yearOf` on the bench and `_year_of` on the export,
+which puts it on the print URL beside `&version=`. An unknown `{{token}}` is left as written.
+
+`GET /api/org-layout` answers the **whole** layout config (defaults ← org geometry), not just
+the six editable fields, so the Style Studio can lay a specimen out with no booklet in hand —
+`documentId` is optional, and without one the studio locks to org scope.
+
 ### Styles and versions
 
 Styles resolve as a three-level cascade: `ORG_BASE` (the complete floor, in `bookletStyles.ts`)
