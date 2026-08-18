@@ -1,14 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Upload, RotateCcw, FileDown, FileUp, Bold, Italic, Plus, Copy, Trash2,
-  Image as ImageIcon,
 } from 'lucide-react';
 import {
   getOrgStyles, getDocStyles, getOrgFonts, putOrgStyle, deleteOrgStyle,
   putDocStyle, deleteDocStyle, uploadOrgFont, styleTemplateUrl, importStyleTemplate,
-  getStyleSample, putStyleSample, getOrgSeal, uploadOrgSeal, deleteOrgSeal, setOrgSealSize,
-  orgSealUrl, getDocumentLayout, getOrgLayout, putOrgLayout, withUrlAuth, PAGE_GEOMETRY_FIELDS,
-  type OrgFont, type OrgSeal, type LayoutConfig, type OrgLayout,
+  getStyleSample, putStyleSample, getOrgImages, orgImageUrl, getDocumentLayout, getOrgLayout, putOrgLayout, withUrlAuth, PAGE_GEOMETRY_FIELDS,
+  type OrgFont, type OrgImage, type LayoutConfig, type OrgLayout,
 } from '../../api/client';
 import {
   ROLE_DEFS, ORG_BASE, BUNDLED_FONTS, resolveStyles, compileStyleCss,
@@ -180,8 +178,11 @@ export const StyleStudio: React.FC<{
   const [msg, setMsg] = useState('');
   const [blocks, setBlocks] = useState<Block[]>(DEFAULT_BLOCKS);
   const [activeRoles, setActiveRoles] = useState<string[]>([]);
-  const [seal, setSeal] = useState<OrgSeal | null>(null);
-  const [sealBust, setSealBust] = useState(0);   // cache-buster for the seal preview
+  // The org image the specimen's title page shows: the one marked for covers, which is what a
+  // real cover that picks nothing prints. Read-only here — the library is edited in the org
+  // settings' images tab, and duplicating an uploader inside a specimen only invited the two
+  // to disagree.
+  const [coverImage, setCoverImage] = useState<OrgImage | null>(null);
   // The org's page format. Always complete — the endpoint fills it from the built-in geometry
   // before it answers, so there is no blank here that could mean "inherit".
   const [orgLayout, setOrgLayout] = useState<OrgLayout | null>(null);
@@ -192,7 +193,11 @@ export const StyleStudio: React.FC<{
   const specimenRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<number>(0);
 
-  useEffect(() => { void getOrgSeal().then(setSeal).catch(() => {}); }, []);
+  useEffect(() => {
+    void getOrgImages()
+      .then(l => setCoverImage(l.find(i => i.default_for === 'cover') ?? null))
+      .catch(() => {});
+  }, []);
   useEffect(() => { void getOrgLayout().then(setOrgLayout).catch(() => {}); }, []);
 
   /** Write one geometry field. Re-reads the document's own resolved config afterwards, because
@@ -330,24 +335,6 @@ export const StyleStudio: React.FC<{
     try { await uploadOrgFont(file, fam.trim()); setFonts(await getOrgFonts()); setFam(''); }
     catch { /* ignore */ } finally { setBusy(false); }
   };
-  // ── the org's cover seal: the image that prints where the ༀ ornament sits ──
-  const doSeal = async (file?: File) => {
-    if (!file) return;
-    setBusy(true);
-    try { setSeal(await uploadOrgSeal(file)); setSealBust(n => n + 1); }
-    catch (e) { setMsg(`Seal upload failed: ${(e as Error).message}`.slice(0, 140)); }
-    finally { setBusy(false); }
-  };
-  const dropSeal = async () => {
-    setBusy(true);
-    try { await deleteOrgSeal(); setSeal({ has_image: false, width_mm: null, height_mm: null }); }
-    catch { /* ignore */ } finally { setBusy(false); }
-  };
-  const sizeSeal = (w: number | null, h: number | null) => {
-    setSeal(s => (s ? { ...s, width_mm: w, height_mm: h } : s));
-    void setOrgSealSize(w, h).catch(() => {});
-  };
-
   const scopeTarget = scope === 'org' ? 'org' : 'document';
   const doImport = async (file?: File) => {
     if (!file) return;
@@ -365,47 +352,23 @@ export const StyleStudio: React.FC<{
 
   const border = { border: '1px solid var(--cline)' } as const;
   const sel = "px-1 py-0.5 rounded bg-white text-xs";
-  const miniBtn = "px-1.5 py-0.5 rounded-md text-xs hover:bg-cream inline-flex items-center gap-1 disabled:opacity-40";
 
-  /** The cover ornament — the org's seal image if one is uploaded, else the ༀ glyph. It sits at
-   *  the top of the title page and prints on EVERY booklet's cover; a booklet can still override
-   *  it with its own cover image (Documents tab). The loader lives right here, in its place. */
+  /** The cover ornament as a real cover shows it: the org image marked for covers, else the ༀ
+   *  glyph. A booklet may print a different one of the library's images, or upload its own —
+   *  both are decided on the page (Documents tab), so what the specimen can honestly preview is
+   *  the default. The library itself is edited in the organization's images settings. */
   const sealSlot = () => {
-    const sized = seal?.width_mm != null || seal?.height_mm != null;
+    const sized = coverImage?.width_mm != null || coverImage?.height_mm != null;
     return (
       <div className="specimen-seal">
-        {seal?.has_image ? (
+        {coverImage ? (
           <img className={`bk-image${sized ? '' : ' bk-image-nat'}`}
-               src={withUrlAuth(`${orgSealUrl()}?v=${sealBust}`)} alt=""
-               style={{ width: seal.width_mm ? `${seal.width_mm}mm` : undefined,
-                        height: seal.height_mm ? `${seal.height_mm}mm` : undefined }} />
+               src={withUrlAuth(orgImageUrl(coverImage.id))} alt=""
+               style={{ width: coverImage.width_mm ? `${coverImage.width_mm}mm` : undefined,
+                        height: coverImage.height_mm ? `${coverImage.height_mm}mm` : undefined }} />
         ) : (
           <div className="bk-seal">ༀ</div>
         )}
-        <div className="specimen-seal-tools" contentEditable={false}>
-          <label className={`${miniBtn} text-lapis cursor-pointer`} style={border}>
-            <ImageIcon size={11} /> {seal?.has_image ? 'replace' : 'seal image'}
-            <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden"
-                   disabled={busy}
-                   onChange={e => { void doSeal(e.target.files?.[0]); e.target.value = ''; }} />
-          </label>
-          {seal?.has_image && (
-            <>
-              <span className="text-[10px] text-ink-soft" title="Print size in mm; leave height blank to keep the aspect ratio">size</span>
-              <input type="number" min={0} step={1} defaultValue={seal.width_mm ?? ''} placeholder="w"
-                     className="w-11 px-1 py-0.5 rounded bg-white text-xs" style={border}
-                     onChange={e => sizeSeal(e.target.value === '' ? null : Number(e.target.value), seal.height_mm ?? null)} />
-              <span className="text-[10px] text-ink-soft">×</span>
-              <input type="number" min={0} step={1} defaultValue={seal.height_mm ?? ''} placeholder="h"
-                     className="w-11 px-1 py-0.5 rounded bg-white text-xs" style={border}
-                     onChange={e => sizeSeal(seal.width_mm ?? null, e.target.value === '' ? null : Number(e.target.value))} />
-              <button type="button" onClick={() => void dropSeal()} disabled={busy}
-                      className={`${miniBtn} text-vermilion`} style={border} title="Remove the seal — the ༀ glyph returns">
-                <Trash2 size={11} />
-              </button>
-            </>
-          )}
-        </div>
       </div>
     );
   };

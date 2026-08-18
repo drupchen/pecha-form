@@ -345,64 +345,64 @@ ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
-class SealOut(BaseModel):
-    has_image: bool = False
+class ImageOut(BaseModel):
+    id: int
+    name: str = ""
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
+    # 'cover' | 'backcover' | None — which page kind gets this image when it picks none.
+    default_for: Optional[str] = None
 
 
-class SealSizeIn(BaseModel):
-    width_mm: Optional[float] = None    # NULL/absent = the image's natural size
+class ImagePatch(BaseModel):
+    name: Optional[str] = None
+    width_mm: Optional[float] = None
     height_mm: Optional[float] = None
+    # '' releases the role; 'cover'/'backcover' claims it from whoever held it.
+    default_for: Optional[str] = None
+    # Distinguish "leave the size alone" from "back to the image's natural size": both arrive
+    # as a null width_mm otherwise, and PATCHing a name would silently reset the size.
+    set_size: bool = False
 
 
-# The org's furniture images, one per slot. `slot` is a QUERY parameter defaulting to 'cover'
-# — the seal these endpoints served before there was more than one — so every caller written
-# against the single-image API keeps addressing the cover without knowing a slot exists.
-SEAL_SLOTS = ("cover", "backcover")
+DEFAULT_ROLES = ("cover", "backcover")
 
 
-def _seal_slot(slot: str) -> str:
-    if slot not in SEAL_SLOTS:
-        raise HTTPException(400, f"slot must be one of {', '.join(SEAL_SLOTS)}")
-    return slot
+def _image_row(row) -> ImageOut:
+    return ImageOut(id=row["id"], name=row["name"] or "", width_mm=row["width_mm"],
+                    height_mm=row["height_mm"], default_for=row["default_for"])
 
 
-@router.get("/org-seal", response_model=SealOut)
-def get_org_seal(slot: str = "cover", org_id: int = Depends(active_org_id)):
-    slot = _seal_slot(slot)
+@router.get("/org-images", response_model=list[ImageOut])
+def list_org_images(org_id: int = Depends(active_org_id)):
+    """The library, without the bytes — a picker needs names and sizes, not blobs."""
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ? AND slot = ?",
-            (org_id, slot)).fetchone()
-        if not row:
-            return SealOut()
-        return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
+        return [_image_row(r) for r in conn.execute(
+            "SELECT id, name, width_mm, height_mm, default_for FROM org_images "
+            "WHERE org_id = ? ORDER BY id", (org_id,)).fetchall()]
     finally:
         conn.close()
 
 
-@router.get("/org-seal/file")
-def get_org_seal_file(slot: str = "cover", org_id: int = Depends(active_org_id)):
-    slot = _seal_slot(slot)
+@router.get("/org-images/{image_id}/file")
+def get_org_image_file(image_id: int):
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT mime, data FROM org_seal WHERE org_id = ? AND slot = ?",
-            (org_id, slot)).fetchone()
+        row = conn.execute("SELECT mime, data FROM org_images WHERE id = ?",
+                           (image_id,)).fetchone()
         if not row:
-            raise HTTPException(404, "No seal for this organization")
+            raise HTTPException(404, "No such image")
         return Response(content=row["data"], media_type=row["mime"],
                         headers={"Cache-Control": "no-store"})
     finally:
         conn.close()
 
 
-@router.put("/org-seal", response_model=SealOut)
-async def upload_org_seal(file: UploadFile = File(...), slot: str = "cover",
-                          org_id: int = Depends(active_org_id)):
-    slot = _seal_slot(slot)
+@router.post("/org-images", response_model=ImageOut)
+async def upload_org_image(file: UploadFile = File(...), name: str = Form(""),
+                           default_for: str = Form(""),
+                           org_id: int = Depends(active_org_id)):
     data = await file.read()
     mime = file.content_type or ""
     if mime not in ALLOWED_IMAGE_MIME:
@@ -411,48 +411,75 @@ async def upload_org_seal(file: UploadFile = File(...), slot: str = "cover",
         raise HTTPException(400, "Empty file")
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, "Image too large (max 10 MB)")
+    if default_for and default_for not in DEFAULT_ROLES:
+        raise HTTPException(400, f"default_for must be one of {', '.join(DEFAULT_ROLES)}")
+    label = (name or "").strip() or (file.filename or "Image")
     conn = get_db()
     try:
-        # A replacement keeps the size the designer already set (only the bytes change).
-        conn.execute(
-            "INSERT INTO org_seal (org_id, slot, mime, data) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(org_id, slot) DO UPDATE SET mime = excluded.mime, "
-            "data = excluded.data, updated_at = CURRENT_TIMESTAMP",
-            (org_id, slot, mime, data))
+        # A house with no image at all gets its first upload as the cover default, so the
+        # library behaves like the single seal did until there is actually a choice to make.
+        role = default_for or None
+        if role is None and not conn.execute(
+                "SELECT 1 FROM org_images WHERE org_id = ?", (org_id,)).fetchone():
+            role = "cover"
+        if role:
+            conn.execute("UPDATE org_images SET default_for = NULL "
+                         "WHERE org_id = ? AND default_for = ?", (org_id, role))
+        cur = conn.execute(
+            "INSERT INTO org_images (org_id, name, mime, data, default_for) "
+            "VALUES (?, ?, ?, ?, ?)", (org_id, label, mime, data, role))
         conn.commit()
-        row = conn.execute(
-            "SELECT width_mm, height_mm FROM org_seal WHERE org_id = ? AND slot = ?",
-            (org_id, slot)).fetchone()
-        return SealOut(has_image=True, width_mm=row["width_mm"], height_mm=row["height_mm"])
+        return _image_row(conn.execute(
+            "SELECT id, name, width_mm, height_mm, default_for FROM org_images WHERE id = ?",
+            (cur.lastrowid,)).fetchone())
     finally:
         conn.close()
 
 
-@router.patch("/org-seal", response_model=SealOut)
-def set_org_seal_size(payload: SealSizeIn, slot: str = "cover",
-                      org_id: int = Depends(active_org_id)):
-    slot = _seal_slot(slot)
+@router.patch("/org-images/{image_id}", response_model=ImageOut)
+def patch_org_image(image_id: int, payload: ImagePatch,
+                    org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
-        row = conn.execute("SELECT 1 FROM org_seal WHERE org_id = ? AND slot = ?",
-                           (org_id, slot)).fetchone()
+        row = conn.execute("SELECT org_id FROM org_images WHERE id = ?", (image_id,)).fetchone()
         if not row:
-            raise HTTPException(404, "No seal for this organization")
-        conn.execute(
-            "UPDATE org_seal SET width_mm = ?, height_mm = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE org_id = ? AND slot = ?", (payload.width_mm, payload.height_mm, org_id, slot))
+            raise HTTPException(404, "No such image")
+        if payload.name is not None:
+            conn.execute("UPDATE org_images SET name = ? WHERE id = ?",
+                         (payload.name.strip(), image_id))
+        if payload.set_size:
+            conn.execute("UPDATE org_images SET width_mm = ?, height_mm = ? WHERE id = ?",
+                         (payload.width_mm, payload.height_mm, image_id))
+        if payload.default_for is not None:
+            role = payload.default_for or None
+            if role is not None and role not in DEFAULT_ROLES:
+                raise HTTPException(400, f"default_for must be one of {', '.join(DEFAULT_ROLES)}")
+            if role:
+                # One image per role: claiming it takes it off whoever held it. Done as a
+                # release-then-claim rather than a swap — a role with no image is a legitimate
+                # state (every page picks for itself), so nothing needs to be handed back.
+                conn.execute("UPDATE org_images SET default_for = NULL "
+                             "WHERE org_id = ? AND default_for = ?", (org_id, role))
+            conn.execute("UPDATE org_images SET default_for = ? WHERE id = ?", (role, image_id))
+        conn.execute("UPDATE org_images SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                     (image_id,))
         conn.commit()
-        return SealOut(has_image=True, width_mm=payload.width_mm, height_mm=payload.height_mm)
+        return _image_row(conn.execute(
+            "SELECT id, name, width_mm, height_mm, default_for FROM org_images WHERE id = ?",
+            (image_id,)).fetchone())
     finally:
         conn.close()
 
 
-@router.delete("/org-seal")
-def delete_org_seal(slot: str = "cover", org_id: int = Depends(active_org_id)):
-    slot = _seal_slot(slot)
+@router.delete("/org-images/{image_id}")
+def delete_org_image(image_id: int):
     conn = get_db()
     try:
-        conn.execute("DELETE FROM org_seal WHERE org_id = ? AND slot = ?", (org_id, slot))
+        # Pages that picked it fall back to the default for their kind, which is what a page
+        # that never picked anything already does — so a deleted image never leaves a hole.
+        conn.execute("UPDATE document_items SET org_image_id = NULL WHERE org_image_id = ?",
+                     (image_id,))
+        conn.execute("DELETE FROM org_images WHERE id = ?", (image_id,))
         conn.commit()
         return {"ok": True}
     finally:

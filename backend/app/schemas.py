@@ -591,6 +591,9 @@ class DocumentItemPatch(BaseModel):
     title_disposition: Optional[str] = None
     # On a cover: the aligned-text item whose title seeded it. 0 clears it.
     source_item_id: Optional[int] = None
+    # On a cover or back cover: which image from the org's library to print. 0 clears it back
+    # to the org's default for this kind of page.
+    org_image_id: Optional[int] = None
 
 class DocumentItemOut(BaseModel):
     id: int
@@ -618,6 +621,8 @@ class DocumentItemOut(BaseModel):
     # A cover: the aligned-text item its content was seeded from, whose title it carries and
     # whose inner cover follows it.
     source_item_id: Optional[int] = None
+    # A cover or back cover: the org image this page prints; None = the org's default for it.
+    org_image_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 class ImageSizeIn(BaseModel):

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  getDocument, getDocumentLayout, getFurniture, getOrgSeal,
+  getDocument, getDocumentLayout, getFurniture, getOrgImages,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow, type OrgSeal,
+  type DocumentFurnitureRow, type OrgImage,
 } from '../../api/client';
 import { compileDocument, type DocLine, type OutlineHeading } from './compile';
 import {
@@ -41,23 +41,21 @@ export const PrintBooklet: React.FC<{
   const [headingsByItem, setHeadingsByItem] = useState<Map<number, OutlineHeading[]>>(new Map());
   const [ready, setReady] = useState(false);
   const [styleCss, setStyleCss] = useState('');
-  const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
-  const [orgBackImage, setOrgBackImage] = useState<OrgSeal | null>(null);
+  const [orgImages, setOrgImages] = useState<OrgImage[]>([]);
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [d, lay, furn, css, seal, backImage] = await Promise.all([
+      const [d, lay, furn, css, images] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null),
-        getOrgSeal('backcover').catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgImages().catch(() => [])]);
       if (!alive) return;
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       const compiled = await compileDocument(d.items, edition);
       if (!alive) return;
       setDoc(d); setConfig(lay.config); setRows(lay.rows); setFurniture(furn);
       setStyleCss(css);
-      setOrgSeal(seal); setOrgBackImage(backImage);
+      setOrgImages(images);
       setLines(compiled.lines); setRectoSrc(compiled.rectoLines);
       setTitleByItem(compiled.titleByItem);
       setHeadingsByItem(compiled.headingsByItem);
@@ -179,8 +177,7 @@ export const PrintBooklet: React.FC<{
           titleLines={item.kind === 'cover' ? mainTitleLines : []}
           body={furnitureBodyOf(furniture, item, lang)}
           toc={item.kind === 'toc' ? tocRows : []}
-          orgSeal={orgSeal}
-          orgBackImage={orgBackImage}
+          orgImages={orgImages}
           version={version}
           // The export always names a year (`_year_of`); the fallback is for a hand-typed
           // print URL, where the current year beats printing "Copyright © ." at all.

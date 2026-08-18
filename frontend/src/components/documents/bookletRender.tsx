@@ -1,8 +1,8 @@
 import React from 'react';
 import {
-  itemImageUrl, orgSealUrl, withUrlAuth,
+  itemImageUrl, orgImageUrl, withUrlAuth,
   type DocumentItem, type LayoutConfig, type DocumentLayoutRow, type DocumentFurnitureRow,
-  type OrgSeal,
+  type OrgImage,
 } from '../../api/client';
 import { splitParagraphs, type DocLine, type OutlineHeading } from './compile';
 import { sanitizeTranslationHtml } from '../translate/sanitize';
@@ -1234,12 +1234,9 @@ const FurnitureLines: React.FC<{
  *  wrap it in their own page element. */
 export const FurnitureContent: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
-  /** The ORG's cover ornament (the seal) — the cover image of every booklet in the template. */
-  orgSeal?: OrgSeal | null;
-  /** The ORG's BACK-COVER image, the same arrangement one page later. Unlike the cover, the
-   *  back cover has no placeholder glyph to fall back to: with neither image the page simply
-   *  carries none. */
-  orgBackImage?: OrgSeal | null;
+  /** The ORG's image library. A cover or back cover prints the one it picked, else the one
+   *  marked `default_for` its kind — see `orgImageFor`. */
+  orgImages?: OrgImage[];
   /** Width control for this page's blocks (bench only; the print page passes nothing). */
   widthOf?: BlockWidthOf;
   /** This booklet's own Tibetan for the cover title (see `TitleContent`). */
@@ -1257,7 +1254,7 @@ export const FurnitureContent: React.FC<{
   /** …and the year it was declared, for `{{year}}` in the same bodies. */
   year?: string;
   pageHeightMm?: number;
-}> = ({ item, titleLines, body, toc, orgSeal, orgBackImage, widthOf = NO_WIDTH, tibetan, slots,
+}> = ({ item, titleLines, body, toc, orgImages = [], widthOf = NO_WIDTH, tibetan, slots,
         groundOf, spaceOf, onResizeImage, version, year, pageHeightMm }) => {
   // The booklet's own image, with its placement rail and resize grip (see `BkImage`).
   const bkImage = (
@@ -1267,11 +1264,12 @@ export const FurnitureContent: React.FC<{
   );
 
   if (item.kind === 'cover') {
-    // At the ༀ ornament's place: this booklet's own cover image if it has one, else the org's
-    // seal from the template, else (neither) the ༀ glyph — see TitleContent. The org seal is
-    // sized in the Style Studio (org-level), so it takes a placement rail but no resize grip.
-    const sealImage = orgSeal?.has_image
-      ? <BkImage src={withUrlAuth(orgSealUrl())} widthMm={orgSeal.width_mm} heightMm={orgSeal.height_mm}
+    // At the ༀ ornament's place: this booklet's own cover image if it has one, else the org
+    // image this page prints, else (neither) the ༀ glyph — see TitleContent. An org image is
+    // sized in the org settings, so it takes a placement rail but no resize grip.
+    const org = orgImageFor(orgImages, item, 'cover');
+    const sealImage = org
+      ? <BkImage src={withUrlAuth(orgImageUrl(org.id))} widthMm={org.width_mm} heightMm={org.height_mm}
                  ground={groundOf?.('#image')} pageHeightMm={pageHeightMm} />
       : undefined;
     return <TitleContent titleLines={titleLines} seal widthOf={widthOf} tibetan={tibetan}
@@ -1313,12 +1311,13 @@ export const FurnitureContent: React.FC<{
   }
   if (item.kind === 'backcover') {
     // The same precedence the cover keeps: this booklet's own image if it has one, else the
-    // org's back-cover image from the template — and, with neither, no image at all (there is
-    // no ༀ here to stand in). Sized in the org settings, so it takes a placement rail but no
-    // resize grip, exactly as the seal does.
-    const orgImage = orgBackImage?.has_image
-      ? <BkImage src={withUrlAuth(orgSealUrl('backcover'))}
-                 widthMm={orgBackImage.width_mm} heightMm={orgBackImage.height_mm}
+    // org image this page prints — and, with neither, no image at all (there is no ༀ here to
+    // stand in). Sized in the org settings, so it takes a placement rail but no resize grip,
+    // exactly as the cover's does.
+    const org = orgImageFor(orgImages, item, 'backcover');
+    const orgImage = org
+      ? <BkImage src={withUrlAuth(orgImageUrl(org.id))}
+                 widthMm={org.width_mm} heightMm={org.height_mm}
                  ground={groundOf?.('#image')} pageHeightMm={pageHeightMm} />
       : null;
     const image = item.has_image ? bkImage : orgImage;
@@ -1335,11 +1334,30 @@ export const FurnitureContent: React.FC<{
   return null;
 };
 
+/**
+ * WHICH ORG IMAGE A PAGE PRINTS, or null.
+ *
+ * The page's own pick wins; failing that, the org's default for this kind of page — which is
+ * how the single org seal behaved before there was a library, and so what an untouched booklet
+ * still gets. A pick whose image has since been deleted resolves to nothing here and falls
+ * through to the default, the same as never having picked (the delete endpoint clears the
+ * reference too; this is the belt to that braces).
+ *
+ * The booklet's OWN uploaded image is not considered here — it outranks both, and the caller
+ * checks it first, because only it carries a resize grip.
+ */
+export function orgImageFor(
+  images: OrgImage[], item: DocumentItem, role: 'cover' | 'backcover',
+): OrgImage | null {
+  const picked = item.org_image_id != null
+    ? images.find((i) => i.id === item.org_image_id) : undefined;
+  return picked ?? images.find((i) => i.default_for === role) ?? null;
+}
+
 /** A furniture page as a facing-page mock (bench use). */
 export const FurniturePage: React.FC<{
   item: DocumentItem; titleLines: DocLine[]; body: string | null; toc: TocRow[];
-  orgSeal?: OrgSeal | null;
-  orgBackImage?: OrgSeal | null;
+  orgImages?: OrgImage[];
   widthOf?: BlockWidthOf;
   tibetan?: string | null;
   /** This page's authored title slots (see `TitleContent`). */

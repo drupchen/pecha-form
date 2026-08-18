@@ -105,10 +105,11 @@ def _item_out(conn, row) -> DocumentItemOut:
         ref_document_id=ref_doc, ref_title=ref_title, layout_item_id=layout_item_id,
         caption=row["caption"], body=row["body"], has_image=has_image,
         image_width_mm=w_mm, image_height_mm=h_mm,
-        # Read defensively: both columns arrive by the additive migration, and a connection
+        # Read defensively: these columns arrive by the additive migration, and a connection
         # opened against a database that has not run it yet must not 500 on a missing key.
         title_disposition=row["title_disposition"] if "title_disposition" in keys else None,
-        source_item_id=row["source_item_id"] if "source_item_id" in keys else None)
+        source_item_id=row["source_item_id"] if "source_item_id" in keys else None,
+        org_image_id=row["org_image_id"] if "org_image_id" in keys else None)
 
 
 def _items(conn, document_id: int) -> List[DocumentItemOut]:
@@ -379,6 +380,11 @@ def patch_item(item_id: int, payload: DocumentItemPatch):
         if payload.source_item_id is not None:
             sets.append("source_item_id = ?")
             args.append(payload.source_item_id or None)
+        # 0 = back to the org's default image for this kind of page, the same "clear to NULL"
+        # sentinel the cover's source uses.
+        if payload.org_image_id is not None:
+            sets.append("org_image_id = ?")
+            args.append(payload.org_image_id or None)
         if sets:
             conn.execute(f"UPDATE document_items SET {', '.join(sets)} WHERE id = ?",
                          (*args, item_id))
@@ -1402,15 +1408,20 @@ def _store_snapshot(conn, version_id: int, document_id: int):
             (version_id, str(img["item_id"]), img["mime"],
              json.dumps({"width_mm": img["width_mm"], "height_mm": img["height_mm"]}),
              img["data"]))
-    # One row per SLOT. `ref` was '' when the org had a single seal; it now carries the slot,
-    # which is what a restore needs to put each image back where it belongs. The column is
-    # free text and the PK is (version_id, kind, ref), so this needed no schema change.
-    for seal in conn.execute(
-            "SELECT slot, mime, data FROM org_seal WHERE org_id=?", (org_id,)).fetchall():
+    # The org's image LIBRARY, one row per image keyed by its id. `ref` was '' when there was
+    # a single seal; it now carries the id a page's `org_image_id` points at, which is what a
+    # restore needs to put each image back where it belongs. The column is free text and the PK
+    # is (version_id, kind, ref), so this needed no schema change.
+    for img in conn.execute(
+            "SELECT id, name, mime, data, width_mm, height_mm, default_for FROM org_images "
+            "WHERE org_id=?", (org_id,)).fetchall():
         conn.execute(
             "INSERT OR REPLACE INTO document_version_asset "
-            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', ?, ?, '{}', ?)",
-            (version_id, seal["slot"], seal["mime"], seal["data"]))
+            "(version_id, kind, ref, mime, meta, data) VALUES (?, 'seal', ?, ?, ?, ?)",
+            (version_id, str(img["id"]), img["mime"],
+             json.dumps({"name": img["name"], "width_mm": img["width_mm"],
+                         "height_mm": img["height_mm"], "default_for": img["default_for"]}),
+             img["data"]))
     for font in conn.execute(
             "SELECT id, family, weight, italic, mime, data FROM org_fonts WHERE org_id=?",
             (org_id,)).fetchall():

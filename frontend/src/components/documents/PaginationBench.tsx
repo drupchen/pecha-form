@@ -3,10 +3,10 @@ import { X, RefreshCw, RotateCw, Scissors, Minus, Plus, FileDown, Type, Columns3
 import {
   API_BASE, withUrlAuth, getDocument, getDocumentLayout, putLayoutRow, deleteLayoutRow, getFurniture,
   putPageCount, getLanguages, setDocumentLanguages, type Language,
-  getOrgSeal, putPaginationStamp, setPaginationFrozen, putLayoutConfig, setItemImageSize, getVersions,
+  getOrgImages, putPaginationStamp, setPaginationFrozen, putLayoutConfig, setItemImageSize, getVersions,
   PAGE_GEOMETRY_FIELDS, PAGE_PRESETS,
   type DocumentDetail, type DocumentItem, type LayoutConfig, type DocumentLayoutRow,
-  type DocumentFurnitureRow, type OrgSeal, type DocumentLayoutKind,
+  type DocumentFurnitureRow, type OrgImage, type DocumentLayoutKind,
 } from '../../api/client';
 import { compileDocument, COMPILE_BUILD, type DocLine, type OutlineHeading } from './compile';
 import {
@@ -306,10 +306,9 @@ export const PaginationBench: React.FC<{
   const [styleCss, setStyleCss] = useState('');
   // The org's cover seal travels with the styles: it is part of the template, and the studio
   // can change it, so it is re-read whenever the styles are.
-  const [orgSeal, setOrgSeal] = useState<OrgSeal | null>(null);
-  // The org's BACK-COVER image — the same template arrangement one page later (see the
-  // backcover branch of `FurnitureContent`).
-  const [orgBackImage, setOrgBackImage] = useState<OrgSeal | null>(null);
+  // The org's image library — every cover and back cover resolves its picture out of it
+  // (`orgImageFor`), so one fetch serves every furniture page.
+  const [orgImages, setOrgImages] = useState<OrgImage[]>([]);
   const [showStyles, setShowStyles] = useState(false);
   const [splitMode, setSplitMode] = useState(false);
   // Overview: every edition side by side — the shared Tibetan verso plus one recto per
@@ -356,8 +355,7 @@ export const PaginationBench: React.FC<{
   const [yearLabel, setYearLabel] = useState(() => yearOf(undefined));
   const reloadStyles = () => {
     void loadBookletStyleCss(documentId).then(setStyleCss);
-    void getOrgSeal().then(setOrgSeal).catch(() => {});
-    void getOrgSeal('backcover').then(setOrgBackImage).catch(() => {});
+    void getOrgImages().then(setOrgImages).catch(() => {});
   };
   const measureRef = useRef<HTMLDivElement>(null);
 
@@ -467,7 +465,7 @@ export const PaginationBench: React.FC<{
       setLoading(true);
       const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgImages().catch(() => [])]);
       if (!alive) return;
       setDoc(d);
       setConfig(lay.config);
@@ -476,7 +474,7 @@ export const PaginationBench: React.FC<{
       setFrozen(lay.pagination_frozen);
       setFurniture(furn);
       setStyleCss(css);
-      setOrgSeal(seal);
+      setOrgImages(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       setLang(edition);
       const compiled = await compileEdition(d.items, edition);
@@ -523,7 +521,7 @@ export const PaginationBench: React.FC<{
       setAllCompiles(null);
       const [d, lay, furn, css, seal] = await Promise.all([
         getDocument(documentId), getDocumentLayout(documentId), getFurniture(documentId),
-        loadBookletStyleCss(documentId), getOrgSeal().catch(() => null)]);
+        loadBookletStyleCss(documentId), getOrgImages().catch(() => [])]);
       setDoc(d);
       setConfig(lay.config);
       setRows(lay.rows);
@@ -531,7 +529,7 @@ export const PaginationBench: React.FC<{
       setFrozen(lay.pagination_frozen);
       setFurniture(furn);
       setStyleCss(css);
-      setOrgSeal(seal);
+      setOrgImages(seal);
       const edition = d.languages.includes(lang) ? lang : (d.languages[0] ?? 'en');
       setLang(edition);
       const compiled = await compileEdition(d.items, edition);
@@ -2053,8 +2051,7 @@ export const PaginationBench: React.FC<{
                       titleLines={item.kind === 'cover' ? ed.mainTitleLines : []}
                       body={furnitureBodyOf(furniture, item, ed.lang)}
                       toc={item.kind === 'toc' ? ed.tocRows : []}
-                      orgSeal={orgSeal} orgBackImage={orgBackImage}
-                      widthOf={furnitureWidthOf(item, ed.lang)}
+                      orgImages={orgImages} widthOf={furnitureWidthOf(item, ed.lang)}
                       tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
                       slots={furnitureSlotsOf(furniture, item, ed.lang)}
                       groundOf={furnitureGroundOf(item, ed.lang)}
@@ -2074,7 +2071,7 @@ export const PaginationBench: React.FC<{
       <FurniturePage key={`f${item.id}`} item={item}
         titleLines={item.kind === 'cover' ? mainTitleLines : []}
         body={furnitureBodyOf(furniture, item, lang)} toc={item.kind === 'toc' ? tocRows : []}
-        orgSeal={orgSeal} orgBackImage={orgBackImage} widthOf={furnitureWidthOf(item)}
+        orgImages={orgImages} widthOf={furnitureWidthOf(item)}
         tibetan={furnitureBodyOf(furniture, item, TIBETAN_LANG)}
         slots={furnitureSlotsOf(furniture, item, lang)}
         groundOf={furnitureGroundOf(item)} spaceOf={furnitureSpaceOf(item)}

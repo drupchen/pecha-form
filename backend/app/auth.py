@@ -201,6 +201,7 @@ _ORG_RESOLVERS = {
         "WHERE l.id = ?"
     ),
     "font": "SELECT org_id FROM org_fonts WHERE id = ?",
+    "org_image": "SELECT org_id FROM org_images WHERE id = ?",
 }
 
 _NO_ROW = object()

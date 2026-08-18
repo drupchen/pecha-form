@@ -9,9 +9,10 @@ import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import {
   getLanguages, getFurniture, putFurniture, getDocumentLayout, extractTextPage,
-  getVersions, patchDocumentItem, getOrgCopyright,
+  getVersions, patchDocumentItem, getOrgCopyright, getOrgImages, orgImageUrl,
   uploadItemImage, deleteItemImage, itemImageUrl, setItemImageSize, withUrlAuth,
   type Language, type DocumentItemKind, type DocumentItem, type DocumentFurnitureRow,
+  type OrgImage,
   type DocumentSummary,
 } from '../../api/client';
 import { PaginationBench } from './PaginationBench';
@@ -24,6 +25,7 @@ import {
 } from './bookletRender';
 import { cleanSpecimenHtml } from './StyleStudio';
 import { RichLine, bodyToRich } from './RichLine';
+import { orgImageFor } from './bookletRender';
 
 /** Furniture kinds with an editor panel of their own. (An aligned text has one too, but by
  *  carrying a text rather than by its kind — see `editable` at the item row.) */
@@ -126,12 +128,16 @@ export const DocumentsView: React.FC = () => {
   /** Bumped by "fill from the org template" — the only thing that rewrites a furniture body
    *  from outside its own field, and so the only thing that has to re-seed it. */
   const [fillEpoch, setFillEpoch] = useState(0);
+  /** The organization's image library (seals, logos, marks). A cover or back cover picks one
+   *  of these; the one marked for its kind stands in when it picks none. */
+  const [orgImages, setOrgImages] = useState<OrgImage[]>([]);
   const pickPageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchList();
     fetchTexts();
     getLanguages().then(setLangs).catch(() => {});
+    getOrgImages().then(setOrgImages).catch(() => setOrgImages([]));
   }, [fetchList, fetchTexts]);
 
   // Load furniture content whenever the open document changes.
@@ -340,6 +346,27 @@ export const DocumentsView: React.FC = () => {
       await open(current.id);
     } catch (e: any) {
       useDocumentStore.setState({ error: e.message || 'Could not release the aligned text' });
+    }
+  };
+
+  /**
+   * WHICH ORG IMAGE THIS PAGE PRINTS.
+   *
+   * The library belongs to the organization and its images are inherited, not copied — so this
+   * stores a REFERENCE, and replacing the picture in the settings changes this page with it.
+   * `0` clears the reference, which puts the page back on the org's default for its kind: not
+   * "no image", but "whatever the house prints here", which is where every page starts.
+   *
+   * The page's own uploaded image still outranks this. That is why both controls sit here
+   * together — the upload above is this booklet's alone, the picker below is the house's.
+   */
+  const setOrgImage = async (it: DocumentItem, imageId: number | null) => {
+    if (!current) return;
+    try {
+      await patchDocumentItem(it.id, { org_image_id: imageId ?? 0 });
+      await open(current.id);
+    } catch (e: any) {
+      useDocumentStore.setState({ error: e.message || 'Could not change the image' });
     }
   };
 
@@ -1049,6 +1076,67 @@ export const DocumentsView: React.FC = () => {
                                 </div>
                               )}
                             </div>
+                          </div>
+                        )}
+                        {/* THE HOUSE'S IMAGE, as opposed to this booklet's own above. The
+                            organization keeps a library of seals and marks; a cover or back
+                            cover prints the one it picks here, and the one marked for its kind
+                            when it picks none. Offered only where a page has a place for one —
+                            an image page carries its own picture and nothing else. */}
+                        {(it.kind === 'cover' || it.kind === 'backcover') && (
+                          <div className="flex items-start gap-2 pb-1.5 mb-0.5 text-[11px]"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            <span className="text-ink-soft pt-1 shrink-0">House image</span>
+                            {orgImages.length === 0 ? (
+                              <span className="text-ink-soft pt-1">
+                                None yet — add one in Admin → Cover &amp; back cover images.
+                              </span>
+                            ) : (<>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {(() => {
+                                  const role = it.kind === 'cover' ? 'cover' : 'backcover';
+                                  const shown = orgImageFor(orgImages, it, role);
+                                  const chips = [
+                                    { id: null as number | null, label: 'the house’s' },
+                                    ...orgImages.map(i => ({ id: i.id as number | null,
+                                                             label: i.name || `#${i.id}` })),
+                                  ];
+                                  return (<>
+                                    {/* Each choice shows the picture, because that is what is
+                                        being chosen — a list of names is a list of guesses. */}
+                                    {chips.map(c => {
+                                      const on = (it.org_image_id ?? null) === c.id;
+                                      return (
+                                        <button key={String(c.id)} type="button"
+                                                onClick={() => void setOrgImage(it, c.id)}
+                                                className={`px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${
+                                                  on ? 'bg-lapis text-white' : 'text-lapis hover:bg-cream'}`}
+                                                style={{ border: '1px solid var(--cline)' }}
+                                                title={c.id == null
+                                                  ? 'Print whichever image the organization marked for this kind of page'
+                                                  : 'Print this image on this page'}>
+                                          {c.id != null && (
+                                            <img src={withUrlAuth(orgImageUrl(c.id))} alt=""
+                                                 className="h-4 w-4 object-contain rounded-sm bg-white" />
+                                          )}
+                                          {c.label}
+                                        </button>
+                                      );
+                                    })}
+                                    {/* What the page will actually show, said plainly: the
+                                        picked image, or — having picked none — the house's
+                                        default, which may be nothing at all. */}
+                                    <span className="text-ink-soft pt-0.5">
+                                      {it.has_image
+                                        ? '· this booklet’s own image wins'
+                                        : shown
+                                          ? <>· prints <span className="text-ink">{shown.name || `#${shown.id}`}</span></>
+                                          : (it.kind === 'cover' ? '· prints the ༀ glyph' : '· prints no image')}
+                                    </span>
+                                  </>);
+                                })()}
+                              </div>
+                            </>)}
                           </div>
                         )}
                         {hasTitleBlocks(it) && (

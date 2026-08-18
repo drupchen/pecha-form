@@ -52,7 +52,8 @@ _guarded(translations.router, "translate",
 _guarded(phonetics.router, "phonetics", {"text_id": "text"})
 _guarded(documents.router, "documents",
          {"document_id": "document", "item_id": "doc_item"})
-_guarded(styles.router, "documents", {"document_id": "document", "font_id": "font"})
+_guarded(styles.router, "documents",
+         {"document_id": "document", "font_id": "font", "image_id": "org_image"})
 app.include_router(auth_router.router)   # public: login/invites do their own checks
 app.include_router(orgs.router)          # per-endpoint superuser/can_manage_org checks
 

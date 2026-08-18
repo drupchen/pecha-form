@@ -634,7 +634,10 @@ CREATE TABLE IF NOT EXISTS document_items (
     title_disposition TEXT,
     -- On a COVER: the aligned text whose title seeded it (set by "fill from the aligned
     -- text"). That text's inner cover follows this cover's disposition.
-    source_item_id    INTEGER
+    source_item_id    INTEGER,
+    -- On a COVER or BACK COVER: which image from the org's library this page prints
+    -- (org_images.id); NULL = the org's default for this kind of page.
+    org_image_id      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_document_items_doc ON document_items(document_id);
 
@@ -815,26 +818,34 @@ CREATE TABLE IF NOT EXISTS org_fonts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- The org's furniture images — part of the template, like the fonts. One row per SLOT:
---   'cover'     the cover ornament (seal/logo). It prints at the ༀ placeholder on EVERY
---               booklet's cover; a booklet that uploads its own cover image (document_images)
---               overrides it, and with neither the ༀ glyph shows.
---   'backcover' the same arrangement on the back cover, which has no placeholder glyph: a
---               booklet with no back-cover image of its own prints this, and with neither the
---               page simply has no image.
--- The slot was added after the fact (see _rebuild_org_seal_slots); every pre-existing row is
--- a cover seal, which is why 'cover' is the default a caller that names no slot gets.
--- width/height in mm (NULL = the image's natural size).
-CREATE TABLE IF NOT EXISTS org_seal (
+-- THE ORG'S IMAGE LIBRARY — seals, logos and marks, part of the template like the fonts.
+-- A house has several (an order's seal, a centre's logo, a colophon mark), and any of them may
+-- appear on any cover or back cover, so this is a flat library rather than one image per role.
+-- A booklet page picks one by id (`document_items.org_image_id`); `name` is what that picker
+-- shows. width/height in mm (NULL = the image's natural size).
+--
+-- `default_for` is what a page that picks NOTHING gets — 'cover' prints at the ༀ placeholder
+-- on every booklet's cover, 'backcover' on every back cover — which is how the single org seal
+-- behaved before there was a library, and why nothing on an existing booklet moved when this
+-- table grew. At most one image per org may claim each role (the partial unique index below);
+-- an image claiming neither simply waits in the library to be chosen.
+--
+-- Precedence on the page, in full: the booklet's OWN uploaded image (document_images), else
+-- the org image this page picked, else the org's default for the page's kind, else — on a
+-- cover — the ༀ glyph, and on a back cover nothing at all.
+CREATE TABLE IF NOT EXISTS org_images (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
-    slot       TEXT NOT NULL DEFAULT 'cover' CHECK (slot IN ('cover', 'backcover')),
+    name       TEXT NOT NULL DEFAULT '',
     mime       TEXT NOT NULL,
     data       BLOB NOT NULL,
     width_mm   REAL,
     height_mm  REAL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (org_id, slot)
+    default_for TEXT CHECK (default_for IN ('cover', 'backcover')),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_images_default
+    ON org_images(org_id, default_for) WHERE default_for IS NOT NULL;
 
 -- The org's page format and guides: sheet size and the four margins the text block and the
 -- binding/folio guides are all drawn from. Geometry resolves default ← org ← document, the
@@ -1123,6 +1134,11 @@ _COLUMN_MIGRATIONS = {
         #            text then gets its inner cover from its own content.
         # Absent on every existing row, so a booklet laid out before this renders unchanged.
         ("title_disposition", "TEXT"),
+        # On a COVER or BACK COVER: which image from the org's library this page prints
+        # (`org_images.id`). NULL = the org's default for this kind of page, which is what
+        # every page did before the library existed. The page's OWN uploaded image still wins
+        # over both — see the org_images note in SCHEMA for the full precedence.
+        ("org_image_id", "INTEGER"),
         # On a COVER item: the aligned text whose title seeded its content, recorded by "fill
         # from the aligned text". It says two things: whose title this cover CARRIES (so that
         # text prints no title page of its own), and whose inner cover FOLLOWS this cover
@@ -1270,31 +1286,34 @@ def _rebuild_document_furniture_block(conn) -> None:
     conn.execute("ALTER TABLE document_furniture_new RENAME TO document_furniture")
 
 
-def _rebuild_org_seal_slots(conn) -> None:
-    """Give a pre-existing `org_seal` its `slot` dimension. The PK grows from `org_id` to
-    `(org_id, slot)` — SQLite can't alter a PK in place, so rebuild. Every existing row is the
-    COVER ornament, which is what the org seal has always meant, so the carry-over is total
-    and lossless: the back-cover slot simply starts empty everywhere. No-op once `slot`
-    exists (incl. fresh DBs created from SCHEMA)."""
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(org_seal)")}
-    if not cols or "slot" in cols:
+def _migrate_org_seal_to_images(conn) -> None:
+    """Carry the org's seal(s) into the image LIBRARY, then drop the old table.
+
+    `org_seal` held one image per role — first one per org, later one per slot. `org_images`
+    holds as many as a house has, each named and each choosable per page, with `default_for`
+    naming the one a page that chooses nothing still gets. So every carried row keeps doing
+    exactly what it did: the cover seal becomes the cover default, the back-cover image the
+    back-cover default, and no existing booklet changes by a pixel.
+
+    Runs whichever shape `org_seal` was left in — before or after the slot column — so a
+    database that skipped a release migrates in one step. No-op once `org_seal` is gone.
+    """
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='org_seal'").fetchone():
         return
-    conn.execute("""
-        CREATE TABLE org_seal_new (
-            org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
-            slot       TEXT NOT NULL DEFAULT 'cover' CHECK (slot IN ('cover', 'backcover')),
-            mime       TEXT NOT NULL,
-            data       BLOB NOT NULL,
-            width_mm   REAL,
-            height_mm  REAL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (org_id, slot)
-        )""")
-    conn.execute("""
-        INSERT INTO org_seal_new (org_id, slot, mime, data, width_mm, height_mm, updated_at)
-        SELECT org_id, 'cover', mime, data, width_mm, height_mm, updated_at FROM org_seal""")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(org_seal)")}
+    slotted = "slot" in cols
+    sel = ("SELECT org_id, slot, mime, data, width_mm, height_mm FROM org_seal" if slotted
+           else "SELECT org_id, 'cover' AS slot, mime, data, width_mm, height_mm FROM org_seal")
+    labels = {"cover": "Cover seal", "backcover": "Back-cover image"}
+    for row in conn.execute(sel).fetchall():
+        slot = row["slot"] or "cover"
+        conn.execute(
+            "INSERT INTO org_images (org_id, name, mime, data, width_mm, height_mm, default_for) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (row["org_id"], labels.get(slot, slot), row["mime"], row["data"],
+             row["width_mm"], row["height_mm"], slot))
     conn.execute("DROP TABLE org_seal")
-    conn.execute("ALTER TABLE org_seal_new RENAME TO org_seal")
 
 
 def _rebuild_text_groups_org(conn) -> None:
@@ -2069,8 +2088,8 @@ def init_db():
         # retries to re-render). The table only exists after the schema above.
         conn.execute("UPDATE document_versions SET status = 'failed', "
                      "error = 'interrupted by restart' WHERE status = 'rendering'")
-        # The org's single seal became one image per slot (cover / back cover).
-        _rebuild_org_seal_slots(conn)
+        # The org's seal became a LIBRARY of images, each choosable per page.
+        _migrate_org_seal_to_images(conn)
         # The copyright page folded into the back cover — move its content over and drop it.
         _fold_copyright_into_backcover(conn)
         # The cover image's placement became shared across editions — fold the per-edition rows.

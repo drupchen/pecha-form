@@ -419,6 +419,10 @@ export interface DocumentItem {
    *  of its own — and whose inner cover FOLLOWS this cover, content and block placements
    *  alike. A booklet-wide cover, seeded from no text, leaves this null and binds nothing. */
   source_item_id?: number | null;
+  /** A COVER or BACK COVER: which image from the org's library this page prints
+   *  (`OrgImage.id`). null = the org's default for this kind of page. The page's OWN uploaded
+   *  image still wins over both. */
+  org_image_id?: number | null;
 }
 
 /** The served-image URL for an image_page item (append a cache-buster when it changes). */
@@ -527,40 +531,59 @@ export const deleteOrgFont = (fontId: number) =>
 
 /** The org's cover SEAL — a template-level image printed where the ༀ ornament sits, on every
  *  booklet's cover. A booklet's own cover image (uploadItemImage) overrides it. */
-export interface OrgSeal { has_image: boolean; width_mm: number | null; height_mm: number | null }
-
 /**
- * WHICH ORG IMAGE. The org keeps one furniture image per slot: `'cover'` is the seal that
- * prints at the ༀ placeholder, `'backcover'` the same arrangement on the back cover. Every
- * call below defaults to `'cover'` — the image these endpoints served when there was only
- * one — so a caller that names no slot still addresses the seal it always addressed.
+ * THE ORG'S IMAGE LIBRARY — seals, logos and marks the whole house prints.
+ *
+ * A house keeps several (an order's seal, a centre's logo, a colophon mark) and any cover or
+ * back cover picks one by id. `default_for` names the image a page that picks NOTHING gets,
+ * at most one per role — which is how the single org seal behaved before there was a library,
+ * and why nothing on an untouched booklet moved when this became a list.
+ *
+ * Precedence on the page: the booklet's own uploaded image, else the org image that page
+ * picked, else the org's default for the page's kind, else the ༀ glyph on a cover and nothing
+ * on a back cover. `imageForItem` in bookletRender resolves the middle two.
  */
-export type SealSlot = 'cover' | 'backcover';
+export interface OrgImage {
+  id: number;
+  name: string;
+  width_mm: number | null;
+  height_mm: number | null;
+  default_for: 'cover' | 'backcover' | null;
+}
 
-export const getOrgSeal = (slot: SealSlot = 'cover'): Promise<OrgSeal> =>
-  jfetch<OrgSeal>(`${API_BASE}/org-seal?slot=${slot}`);
+export const getOrgImages = (): Promise<OrgImage[]> =>
+  jfetch<OrgImage[]>(`${API_BASE}/org-images`);
 // URL-loaded (<img src>) — a pure builder; call sites wrap it in `withUrlAuth` to add the
 // active org (or the print token in print mode), since an <img> sends no headers.
-export const orgSealUrl = (slot: SealSlot = 'cover') =>
-  `${API_BASE}/org-seal/file?slot=${slot}`;
-export async function uploadOrgSeal(file: File, slot: SealSlot = 'cover'): Promise<OrgSeal> {
+export const orgImageUrl = (imageId: number) => `${API_BASE}/org-images/${imageId}/file`;
+export async function uploadOrgImage(
+  file: File, name = '', defaultFor: 'cover' | 'backcover' | '' = '',
+): Promise<OrgImage> {
   const fd = new FormData();
   fd.append('file', file);
-  const res = await apiFetch(`${API_BASE}/org-seal?slot=${slot}`, { method: 'PUT', body: fd });
+  fd.append('name', name);
+  fd.append('default_for', defaultFor);
+  const res = await apiFetch(`${API_BASE}/org-images`, { method: 'POST', body: fd });
   return res.json();
 }
-/** Display size in mm; null on a dimension = the image's natural size. */
-export async function setOrgSealSize(
-  widthMm: number | null, heightMm: number | null, slot: SealSlot = 'cover',
-): Promise<OrgSeal> {
-  const res = await apiFetch(`${API_BASE}/org-seal?slot=${slot}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ width_mm: widthMm, height_mm: heightMm }),
+/**
+ * Rename, resize, or hand this image a role.
+ *
+ * `set_size` is what separates "leave the size alone" from "back to the image's natural
+ * size" — both arrive as a null `width_mm`, so without it a rename would silently reset a
+ * size somebody had set. `default_for: ''` releases the role; naming one takes it from
+ * whoever held it.
+ */
+export const patchOrgImage = (
+  imageId: number,
+  body: { name?: string; width_mm?: number | null; height_mm?: number | null;
+          default_for?: 'cover' | 'backcover' | ''; set_size?: boolean },
+): Promise<OrgImage> =>
+  jfetch<OrgImage>(`${API_BASE}/org-images/${imageId}`, {
+    method: 'PATCH', headers: J, body: JSON.stringify(body),
   });
-  return res.json();
-}
-export const deleteOrgSeal = (slot: SealSlot = 'cover') =>
-  apiFetch(`${API_BASE}/org-seal?slot=${slot}`, { method: 'DELETE' });
+export const deleteOrgImage = (imageId: number) =>
+  apiFetch(`${API_BASE}/org-images/${imageId}`, { method: 'DELETE' });
 
 /**
  * THE ORG'S COPYRIGHT TEMPLATE, one body per language.
@@ -655,6 +678,8 @@ export const patchDocumentItem = (itemId: number, body: {
   /** '' clears back to the default rule; 0 clears the cover's source text. */
   title_disposition?: 'page' | 'body' | 'own' | '';
   source_item_id?: number;
+  /** 0 clears it back to the org's default image for this kind of page. */
+  org_image_id?: number;
 }) =>
   jfetch<DocumentItem>(`${API_BASE}/document-items/${itemId}`,
     { method: 'PATCH', headers: J, body: JSON.stringify(body) });
