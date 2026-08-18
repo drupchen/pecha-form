@@ -5,22 +5,22 @@ import type { DocumentItem, OrgImage } from '../../api/client';
 /**
  * WHICH OF THE HOUSE'S IMAGES A PAGE PRINTS.
  *
- * An organization keeps a library — an order's seal, a centre's logo, a colophon mark — and any
- * cover or back cover picks one. A page that picks nothing gets the image marked for its kind,
- * which is exactly how the single org seal behaved before there was a library: that is what
- * makes growing this into a list a no-op for every booklet nobody has touched.
+ * An organization keeps TWO lists — its cover seals and its back-cover images — and a page is
+ * only ever offered, or resolved against, its own. A page that picks nothing gets the image
+ * marked as its list's stand-in, which is exactly how the single org seal behaved before there
+ * were lists: that is what makes growing them a no-op for every booklet nobody has touched.
  *
- * The booklet's OWN uploaded image outranks all of this and is resolved by the caller — only
- * it carries a resize grip, so only it is the page's to move.
+ * The booklet's OWN uploaded image outranks all of this and is resolved by the caller.
  */
 const img = (over: Partial<OrgImage> & { id: number }): OrgImage =>
-  ({ name: `image ${over.id}`, width_mm: null, height_mm: null, default_for: null, ...over });
+  ({ kind: 'cover', name: `image ${over.id}`, width_mm: null, height_mm: null,
+     is_default: false, ...over });
 
 const page = (kind: string, over: Partial<DocumentItem> = {}): DocumentItem =>
   ({ id: 1, document_id: 1, position: 0, kind, ...over } as DocumentItem);
 
-const seal = img({ id: 10, name: 'Order seal', default_for: 'cover' });
-const mark = img({ id: 11, name: 'Colophon mark', default_for: 'backcover' });
+const seal = img({ id: 10, name: 'Order seal', is_default: true });
+const mark = img({ id: 11, kind: 'backcover', name: 'Colophon mark', is_default: true });
 const logo = img({ id: 12, name: 'Centre logo' });
 const library = [seal, mark, logo];
 
@@ -34,9 +34,10 @@ describe('the org image a page prints', () => {
     expect(orgImageFor(library, page('backcover'), 'backcover')).toBe(mark);
   });
 
-  it('lets a page pick an image that stands in for the OTHER kind', () => {
-    // The library is flat: a mark is a mark, and a house may want its colophon on a cover.
-    expect(orgImageFor(library, page('cover', { org_image_id: 11 }), 'cover')).toBe(mark);
+  it('refuses an image from the OTHER list, falling back to its own stand-in', () => {
+    // The lists are independent: a cover can no more print a back-cover image by a stale id
+    // than by choosing one, so `11` resolves as if nothing had been picked.
+    expect(orgImageFor(library, page('cover', { org_image_id: 11 }), 'cover')).toBe(seal);
   });
 
   it('falls back to the default when the picked image is gone', () => {
@@ -45,11 +46,14 @@ describe('the org image a page prints', () => {
     expect(orgImageFor(library, page('cover', { org_image_id: 999 }), 'cover')).toBe(seal);
   });
 
-  it('is nothing when the role has no default and the page picked none', () => {
+  it('is nothing when the list has no stand-in and the page picked none', () => {
     // A legitimate state: the caller then draws the ༀ glyph on a cover, and nothing at all on
     // a back cover, which has no ornament standing behind it.
     expect(orgImageFor([logo], page('cover'), 'cover')).toBeNull();
-    expect(orgImageFor(library, page('backcover'), 'cover')).toBe(seal);
+  });
+
+  it('reads only its own list, however full the other is', () => {
+    expect(orgImageFor([seal, logo], page('backcover'), 'backcover')).toBeNull();
   });
 
   it('is nothing when the library is empty', () => {

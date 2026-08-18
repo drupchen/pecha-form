@@ -532,23 +532,27 @@ export const deleteOrgFont = (fontId: number) =>
 /** The org's cover SEAL — a template-level image printed where the ༀ ornament sits, on every
  *  booklet's cover. A booklet's own cover image (uploadItemImage) overrides it. */
 /**
- * THE ORG'S IMAGE LIBRARY — seals, logos and marks the whole house prints.
+ * THE ORG'S IMAGE LISTS — its cover seals and its back-cover images, kept apart.
  *
- * A house keeps several (an order's seal, a centre's logo, a colophon mark) and any cover or
- * back cover picks one by id. `default_for` names the image a page that picks NOTHING gets,
- * at most one per role — which is how the single org seal behaved before there was a library,
- * and why nothing on an untouched booklet moved when this became a list.
+ * Two independent lists, each as long as the house needs. A page is only ever offered its
+ * own: a cover picker lists cover seals and nothing else. `kind` is fixed at upload — the
+ * lists do not exchange images; upload it again if it belongs in both.
+ *
+ * `is_default` marks the one image of a list that a page picking NOTHING gets, which is how
+ * the single org seal behaved before there were lists, and why nothing on an untouched
+ * booklet moved when they grew.
  *
  * Precedence on the page: the booklet's own uploaded image, else the org image that page
- * picked, else the org's default for the page's kind, else the ༀ glyph on a cover and nothing
- * on a back cover. `imageForItem` in bookletRender resolves the middle two.
+ * picked, else its list's stand-in, else the ༀ glyph on a cover and nothing on a back cover.
+ * `orgImageFor` in bookletRender resolves the middle two.
  */
 export interface OrgImage {
   id: number;
+  kind: 'cover' | 'backcover';
   name: string;
   width_mm: number | null;
   height_mm: number | null;
-  default_for: 'cover' | 'backcover' | null;
+  is_default: boolean;
 }
 
 export const getOrgImages = (): Promise<OrgImage[]> =>
@@ -557,27 +561,27 @@ export const getOrgImages = (): Promise<OrgImage[]> =>
 // active org (or the print token in print mode), since an <img> sends no headers.
 export const orgImageUrl = (imageId: number) => `${API_BASE}/org-images/${imageId}/file`;
 export async function uploadOrgImage(
-  file: File, name = '', defaultFor: 'cover' | 'backcover' | '' = '',
+  file: File, name = '', kind: 'cover' | 'backcover' = 'cover',
 ): Promise<OrgImage> {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('name', name);
-  fd.append('default_for', defaultFor);
+  fd.append('kind', kind);
   const res = await apiFetch(`${API_BASE}/org-images`, { method: 'POST', body: fd });
   return res.json();
 }
 /**
- * Rename, resize, or hand this image a role.
+ * Rename, resize, or make this image its list's stand-in.
  *
  * `set_size` is what separates "leave the size alone" from "back to the image's natural
  * size" — both arrive as a null `width_mm`, so without it a rename would silently reset a
- * size somebody had set. `default_for: ''` releases the role; naming one takes it from
- * whoever held it.
+ * size somebody had set. `is_default: true` claims the role from whoever held it *within the
+ * same list*; the other list is untouched.
  */
 export const patchOrgImage = (
   imageId: number,
   body: { name?: string; width_mm?: number | null; height_mm?: number | null;
-          default_for?: 'cover' | 'backcover' | ''; set_size?: boolean },
+          is_default?: boolean; set_size?: boolean },
 ): Promise<OrgImage> =>
   jfetch<OrgImage>(`${API_BASE}/org-images/${imageId}`, {
     method: 'PATCH', headers: J, body: JSON.stringify(body),

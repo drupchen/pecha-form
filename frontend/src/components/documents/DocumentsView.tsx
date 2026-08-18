@@ -25,16 +25,17 @@ import {
 } from './bookletRender';
 import { cleanSpecimenHtml } from './StyleStudio';
 import { RichLine, bodyToRich } from './RichLine';
-import { orgImageFor } from './bookletRender';
+import { orgImageFor, orgImagesOf } from './bookletRender';
 
 /** Furniture kinds with an editor panel of their own. (An aligned text has one too, but by
  *  carrying a text rather than by its kind — see `editable` at the item row.) */
 const EDITABLE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
-/** …and those that carry an IMAGE. One list until a page appeared that is edited but has no
- *  picture — the inner cover, which is the cover without its seal — so the two questions are
- *  now asked separately. Mirrors the backend's `IMAGE_KINDS`: the panel must not offer an
- *  upload the API refuses. */
-const IMAGE_FURNITURE: DocumentItemKind[] = ['cover', 'image_page', 'backcover'];
+/** …and those whose picture the BOOKLET uploads. Only an image page: its picture is its own
+ *  content. A cover and a back cover print the organization's — chosen from its lists, never
+ *  uploaded here — so there is nothing on those pages for an uploader to do. */
+const IMAGE_FURNITURE: DocumentItemKind[] = ['image_page'];
+/** Pages that print one of the ORGANIZATION's images, each choosing from its own list. */
+const ORG_IMAGE_PAGES: DocumentItemKind[] = ['cover', 'backcover'];
 
 const KIND_META: Record<DocumentItemKind, { label: string; icon: React.ReactNode }> = {
   cover: { label: 'Cover', icon: <BookOpen size={14} /> },
@@ -1078,67 +1079,80 @@ export const DocumentsView: React.FC = () => {
                             </div>
                           </div>
                         )}
-                        {/* THE HOUSE'S IMAGE, as opposed to this booklet's own above. The
-                            organization keeps a library of seals and marks; a cover or back
-                            cover prints the one it picks here, and the one marked for its kind
-                            when it picks none. Offered only where a page has a place for one —
-                            an image page carries its own picture and nothing else. */}
-                        {(it.kind === 'cover' || it.kind === 'backcover') && (
-                          <div className="flex items-start gap-2 pb-1.5 mb-0.5 text-[11px]"
-                               style={{ borderBottom: '1px solid var(--cline)' }}>
-                            <span className="text-ink-soft pt-1 shrink-0">House image</span>
-                            {orgImages.length === 0 ? (
-                              <span className="text-ink-soft pt-1">
-                                None yet — add one in Admin → Cover &amp; back cover images.
-                              </span>
-                            ) : (<>
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                {(() => {
-                                  const role = it.kind === 'cover' ? 'cover' : 'backcover';
-                                  const shown = orgImageFor(orgImages, it, role);
-                                  const chips = [
-                                    { id: null as number | null, label: 'the house’s' },
-                                    ...orgImages.map(i => ({ id: i.id as number | null,
-                                                             label: i.name || `#${i.id}` })),
-                                  ];
-                                  return (<>
-                                    {/* Each choice shows the picture, because that is what is
-                                        being chosen — a list of names is a list of guesses. */}
-                                    {chips.map(c => {
-                                      const on = (it.org_image_id ?? null) === c.id;
-                                      return (
-                                        <button key={String(c.id)} type="button"
-                                                onClick={() => void setOrgImage(it, c.id)}
-                                                className={`px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${
-                                                  on ? 'bg-lapis text-white' : 'text-lapis hover:bg-cream'}`}
-                                                style={{ border: '1px solid var(--cline)' }}
-                                                title={c.id == null
-                                                  ? 'Print whichever image the organization marked for this kind of page'
-                                                  : 'Print this image on this page'}>
-                                          {c.id != null && (
-                                            <img src={withUrlAuth(orgImageUrl(c.id))} alt=""
-                                                 className="h-4 w-4 object-contain rounded-sm bg-white" />
-                                          )}
-                                          {c.label}
-                                        </button>
-                                      );
-                                    })}
-                                    {/* What the page will actually show, said plainly: the
-                                        picked image, or — having picked none — the house's
-                                        default, which may be nothing at all. */}
-                                    <span className="text-ink-soft pt-0.5">
-                                      {it.has_image
-                                        ? '· this booklet’s own image wins'
-                                        : shown
-                                          ? <>· prints <span className="text-ink">{shown.name || `#${shown.id}`}</span></>
-                                          : (it.kind === 'cover' ? '· prints the ༀ glyph' : '· prints no image')}
-                                    </span>
-                                  </>);
-                                })()}
+                        {/* THE PAGE'S IMAGE — the organization's, chosen from the list for
+                            this kind of page. There is no uploader here: a cover prints a
+                            house seal and a back cover a house mark, and both belong to the
+                            organization rather than to one booklet (Admin → Cover & back cover
+                            images). The box shows what will actually print, so choosing in the
+                            menu fills it in. */}
+                        {ORG_IMAGE_PAGES.includes(it.kind) && (() => {
+                          const kind = it.kind === 'cover' ? 'cover' : 'backcover';
+                          const list = orgImagesOf(orgImages, kind);
+                          const shown = orgImageFor(orgImages, it, kind);
+                          const label = kind === 'cover' ? 'Cover seal' : 'Back-cover image';
+                          const fallback = list.find(i => i.is_default);
+                          return (
+                            <div className="flex items-start gap-3 pb-1.5 mb-0.5"
+                                 style={{ borderBottom: '1px solid var(--cline)' }}>
+                              {/* The image location, filled by whatever the page resolves to:
+                                  the legacy own upload if this booklet still has one, else the
+                                  chosen house image, else nothing. */}
+                              {it.has_image ? (
+                                <img src={withUrlAuth(`${itemImageUrl(it.id)}?v=${imgBust}`)} alt=""
+                                     className="h-16 w-16 object-contain rounded bg-white shrink-0"
+                                     style={{ border: '1px solid var(--cline)' }} />
+                              ) : shown ? (
+                                <img src={withUrlAuth(orgImageUrl(shown.id))} alt=""
+                                     className="h-16 w-16 object-contain rounded bg-white shrink-0"
+                                     style={{ border: '1px solid var(--cline)' }} />
+                              ) : (
+                                <div className="h-16 w-16 rounded bg-white shrink-0 flex items-center justify-center text-[10px] text-ink-soft text-center px-1"
+                                     style={{ border: '1px dashed var(--cline)' }}>
+                                  {kind === 'cover' ? 'ༀ glyph' : 'no image'}
+                                </div>
+                              )}
+                              <div className="flex flex-col gap-1 min-w-0">
+                                <span className="text-[11px] text-ink-soft">{label}</span>
+                                {list.length === 0 ? (
+                                  <span className="text-[11px] text-ink-soft">
+                                    The organization has no {label.toLowerCase()}s yet —
+                                    add one in Admin → Cover &amp; back cover images.
+                                  </span>
+                                ) : (
+                                  <select
+                                    value={it.org_image_id ?? ''}
+                                    disabled={!canEditDocs}
+                                    onChange={e => void setOrgImage(
+                                      it, e.target.value === '' ? null : Number(e.target.value))}
+                                    className="px-2 py-1 rounded-md bg-white text-xs"
+                                    style={{ border: '1px solid var(--cline)' }}>
+                                    <option value="">
+                                      {fallback
+                                        ? `The organization’s — ${fallback.name || `#${fallback.id}`}`
+                                        : 'The organization’s — none set'}
+                                    </option>
+                                    {list.map(i => (
+                                      <option key={i.id} value={i.id}>{i.name || `#${i.id}`}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                {/* A booklet that uploaded its own picture before these became
+                                    the organization's still prints it — say so, and offer the
+                                    way back rather than leaving an image nothing can explain. */}
+                                {it.has_image && (
+                                  <span className="text-[11px] text-vermilion flex items-center gap-1.5">
+                                    This page carries its own uploaded image, which wins.
+                                    <button type="button" onClick={() => void onRemoveImage(it.id)}
+                                            disabled={imgBusy}
+                                            className="text-lapis hover:underline disabled:opacity-40">
+                                      remove it
+                                    </button>
+                                  </span>
+                                )}
                               </div>
-                            </>)}
-                          </div>
-                        )}
+                            </div>
+                          );
+                        })()}
                         {hasTitleBlocks(it) && (
                           <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>

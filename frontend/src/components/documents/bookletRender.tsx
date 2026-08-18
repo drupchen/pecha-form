@@ -1334,24 +1334,30 @@ export const FurnitureContent: React.FC<{
   return null;
 };
 
+/** One of the org's two image lists: its cover seals, or its back-cover images. A page is
+ *  only ever offered — and only ever resolves against — its own. */
+export const orgImagesOf = (images: OrgImage[], kind: 'cover' | 'backcover') =>
+  images.filter((i) => i.kind === kind);
+
 /**
  * WHICH ORG IMAGE A PAGE PRINTS, or null.
  *
- * The page's own pick wins; failing that, the org's default for this kind of page — which is
- * how the single org seal behaved before there was a library, and so what an untouched booklet
- * still gets. A pick whose image has since been deleted resolves to nothing here and falls
- * through to the default, the same as never having picked (the delete endpoint clears the
- * reference too; this is the belt to that braces).
+ * The page's own pick wins; failing that, its list's stand-in — which is how the single org
+ * seal behaved before there were lists, and so what an untouched booklet still gets. A pick
+ * that resolves to nothing (the image was deleted, or belongs to the other list) falls through
+ * to the stand-in, the same as never having picked: the lists are independent, so a cover can
+ * no more print a back-cover image by a stale id than by choosing one.
  *
  * The booklet's OWN uploaded image is not considered here — it outranks both, and the caller
- * checks it first, because only it carries a resize grip.
+ * checks it first.
  */
 export function orgImageFor(
-  images: OrgImage[], item: DocumentItem, role: 'cover' | 'backcover',
+  images: OrgImage[], item: DocumentItem, kind: 'cover' | 'backcover',
 ): OrgImage | null {
+  const list = orgImagesOf(images, kind);
   const picked = item.org_image_id != null
-    ? images.find((i) => i.id === item.org_image_id) : undefined;
-  return picked ?? images.find((i) => i.default_for === role) ?? null;
+    ? list.find((i) => i.id === item.org_image_id) : undefined;
+  return picked ?? list.find((i) => i.is_default) ?? null;
 }
 
 /** A furniture page as a facing-page mock (bench use). */

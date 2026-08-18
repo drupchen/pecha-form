@@ -272,7 +272,7 @@ sidebar). Two arrangements live here, and confusing them is the trap:
 | | Mechanism | Editing it later |
 |---|---|---|
 | Styles, page geometry, fonts (`style_roles`, `org_layout`, `org_fonts`) | inherited | changes every booklet |
-| Cover & back-cover images (`org_images`, a library) | inherited | changes every booklet that prints it |
+| Cover seals and back-cover images (`org_images`, two lists) | inherited | changes every booklet that prints it |
 | **Copyright text** (`org_copyright`, one body per language) | **copied** | changes only the NEXT booklet |
 
 **The copyright is a template, not an inheritance.** A booklet's copyright names its own
@@ -282,21 +282,32 @@ the org's body is copied in — by `_seed_copyright` when a `backcover` item is 
 Seeding hangs off the **back cover**, not off document creation: a new booklet has no languages
 until they are chosen, so at creation there is nothing to seed for.
 
-**The images are the opposite.** `org_images` is a flat LIBRARY — an order's seal, a centre's
-logo, a colophon mark — and any cover or back cover picks one by id
-(`document_items.org_image_id`). Flat deliberately: a mark is a mark, and a house may want its
-colophon on a cover. Resolution is one function, `orgImageFor`:
+**The images are the opposite.** `org_images` holds TWO independent lists, `kind = 'cover'`
+(the cover seals) and `kind = 'backcover'`, and a page picks from its own by id
+(`document_items.org_image_id`). `kind` is fixed at upload — the lists do not exchange images,
+so a cover picker offers seals and nothing else. Resolution is one function, `orgImageFor`:
 
-> the page's own uploaded image (`document_images`) → the org image the page **picked** → the
-> org image marked `default_for` the page's kind → the ༀ glyph on a cover, **nothing** on a
-> back cover (it has no ornament standing behind it).
+> the page's own uploaded image (`document_images`) → the org image the page **picked, from its
+> own list** → that list's `is_default` stand-in → the ༀ glyph on a cover, **nothing** on a back
+> cover (it has no ornament standing behind it).
 
-`default_for` is the whole compatibility story: at most one image per role (a partial unique
-index), and it makes a library behave exactly as the single org seal did for a booklet nobody
-has touched. `_migrate_org_seal_to_images` carries each old row in as a named image holding its
-slot's role, and runs against either shape `org_seal` was left in. Deleting an image clears the
-pages that named it, so a stale id can never leave a hole — and `orgImageFor` falls back anyway.
-The freeze writes the image id into `document_version_asset.ref`, which was already free text.
+`is_default` is the whole compatibility story: at most one per (org, kind) — a partial unique
+index — and it makes the lists behave exactly as the single org seal did for a booklet nobody
+has touched. A page's id that resolves to nothing (deleted, or belonging to the other list)
+falls through to the stand-in, so a cover can no more print a back-cover image by a stale id
+than by choosing one.
+
+Only `image_page` still carries a booklet's OWN uploaded picture; a cover and a back cover have
+no uploader, because those images belong to the organization. A booklet that uploaded one before
+that was true still prints it (it outranks the org's) and the panel says so and offers to remove
+it, rather than leaving an image nothing can explain.
+
+Two migrations, run in order: `_migrate_org_seal_to_images` carries the old single seal(s) in as
+named images holding their slot's role (coping with either shape `org_seal` was left in), then
+`_rebuild_org_images_kinds` splits the flat library in two. **The partial unique index is
+created in `init_db` after those run, not in `SCHEMA`** — `CREATE TABLE IF NOT EXISTS` leaves an
+older table alone, and the index would be built against a column it has not grown yet. The
+freeze writes the image id into `document_version_asset.ref`, which was already free text.
 
 **Template variables** resolve in `applyDocVars`, called only from `FurnitureLines` (so: the
 back cover and image captions, not titles or body text). `{{version}}` and `{{year}}` are both

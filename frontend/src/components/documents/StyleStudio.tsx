@@ -195,7 +195,7 @@ export const StyleStudio: React.FC<{
 
   useEffect(() => {
     void getOrgImages()
-      .then(l => setCoverImage(l.find(i => i.default_for === 'cover') ?? null))
+      .then(l => setCoverImage(l.find(i => i.kind === 'cover' && i.is_default) ?? null))
       .catch(() => {});
   }, []);
   useEffect(() => { void getOrgLayout().then(setOrgLayout).catch(() => {}); }, []);

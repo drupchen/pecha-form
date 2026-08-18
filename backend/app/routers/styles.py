@@ -347,40 +347,49 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 class ImageOut(BaseModel):
     id: int
+    # Which LIST this image is in: 'cover' (the cover seals) or 'backcover'. Fixed at upload —
+    # the two lists are independent, and a page is only ever offered its own.
+    kind: str = "cover"
     name: str = ""
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
-    # 'cover' | 'backcover' | None — which page kind gets this image when it picks none.
-    default_for: Optional[str] = None
+    # True on the one image of its list that a page picking nothing gets.
+    is_default: bool = False
 
 
 class ImagePatch(BaseModel):
     name: Optional[str] = None
     width_mm: Optional[float] = None
     height_mm: Optional[float] = None
-    # '' releases the role; 'cover'/'backcover' claims it from whoever held it.
-    default_for: Optional[str] = None
+    # True claims its list's stand-in role from whoever held it; False releases it.
+    is_default: Optional[bool] = None
     # Distinguish "leave the size alone" from "back to the image's natural size": both arrive
     # as a null width_mm otherwise, and PATCHing a name would silently reset the size.
     set_size: bool = False
 
 
-DEFAULT_ROLES = ("cover", "backcover")
+IMAGE_KINDS = ("cover", "backcover")
 
 
 def _image_row(row) -> ImageOut:
-    return ImageOut(id=row["id"], name=row["name"] or "", width_mm=row["width_mm"],
-                    height_mm=row["height_mm"], default_for=row["default_for"])
+    return ImageOut(id=row["id"], kind=row["kind"], name=row["name"] or "",
+                    width_mm=row["width_mm"], height_mm=row["height_mm"],
+                    is_default=bool(row["is_default"]))
+
+
+_IMAGE_COLS = "id, kind, name, width_mm, height_mm, is_default"
 
 
 @router.get("/org-images", response_model=list[ImageOut])
 def list_org_images(org_id: int = Depends(active_org_id)):
-    """The library, without the bytes — a picker needs names and sizes, not blobs."""
+    """Both lists, without the bytes — a picker needs names and sizes, not blobs. They come
+    back in one call and the caller splits them by `kind`, so a page that shows one list and a
+    settings panel that shows both are looking at exactly the same data."""
     conn = get_db()
     try:
         return [_image_row(r) for r in conn.execute(
-            "SELECT id, name, width_mm, height_mm, default_for FROM org_images "
-            "WHERE org_id = ? ORDER BY id", (org_id,)).fetchall()]
+            f"SELECT {_IMAGE_COLS} FROM org_images WHERE org_id = ? ORDER BY kind, id",
+            (org_id,)).fetchall()]
     finally:
         conn.close()
 
@@ -401,8 +410,10 @@ def get_org_image_file(image_id: int):
 
 @router.post("/org-images", response_model=ImageOut)
 async def upload_org_image(file: UploadFile = File(...), name: str = Form(""),
-                           default_for: str = Form(""),
+                           kind: str = Form("cover"),
                            org_id: int = Depends(active_org_id)):
+    if kind not in IMAGE_KINDS:
+        raise HTTPException(400, f"kind must be one of {', '.join(IMAGE_KINDS)}")
     data = await file.read()
     mime = file.content_type or ""
     if mime not in ALLOWED_IMAGE_MIME:
@@ -411,27 +422,20 @@ async def upload_org_image(file: UploadFile = File(...), name: str = Form(""),
         raise HTTPException(400, "Empty file")
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(413, "Image too large (max 10 MB)")
-    if default_for and default_for not in DEFAULT_ROLES:
-        raise HTTPException(400, f"default_for must be one of {', '.join(DEFAULT_ROLES)}")
     label = (name or "").strip() or (file.filename or "Image")
     conn = get_db()
     try:
-        # A house with no image at all gets its first upload as the cover default, so the
-        # library behaves like the single seal did until there is actually a choice to make.
-        role = default_for or None
-        if role is None and not conn.execute(
-                "SELECT 1 FROM org_images WHERE org_id = ?", (org_id,)).fetchone():
-            role = "cover"
-        if role:
-            conn.execute("UPDATE org_images SET default_for = NULL "
-                         "WHERE org_id = ? AND default_for = ?", (org_id, role))
+        # The first image of an empty list becomes its stand-in, so a house that uploads one
+        # seal and never opens this panel again gets it on every cover — which is what the
+        # single org seal did, and what someone adding their first image plainly means.
+        first = not conn.execute("SELECT 1 FROM org_images WHERE org_id = ? AND kind = ?",
+                                 (org_id, kind)).fetchone()
         cur = conn.execute(
-            "INSERT INTO org_images (org_id, name, mime, data, default_for) "
-            "VALUES (?, ?, ?, ?, ?)", (org_id, label, mime, data, role))
+            "INSERT INTO org_images (org_id, kind, name, mime, data, is_default) "
+            "VALUES (?, ?, ?, ?, ?, ?)", (org_id, kind, label, mime, data, 1 if first else 0))
         conn.commit()
         return _image_row(conn.execute(
-            "SELECT id, name, width_mm, height_mm, default_for FROM org_images WHERE id = ?",
-            (cur.lastrowid,)).fetchone())
+            f"SELECT {_IMAGE_COLS} FROM org_images WHERE id = ?", (cur.lastrowid,)).fetchone())
     finally:
         conn.close()
 
@@ -441,7 +445,7 @@ def patch_org_image(image_id: int, payload: ImagePatch,
                     org_id: int = Depends(active_org_id)):
     conn = get_db()
     try:
-        row = conn.execute("SELECT org_id FROM org_images WHERE id = ?", (image_id,)).fetchone()
+        row = conn.execute("SELECT kind FROM org_images WHERE id = ?", (image_id,)).fetchone()
         if not row:
             raise HTTPException(404, "No such image")
         if payload.name is not None:
@@ -450,23 +454,20 @@ def patch_org_image(image_id: int, payload: ImagePatch,
         if payload.set_size:
             conn.execute("UPDATE org_images SET width_mm = ?, height_mm = ? WHERE id = ?",
                          (payload.width_mm, payload.height_mm, image_id))
-        if payload.default_for is not None:
-            role = payload.default_for or None
-            if role is not None and role not in DEFAULT_ROLES:
-                raise HTTPException(400, f"default_for must be one of {', '.join(DEFAULT_ROLES)}")
-            if role:
-                # One image per role: claiming it takes it off whoever held it. Done as a
-                # release-then-claim rather than a swap — a role with no image is a legitimate
-                # state (every page picks for itself), so nothing needs to be handed back.
-                conn.execute("UPDATE org_images SET default_for = NULL "
-                             "WHERE org_id = ? AND default_for = ?", (org_id, role))
-            conn.execute("UPDATE org_images SET default_for = ? WHERE id = ?", (role, image_id))
+        if payload.is_default is not None:
+            if payload.is_default:
+                # One stand-in per list: claiming it takes it off whoever held it. Released
+                # rather than swapped — a list with no stand-in is legitimate (every page then
+                # picks for itself), so nothing needs handing back.
+                conn.execute("UPDATE org_images SET is_default = 0 "
+                             "WHERE org_id = ? AND kind = ?", (org_id, row["kind"]))
+            conn.execute("UPDATE org_images SET is_default = ? WHERE id = ?",
+                         (1 if payload.is_default else 0, image_id))
         conn.execute("UPDATE org_images SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                      (image_id,))
         conn.commit()
         return _image_row(conn.execute(
-            "SELECT id, name, width_mm, height_mm, default_for FROM org_images WHERE id = ?",
-            (image_id,)).fetchone())
+            f"SELECT {_IMAGE_COLS} FROM org_images WHERE id = ?", (image_id,)).fetchone())
     finally:
         conn.close()
 
@@ -475,8 +476,8 @@ def patch_org_image(image_id: int, payload: ImagePatch,
 def delete_org_image(image_id: int):
     conn = get_db()
     try:
-        # Pages that picked it fall back to the default for their kind, which is what a page
-        # that never picked anything already does — so a deleted image never leaves a hole.
+        # Pages that picked it fall back to their list's stand-in, which is what a page that
+        # never picked anything already does — so a deletion never leaves a hole.
         conn.execute("UPDATE document_items SET org_image_id = NULL WHERE org_image_id = ?",
                      (image_id,))
         conn.execute("DELETE FROM org_images WHERE id = ?", (image_id,))

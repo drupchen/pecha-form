@@ -818,34 +818,37 @@ CREATE TABLE IF NOT EXISTS org_fonts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- THE ORG'S IMAGE LIBRARY — seals, logos and marks, part of the template like the fonts.
--- A house has several (an order's seal, a centre's logo, a colophon mark), and any of them may
--- appear on any cover or back cover, so this is a flat library rather than one image per role.
--- A booklet page picks one by id (`document_items.org_image_id`); `name` is what that picker
--- shows. width/height in mm (NULL = the image's natural size).
+-- THE ORG'S IMAGE LIBRARIES — part of the template, like the fonts. TWO of them, kept apart:
+--   kind='cover'      the cover seals (an order's seal, a centre's logo, a lineage mark)
+--   kind='backcover'  the back-cover images
+-- A house has several of each, and a page is only ever offered its own kind — a cover picker
+-- lists cover seals and nothing else. `kind` is fixed when the image is uploaded: the two
+-- lists are independent, so an image does not migrate between them; upload it again if it
+-- belongs in both. `name` is what the picker shows; width/height in mm (NULL = natural size).
 --
--- `default_for` is what a page that picks NOTHING gets — 'cover' prints at the ༀ placeholder
--- on every booklet's cover, 'backcover' on every back cover — which is how the single org seal
--- behaved before there was a library, and why nothing on an existing booklet moved when this
--- table grew. At most one image per org may claim each role (the partial unique index below);
--- an image claiming neither simply waits in the library to be chosen.
+-- `is_default` marks the one image of a list that a page which picks NOTHING gets — at most
+-- one per (org, kind), see the partial unique index. That is how the single org seal behaved
+-- before there were libraries, and it is why nothing on an existing booklet moved when they
+-- grew. A list may have no default at all, in which case every page chooses for itself.
 --
 -- Precedence on the page, in full: the booklet's OWN uploaded image (document_images), else
--- the org image this page picked, else the org's default for the page's kind, else — on a
--- cover — the ༀ glyph, and on a back cover nothing at all.
+-- the org image this page picked, else its list's default, else — on a cover — the ༀ glyph,
+-- and on a back cover nothing at all.
 CREATE TABLE IF NOT EXISTS org_images (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL DEFAULT 'cover' CHECK (kind IN ('cover', 'backcover')),
     name       TEXT NOT NULL DEFAULT '',
     mime       TEXT NOT NULL,
     data       BLOB NOT NULL,
     width_mm   REAL,
     height_mm  REAL,
-    default_for TEXT CHECK (default_for IN ('cover', 'backcover')),
+    is_default INTEGER NOT NULL DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_org_images_default
-    ON org_images(org_id, default_for) WHERE default_for IS NOT NULL;
+-- The "one stand-in per list" index is NOT here: on a database still holding the older shape,
+-- CREATE TABLE IF NOT EXISTS leaves that table alone and the index would be built against a
+-- column it has not grown yet. It is created after the migrations instead (see init_db).
 
 -- The org's page format and guides: sheet size and the four margins the text block and the
 -- binding/folio guides are all drawn from. Geometry resolves default ← org ← document, the
@@ -1290,10 +1293,10 @@ def _migrate_org_seal_to_images(conn) -> None:
     """Carry the org's seal(s) into the image LIBRARY, then drop the old table.
 
     `org_seal` held one image per role — first one per org, later one per slot. `org_images`
-    holds as many as a house has, each named and each choosable per page, with `default_for`
-    naming the one a page that chooses nothing still gets. So every carried row keeps doing
-    exactly what it did: the cover seal becomes the cover default, the back-cover image the
-    back-cover default, and no existing booklet changes by a pixel.
+    holds as many of each as a house has, each named and each choosable per page, with
+    `is_default` marking the one a page that chooses nothing still gets. So every carried row
+    keeps doing exactly what it did: the cover seal becomes the cover list's default, the
+    back-cover image the back-cover list's, and no existing booklet changes by a pixel.
 
     Runs whichever shape `org_seal` was left in — before or after the slot column — so a
     database that skipped a release migrates in one step. No-op once `org_seal` is gone.
@@ -1309,11 +1312,50 @@ def _migrate_org_seal_to_images(conn) -> None:
     for row in conn.execute(sel).fetchall():
         slot = row["slot"] or "cover"
         conn.execute(
-            "INSERT INTO org_images (org_id, name, mime, data, width_mm, height_mm, default_for) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (row["org_id"], labels.get(slot, slot), row["mime"], row["data"],
-             row["width_mm"], row["height_mm"], slot))
+            "INSERT INTO org_images (org_id, kind, name, mime, data, width_mm, height_mm, "
+            "is_default) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            (row["org_id"], slot, labels.get(slot, slot), row["mime"], row["data"],
+             row["width_mm"], row["height_mm"]))
     conn.execute("DROP TABLE org_seal")
+
+
+def _rebuild_org_images_kinds(conn) -> None:
+    """Split the flat image library in two — cover seals and back-cover images, kept apart.
+
+    The library shipped flat, with a nullable `default_for` doubling as "which role, if any,
+    this image stands in for". That let one image serve both pages, and it made the pickers
+    offer a cover every mark the house owns rather than its seals. `kind` says which list an
+    image is IN (fixed at upload; the lists are independent) and `is_default` says whether it
+    is that list's stand-in — two questions that were being asked with one column.
+
+    `default_for` NULL meant "in the library, standing in for nothing", and the library was
+    the cover ornament before it was anything else — so an unclaimed image lands among the
+    cover seals, which is where it was already being offered. No-op once `kind` exists.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(org_images)")}
+    if not cols or "kind" in cols:
+        return
+    conn.execute("""
+        CREATE TABLE org_images_new (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            org_id     INTEGER NOT NULL DEFAULT 1 REFERENCES organizations(id) ON DELETE CASCADE,
+            kind       TEXT NOT NULL DEFAULT 'cover' CHECK (kind IN ('cover', 'backcover')),
+            name       TEXT NOT NULL DEFAULT '',
+            mime       TEXT NOT NULL,
+            data       BLOB NOT NULL,
+            width_mm   REAL,
+            height_mm  REAL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+    conn.execute("""
+        INSERT INTO org_images_new
+            (id, org_id, kind, name, mime, data, width_mm, height_mm, is_default, updated_at)
+        SELECT id, org_id, COALESCE(default_for, 'cover'), name, mime, data, width_mm,
+               height_mm, CASE WHEN default_for IS NULL THEN 0 ELSE 1 END, updated_at
+        FROM org_images""")
+    conn.execute("DROP TABLE org_images")
+    conn.execute("ALTER TABLE org_images_new RENAME TO org_images")
 
 
 def _rebuild_text_groups_org(conn) -> None:
@@ -2088,8 +2130,13 @@ def init_db():
         # retries to re-render). The table only exists after the schema above.
         conn.execute("UPDATE document_versions SET status = 'failed', "
                      "error = 'interrupted by restart' WHERE status = 'rendering'")
-        # The org's seal became a LIBRARY of images, each choosable per page.
+        # The org's seal became a LIBRARY of images, each choosable per page…
         _migrate_org_seal_to_images(conn)
+        # …and that library became TWO, cover seals and back-cover images kept apart.
+        _rebuild_org_images_kinds(conn)
+        # Only now can the index exist: before the rebuild the column it indexes may not.
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_org_images_default "
+                     "ON org_images(org_id, kind) WHERE is_default = 1")
         # The copyright page folded into the back cover — move its content over and drop it.
         _fold_copyright_into_backcover(conn)
         # The cover image's placement became shared across editions — fold the per-edition rows.
