@@ -430,9 +430,29 @@ async def upload_org_image(file: UploadFile = File(...), name: str = Form(""),
         # single org seal did, and what someone adding their first image plainly means.
         first = not conn.execute("SELECT 1 FROM org_images WHERE org_id = ? AND kind = ?",
                                  (org_id, kind)).fetchone()
+
+        width_mm = None
+        height_mm = None
+        if kind == "backcover":
+            from .documents import DEFAULT_LAYOUT_CONFIG
+            org_conf = conn.execute("SELECT config FROM org_layout WHERE org_id = ?", (org_id,)).fetchone()
+            conf = dict(DEFAULT_LAYOUT_CONFIG)
+            if org_conf and org_conf["config"]:
+                conf.update(json.loads(org_conf["config"]))
+            
+            width_mm = round(conf["page_width_mm"] - conf["margin_bind_mm"] - conf["margin_outer_mm"], 1)
+            try:
+                from PIL import Image
+                with Image.open(io.BytesIO(data)) as img:
+                    px_w, px_h = img.size
+                    if px_w > 0:
+                        height_mm = round(width_mm * (px_h / px_w), 1)
+            except Exception:
+                pass
+
         cur = conn.execute(
-            "INSERT INTO org_images (org_id, kind, name, mime, data, is_default) "
-            "VALUES (?, ?, ?, ?, ?, ?)", (org_id, kind, label, mime, data, 1 if first else 0))
+            "INSERT INTO org_images (org_id, kind, name, mime, data, is_default, width_mm, height_mm) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (org_id, kind, label, mime, data, 1 if first else 0, width_mm, height_mm))
         conn.commit()
         return _image_row(conn.execute(
             f"SELECT {_IMAGE_COLS} FROM org_images WHERE id = ?", (cur.lastrowid,)).fetchone())
