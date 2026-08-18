@@ -937,6 +937,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT,            -- argon2id; NULL = Google-only account
     google_sub    TEXT UNIQUE,     -- Google's stable `sub` claim; NULL = password-only
     is_superuser  INTEGER NOT NULL DEFAULT 0,   -- platform admin (all orgs, all powers)
+    default_translation_lang TEXT NOT NULL DEFAULT 'en',
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -1106,6 +1107,7 @@ _COLUMN_MIGRATIONS = {
     # passage_id: the sapche section IS that passage occurrence (a zero-host-width
     # "segment" between two boundaries). Mutually exclusive with segment_start_syl_id.
     "tree_nodes": [("segment_start_syl_id", "TEXT"), ("passage_id", "INTEGER")],
+    "users": [("default_translation_lang", "TEXT NOT NULL DEFAULT 'en'")],
     "transcript_spans": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_suggestions": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],
     "transcript_notes": [("start_syl_id", "TEXT"), ("end_syl_id", "TEXT")],

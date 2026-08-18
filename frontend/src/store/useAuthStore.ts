@@ -21,6 +21,7 @@ export interface AuthUser {
   is_superuser: boolean;
   has_password: boolean;
   has_google: boolean;
+  default_translation_lang: string;
 }
 
 interface MePayload {

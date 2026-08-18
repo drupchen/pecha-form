@@ -58,11 +58,23 @@
   font-size: 0.6em;
   cursor: pointer;
   user-select: none;
-  padding: 0 1px;
+  /* The glyph stays quiet at rest, but its hit area is substantially larger than
+     the tiny character. Negative margins keep that invisible padding from opening
+     a gap in the Tibetan text. */
+  padding: 3px 5px;
+  margin: -3px -4px;
+  position: relative;
+  z-index: 1;
+  border-radius: 4px;
+  transition: font-size 100ms ease, color 100ms ease, opacity 100ms ease,
+    background-color 100ms ease;
 }
 .break-icon:hover {
   color: #2B4A8B; /* lapis */
   opacity: 1;
+  font-size: 1em;
+  background-color: rgba(43, 74, 139, 0.1);
+  z-index: 2;
 }
 /* A suppressed break (count 0): dimmed & struck, still clickable to restore. */
 .break-icon--off {

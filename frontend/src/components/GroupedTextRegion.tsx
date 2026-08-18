@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload, Trash2, FileText, ChevronRight, GitBranch, CopyPlus,
   Pencil, Check, X, FolderInput, ChevronDown, Folder, Plus, FolderPlus,
@@ -98,6 +98,43 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
   const [gapTarget, setGapTarget] = useState<string | null>(null);
   const [addingUnder, setAddingUnder] = useState<string | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
+  const columnsRef = useRef<HTMLDivElement>(null);
+  const stickyScrollRef = useRef<HTMLDivElement>(null);
+  const syncingScroll = useRef(false);
+  const [columnsScrollWidth, setColumnsScrollWidth] = useState(0);
+  const [columnsOverflow, setColumnsOverflow] = useState(false);
+  const [scrollbarFrame, setScrollbarFrame] = useState({ left: 0, width: 0 });
+
+  // The native scrollbar lives after the tallest column and can be several screens away.
+  // Mirror it at the viewport's bottom so horizontal navigation remains reachable while
+  // the landing page itself continues to own vertical scrolling.
+  useEffect(() => {
+    if (layout !== 'columns') return;
+    const row = columnsRef.current;
+    if (!row) return;
+    const measure = () => {
+      const rect = row.getBoundingClientRect();
+      setColumnsScrollWidth(row.scrollWidth);
+      setColumnsOverflow(row.scrollWidth > row.clientWidth + 1);
+      setScrollbarFrame({ left: rect.left, width: rect.width });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    for (const child of Array.from(row.children)) observer.observe(child);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [layout, texts, groups, collapsed]);
+
+  const syncHorizontalScroll = (source: HTMLDivElement, target: HTMLDivElement | null) => {
+    if (!target || syncingScroll.current) return;
+    syncingScroll.current = true;
+    target.scrollLeft = source.scrollLeft;
+    requestAnimationFrame(() => { syncingScroll.current = false; });
+  };
 
   const { root, ungrouped } = useMemo(() => {
     const root: GroupNode = { name: '', path: '', children: new Map(), texts: [] };
@@ -561,8 +598,11 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
 
   // Columns layout (primary): side-by-side cards with the Add-text / New-group toolbar.
   return (
+    <div className="relative w-full min-w-0 max-w-full">
     <div
-      className="flex flex-nowrap p-3 items-start overflow-x-auto"
+      ref={columnsRef}
+      className="flex w-full min-w-0 max-w-full flex-nowrap items-start overflow-x-auto p-3 pb-4"
+      onScroll={(e) => syncHorizontalScroll(e.currentTarget, stickyScrollRef.current)}
       onDragOver={onRowDragOver}
       onDragLeave={onRowDragLeave}
       onDrop={onRowDrop}
@@ -600,6 +640,22 @@ export const GroupedTextRegion: React.FC<GroupedTextRegionProps> = ({
         </React.Fragment>
       ))}
       {renderGap('')}
+    </div>
+    {columnsOverflow && (
+      <div
+        ref={stickyScrollRef}
+        className="fixed bottom-0 z-30 h-4 overflow-x-auto overflow-y-hidden bg-cream/95"
+        style={{
+          left: scrollbarFrame.left,
+          width: scrollbarFrame.width,
+          boxShadow: '0 -1px 0 var(--cline)',
+        }}
+        onScroll={(e) => syncHorizontalScroll(e.currentTarget, columnsRef.current)}
+        aria-label="Scroll text columns horizontally"
+      >
+        <div style={{ width: columnsScrollWidth, height: 1 }} />
+      </div>
+    )}
     </div>
   );
 };

@@ -109,9 +109,7 @@ describe('the space before a shad at a verse line end', () => {
   });
 
   it('closes the small-letter verses too (`small - verses`)', () => {
-    // No automatic break here — the verse break rule keys on the literal `verse` tag — so this
-    // is also the chunk-tail case: a line ends where the chunk does.
-    expect(render([...LINE, ' །'], TAGS.smallVerses)).toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།');
+    expect(render([...LINE, ' །'], TAGS.smallVerses)).toBe('བཀྲ་ཤིས་བདེ་ལེགས་ཤོག།\n');
   });
 });
 

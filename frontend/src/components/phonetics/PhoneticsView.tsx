@@ -143,8 +143,58 @@ export const PhoneticsView: React.FC = () => {
   const lines = useMemo<PhoneticLine[]>(() => {
     if (!tokens.length) return [];
     const markerOffsets = new Set(markers.map(m => m.position));
-    return deriveLines(tokens, markerOffsets, spans, breakOverrides);
-  }, [tokens, markers, spans, breakOverrides]);
+    const derived = deriveLines(tokens, markerOffsets, spans, breakOverrides);
+
+    return derived.flatMap((line) => {
+      // Match inside THIS occurrence. Syllable UUIDs repeat when a source is inherited,
+      // transcluded, or recited twice; a global id→position map therefore points at the
+      // last occurrence and makes otherwise exact stored ranges look unrelated.
+      const lineStart = line.sylIds.indexOf(line.startSylId);
+      const lineEnd = line.sylIds.lastIndexOf(line.endSylId);
+      if (lineStart < 0 || lineEnd < lineStart) return [line];
+      const stored = rows
+        .filter(r => r.kind === line.kind)
+        .map(r => {
+          const start = line.sylIds.indexOf(r.start_syl_id, lineStart);
+          const end = start >= 0 ? line.sylIds.indexOf(r.end_syl_id, start) : -1;
+          return { row: r, start, end };
+        })
+        .filter(x => x.start >= lineStart && x.end >= x.start && x.end <= lineEnd)
+        .sort((a, b) => a.start - b.start);
+
+      if (stored.length < 2
+          || stored.some((x, i) => i > 0 && x.start <= stored[i - 1].end)) return [line];
+
+      type Piece = { row: Phonetic | null; start: number; end: number };
+      const pieces: Piece[] = [];
+      let cursor = lineStart;
+      for (const item of stored) {
+        // Keep any Tibetan not covered by imported phonetics visible as its own empty row.
+        if (item.start > cursor) pieces.push({ row: null, start: cursor, end: item.start - 1 });
+        pieces.push(item);
+        cursor = item.end + 1;
+      }
+      if (cursor <= lineEnd) pieces.push({ row: null, start: cursor, end: lineEnd });
+
+      return pieces.map(({ row, start, end }, pieceIndex) => {
+        const partTokens = line.tokens.slice(start, end + 1);
+        const startSylId = row?.start_syl_id ?? line.sylIds[start];
+        const endSylId = row?.end_syl_id ?? line.sylIds[end];
+        const sourceToken = tokens.find(t => t.id === startSylId
+          && t.start_offset >= line.startOffset);
+        return {
+          ...line,
+          key: `${line.key}:${row ? `phonetic-${row.id}` : `remainder-${pieceIndex}`}`,
+          startSylId,
+          endSylId,
+          startOffset: sourceToken?.start_offset ?? line.startOffset,
+          sylIds: line.sylIds.slice(start, end + 1),
+          tokens: partTokens,
+          text: partTokens.map(t => t.render).join('').trim(),
+        };
+      });
+    });
+  }, [tokens, markers, spans, breakOverrides, rows]);
 
   /** Syllables this text TRANSCLUDES from another text, keyed by occurrence — the same
    *  source may be transcluded twice, and `(id, opId)` is what names the occurrence.

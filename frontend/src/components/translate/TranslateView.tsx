@@ -18,6 +18,8 @@ import { ChunkHistory } from './ChunkHistory';
 import { sanitizeTranslationHtml } from './sanitize';
 import { splitParagraphs } from '../documents/compile';
 import { useCan } from '../../store/usePermissions';
+import { useAuthStore } from '../../store/useAuthStore';
+import { patchDefaultTranslationLanguage } from '../../api/account';
 import type { TranslationChunk } from '../../api/client';
 
 /** Group a chunk's tokens into printed lines (a token whose render carries a
@@ -153,6 +155,8 @@ export const TranslateView: React.FC = () => {
   const setSelectedTreeNodeId = useUIStore(s => s.setSelectedTreeNodeId);
 
   const languages = useTranslationStore(s => s.languages);
+  const userDefaultLang = useAuthStore(s => s.user?.default_translation_lang ?? 'en');
+  const refreshMe = useAuthStore(s => s.refreshMe);
   // The store holds ONE text at a time, and a switch leaves the previous text's data in it
   // until the fetches land. Rendering that window means another text's chunks, arrangement and
   // suggestions — briefly here, permanently in a view that forgets to fetch (which is how a
@@ -193,7 +197,7 @@ export const TranslateView: React.FC = () => {
   const removeLayout = useTranslationStore(s => s.removeLayout);
   const cancelMoveHere = useTranslationStore(s => s.cancelMoveHere);
 
-  const [targetLang, setTargetLang] = useState('en');
+  const [targetLang, setTargetLang] = useState(userDefaultLang);
   const [sourceLang, setSourceLang] = useState<'bo' | string>('bo');
   const [extraLangs, setExtraLangs] = useState<Set<string>>(new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -225,10 +229,9 @@ export const TranslateView: React.FC = () => {
     [treeNodes],
   );
 
-  // Sapche outline depth per anchor syllable (0 = top-level), mirroring the booklet's
-  // `compile.ts` derivation: a heading whose start syllable IS a tree node's segment
-  // start inherits its level from the Tibetan outline (read-only). Headings absent from
-  // the outline (and translation-only titles) keep a manually definable level.
+  // Sapche outline depth per anchor syllable (0 = top-level), used as the initial level.
+  // A translation chunk may explicitly override it (for example, promote an inherited
+  // H2 section to H1 in the translated edition).
   const sapcheDepthBySyl = useMemo(() => {
     const byId = new Map<number, typeof treeNodes[number]>(treeNodes.map(n => [n.id, n]));
     const depthOf = (n: typeof treeNodes[number]) => {
@@ -807,7 +810,12 @@ export const TranslateView: React.FC = () => {
           <span className="text-ink-soft">Translating into</span>
           <select
             value={targetLang}
-            onChange={e => setTargetLang(e.target.value)}
+            onChange={e => {
+              const lang = e.target.value;
+              setTargetLang(lang);
+              void patchDefaultTranslationLanguage(lang).then(refreshMe)
+                .catch((err: any) => setSaveError(err?.message || String(err)));
+            }}
             className="px-2 py-1 rounded-md bg-white font-medium"
             style={{ border: '1px solid var(--cline)' }}
           >
@@ -1334,17 +1342,9 @@ export const TranslateView: React.FC = () => {
                           const isSmall = u.tagType === 'small';
                           const promoted = match?.render_as === 'heading';
                           const inherited = sapcheDepthBySyl.get(u.startSylId);
-                          const levelCtl = inherited != null ? (
-                            <span
-                              className="px-1 rounded font-mono bg-cream text-ink-soft"
-                              style={miniStyle}
-                              title="Level inherited from the Tibetan sapche outline"
-                            >
-                              H{inherited + 1} · sapche
-                            </span>
-                          ) : (
+                          const levelCtl = (
                             <LevelStepper
-                              level={match?.level ?? null}
+                              level={match?.level ?? (inherited != null ? inherited + 1 : null)}
                               onSet={(lv) => void setLevel({
                                 contextTextId: currentText.id,
                                 startSylId: canonSyl.start,
@@ -1352,8 +1352,10 @@ export const TranslateView: React.FC = () => {
                                 level: lv,
                               }).catch((e: any) => setSaveError(e.message || 'Level save failed'))}
                               miniStyle={miniStyle}
-                              allowClear
-                              title="Title level (whole chunk)"
+                              allowClear={inherited == null}
+                              title={inherited != null
+                                ? `Title level (defaults to H${inherited + 1} from the sapche outline)`
+                                : 'Title level (whole chunk)'}
                             />
                           );
                           return (

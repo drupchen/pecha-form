@@ -63,7 +63,8 @@ class InviteAcceptIn(BaseModel):
 
 
 class ProfileIn(BaseModel):
-    display_name: str
+    display_name: str | None = None
+    default_translation_lang: str | None = None
 
 
 class UiStateIn(BaseModel):
@@ -97,7 +98,7 @@ def _me_payload(conn, user_id: int) -> dict:
         ]
         return {"user": {"id": user_id, "email": "dev@localhost", "display_name": "Dev",
                          "is_superuser": True, "has_password": True,
-                         "has_google": False}, "orgs": orgs}
+                         "has_google": False, "default_translation_lang": "en"}, "orgs": orgs}
     if user["is_superuser"]:
         # Superusers see every org; access is implicit, so no role names.
         orgs = [
@@ -119,6 +120,7 @@ def _me_payload(conn, user_id: int) -> dict:
     return {
         "user": {"id": user["id"], "email": user["email"],
                  "display_name": user["display_name"],
+                 "default_translation_lang": user["default_translation_lang"] or "en",
                  "is_superuser": bool(user["is_superuser"]),
                  "has_password": user["password_hash"] is not None,
                  "has_google": user["google_sub"] is not None},
@@ -229,11 +231,18 @@ def me(ctx: AuthContext = Depends(current_user)):
 
 @router.patch("/auth/profile")
 def update_profile(payload: ProfileIn, ctx: AuthContext = Depends(current_user)):
-    """Edit one's own display name (email is the identity key — immutable)."""
+    """Edit one's own profile and translation preference."""
     conn = get_db()
     try:
-        conn.execute("UPDATE users SET display_name = ? WHERE id = ?",
-                     (payload.display_name.strip(), ctx.user_id))
+        if payload.display_name is not None:
+            conn.execute("UPDATE users SET display_name = ? WHERE id = ?",
+                         (payload.display_name.strip(), ctx.user_id))
+        if payload.default_translation_lang is not None:
+            lang = payload.default_translation_lang.strip().lower()
+            if not conn.execute("SELECT 1 FROM languages WHERE code = ?", (lang,)).fetchone():
+                raise HTTPException(400, "Unknown translation language")
+            conn.execute("UPDATE users SET default_translation_lang = ? WHERE id = ?",
+                         (lang, ctx.user_id))
         conn.commit()
         return _me_payload(conn, ctx.user_id)
     finally:

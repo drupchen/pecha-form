@@ -93,8 +93,8 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
   const isEmpty = texts.length === 0 && groups.length === 0;
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="w-full mt-10 px-6 pb-12">
+    <div className="h-full w-full min-w-0 overflow-y-auto overflow-x-auto">
+      <div className="w-full min-w-0 mt-10 px-6 pb-12">
         <div className="text-center mb-6">
           <div className="text-[11px] tracking-[0.4em] uppercase text-bronze mb-2">
             Oral Teachings Archive
@@ -104,7 +104,7 @@ export const TextPicker: React.FC<TextPickerProps> = ({ onNavigate }) => {
         </div>
 
         <div
-          className="bg-cream rounded-2xl overflow-hidden"
+          className="w-full min-w-0 bg-cream rounded-2xl overflow-hidden"
           style={{
             border: '1px solid var(--cline)',
             boxShadow: '0 16px 40px -18px rgba(7,27,56,0.50)',

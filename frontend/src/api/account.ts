@@ -12,6 +12,11 @@ export const patchProfile = (displayName: string) =>
     method: 'PATCH', headers: J, body: JSON.stringify({ display_name: displayName }),
   });
 
+export const patchDefaultTranslationLanguage = (lang: string) =>
+  jfetch(`${API_BASE}/auth/profile`, {
+    method: 'PATCH', headers: J, body: JSON.stringify({ default_translation_lang: lang }),
+  });
+
 export const changePassword = (currentPassword: string | null, newPassword: string) =>
   apiFetch(`${API_BASE}/auth/password`, {
     method: 'POST', headers: J,

@@ -129,9 +129,14 @@ export function tokenBreak(
   opts: TokenBreakOpts,
 ): { auto: 0 | 1; isReal: boolean } {
   if (text.includes('\n')) return { auto: 1, isReal: true };
-  const named = (n: string) => (a: { tag: { name: string } }) =>
-    a.tag.name.trim().toLowerCase() === n;
-  if (opts.verse && !opts.suppressVerse && /\s/.test(text) && anns.some(named('verse'))) {
+  const normalizedName = (a: { tag: { name: string } }) =>
+    a.tag.name.trim().toLowerCase().replace(/[\s_-]+/g, '-');
+  const named = (n: string) => (a: { tag: { name: string } }) => normalizedName(a) === n;
+  const isVerse = (a: { tag: { name: string } }) => {
+    const name = normalizedName(a);
+    return name === 'verse' || name === 'small-verses';
+  };
+  if (opts.verse && !opts.suppressVerse && /\s/.test(text) && anns.some(isVerse)) {
     return { auto: 1, isReal: false };
   }
   if (opts.sapche

@@ -278,8 +278,8 @@ export async function compileTextItem(
     if (prev == null || d < prev) depthBySyl.set(syl, d);
   }
   // A manually-set heading level per chunk-start syllable (H1-based). The Translate bench
-  // lets a heading NOT anchored in the sapche outline carry an explicit level; the booklet
-  // navigation nests by it where the tree does not supply a depth.
+  // lets any translated heading carry an explicit level. It overrides the Tibetan sapche
+  // depth when present; otherwise that outline remains the default.
   const levelBySyl = new Map<string, number>();
   for (const c of translations) if (c.level != null) levelBySyl.set(c.start_syl_id, c.level);
   // A per-heading render override: 'small_intro' turns a sapche/title heading into a
@@ -583,9 +583,9 @@ export async function compileTextItem(
       emptyAfter: lastOfChunk,
       // A promoted instruction is not in the sapche tree, so its depth comes from the level
       // the editor gave it (H1-based, like any heading the outline does not supply).
-      level: gloss ? null : (depthBySyl.get(l.startSylId)
-        ?? (promoted && levelBySyl.has(l.startSylId)
-              ? Math.max(0, levelBySyl.get(l.startSylId)! - 1) : null)),
+      level: gloss ? null : (levelBySyl.has(l.startSylId)
+        ? Math.max(0, levelBySyl.get(l.startSylId)! - 1)
+        : (depthBySyl.get(l.startSylId) ?? null)),
       // A promoted line sheds `smallKind`: it is a heading now, and anything keying on the
       // small family (the inline face, the continuation rule's cousins) must not still see an
       // instruction here.
@@ -698,8 +698,8 @@ export async function compileTextItem(
     const label = (l.translation ?? '').trim();
     if (!label) return;
     const depth = depthBySyl.get(l.startSylId);
-    const level = depth != null ? depth
-      : (levelBySyl.has(l.startSylId) ? levelBySyl.get(l.startSylId)! - 1 : 0);
+    const level = levelBySyl.has(l.startSylId) ? levelBySyl.get(l.startSylId)! - 1
+      : (depth ?? 0);
     headings.push({ key: `line:${l.key}`, level, anchorSylId: l.startSylId,
                     label, order: posById.get(l.startSylId) ?? Infinity });
   });

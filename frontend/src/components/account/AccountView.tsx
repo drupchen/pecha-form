@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { Check, KeyRound, ShieldCheck, Building2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Check, KeyRound, ShieldCheck, Building2, Languages } from 'lucide-react';
 import { useAuthStore, type Section, type PermLevel } from '../../store/useAuthStore';
-import { patchProfile, changePassword } from '../../api/account';
+import { patchProfile, patchDefaultTranslationLanguage, changePassword } from '../../api/account';
+import { useTranslationStore } from '../../store/useTranslationStore';
 import { GoogleButton } from '../auth/GoogleButton';
 import { userInitials } from '../Header';
 
@@ -26,6 +27,9 @@ export const AccountView: React.FC = () => {
   const activeOrgId = useAuthStore(s => s.activeOrgId);
   const refreshMe = useAuthStore(s => s.refreshMe);
   const loginGoogle = useAuthStore(s => s.loginGoogle);
+  const languages = useTranslationStore(s => s.languages);
+  const fetchLanguages = useTranslationStore(s => s.fetchLanguages);
+  useEffect(() => { void fetchLanguages(); }, [fetchLanguages]);
 
   const [savedFlash, setSavedFlash] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +99,29 @@ export const AccountView: React.FC = () => {
               </div>
             )}
           </div>
+        </section>
+
+        <section className="rounded-lg bg-white p-4 flex items-center gap-4"
+                 style={{ boxShadow: '0 0 0 1px var(--gline-soft)' }}>
+          <Languages size={18} className="text-bronze" />
+          <label className="flex flex-1 items-center justify-between gap-4 text-sm">
+            <span>Default translation language</span>
+            <select
+              value={user.default_translation_lang}
+              onChange={async e => {
+                setError(null);
+                try {
+                  await patchDefaultTranslationLanguage(e.target.value);
+                  await refreshMe();
+                  flash('Translation language saved');
+                } catch (err) { setError(detail(err)); }
+              }}
+              className="rounded-md bg-cream-hi px-3 py-1.5"
+              style={{ border: '1px solid var(--cline)' }}
+            >
+              {languages.map(lang => <option key={lang.code} value={lang.code}>{lang.name}</option>)}
+            </select>
+          </label>
         </section>
 
         {/* Sign-in methods */}
