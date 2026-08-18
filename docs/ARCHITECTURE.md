@@ -230,6 +230,15 @@ prints that text's words in its place. `fillCoverFrom` writes only non-empty val
 this reason; clearing a box to fall back stays the *user's* gesture. The one way to make a blank
 slot blank is to leave the cover nothing to follow — below.
 
+**A text's contents entry is seeded, not copied.** `block = ''` on a text item is its
+table-of-contents title, and it follows the same rule: an empty body means "print what the text
+supplies" — its compiled main title, else `text_title`. The derived value is one function,
+`tocTitleSeed`, called by the page (`tocRows` in `bookletRender.tsx`) and by the panel's seed
+effect (`DocumentsView.tsx`), so the words the editor shows are the words the TOC prints. The
+panel compares commit-time HTML against `tocTitleSeed`'s output through the same sanitizer, and
+writes `''` when they match — so blurring an untouched field stores nothing, and clearing the
+box hands the entry back to the text.
+
 ### Title pages: the cover and the inner covers
 
 Two nullable columns on `document_items` carry the whole thing. Both mean "as it always was"

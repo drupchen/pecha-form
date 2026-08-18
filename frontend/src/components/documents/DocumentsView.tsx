@@ -25,7 +25,7 @@ import {
 } from './bookletRender';
 import { cleanSpecimenHtml } from './StyleStudio';
 import { RichLine, bodyToRich } from './RichLine';
-import { orgImageFor, orgImagesOf } from './bookletRender';
+import { orgImageFor, orgImagesOf, tocTitleSeed, furnitureBodyOf } from './bookletRender';
 
 /** Furniture kinds with an editor panel of their own. (An aligned text has one too, but by
  *  carrying a text rather than by its kind — see `editable` at the item row.) */
@@ -123,6 +123,10 @@ export const DocumentsView: React.FC = () => {
    */
   const [sourceSlots, setSourceSlots] = useState<Map<string, string[]>>(new Map());
   const [slotsFor, setSlotsFor] = useState<number | null>(null);   // which item they describe
+  /** Per language: the TOC entry this text supplies of its own — what the contents page prints
+   *  when nobody has authored an entry for it, and so what the box below is seeded with.
+   *  Described by the same `slotsFor` item as `sourceSlots`, filled by the same compiles. */
+  const [tocSeeds, setTocSeeds] = useState<Map<string, string>>(new Map());
   const [navLang, setNavLang] = useState<string>('');
   const [showVersions, setShowVersions] = useState(false);
   const [latestSemver, setLatestSemver] = useState<string | null>(null);
@@ -221,10 +225,15 @@ export const DocumentsView: React.FC = () => {
    */
   useEffect(() => {
     const it = current?.items.find(i => i.id === editingItem);
-    if (!current || !it || !hasTitleBlocks(it)) { setSourceSlots(new Map()); setSlotsFor(null); return; }
+    // A text with no inner cover has no title BLOCKS and still has a TOC entry, so the gate is
+    // "does this panel show anything seeded from a compile", not "does it show title slots".
+    if (!current || !it || !(hasTitleBlocks(it) || it.text_id != null)) {
+      setSourceSlots(new Map()); setTocSeeds(new Map()); setSlotsFor(null); return;
+    }
     let alive = true;
     (async () => {
       const next = new Map<string, string[]>();
+      const toc = new Map<string, string>();
       for (const lg of current.languages) {
         try {
           const c = await compileDocument(current.items, lg);
@@ -241,9 +250,12 @@ export const DocumentsView: React.FC = () => {
             : (coverSourceItemId != null ? c.titleByItem.get(coverSourceItemId) : [])) ?? [];
           next.set(lg, tl.find(t => t.paragraphs?.length)?.paragraphs
                     ?? tl.map(t => t.translation).filter((x): x is string => !!x));
+          // The contents entry, by the page's own rule — one function, so the box cannot show
+          // one thing and the TOC print another.
+          if (it.text_id != null) toc.set(lg, tocTitleSeed(c.titleByItem, it));
         } catch { /* a language that will not compile simply seeds nothing */ }
       }
-      if (alive) { setSourceSlots(next); setSlotsFor(it.id); }
+      if (alive) { setSourceSlots(next); setTocSeeds(toc); setSlotsFor(it.id); }
     })();
     return () => { alive = false; };
   }, [current?.id, editingItem, current?.items, current?.languages, trVersion, coverSourceItemId]);
@@ -268,6 +280,10 @@ export const DocumentsView: React.FC = () => {
     if (d) return d === 'page';
     return (it.layout_item_id ?? it.id) !== coverSourceItemId;
   };
+  /** Pages that RENDER a text: the booklet's own ('text') and a reused aligned text page
+   *  ('textpage'). Both get a table-of-contents entry, which is why this and not `kind`. */
+  const isTextRow = (it: DocumentItem): boolean => it.text_id != null;
+
   /** Pages that print a title page's blocks — the cover, and a text showing its inner cover.
    *  Every field the cover's panel offers belongs to both. */
   const hasTitleBlocks = (it: DocumentItem): boolean =>
@@ -420,6 +436,26 @@ export const DocumentsView: React.FC = () => {
     const next = html.trim();
     await saveFurniture(itemId, langCode, next === seed ? '' : next, block);
   };
+  /** What this text supplies for its contents entry in one edition — the seed, and the value
+   *  the field is compared against. Empty until the compiles land, and only for the item they
+   *  describe, so a stale map cannot seed the wrong text's entry. */
+  const tocSeed = (itemId: number, langCode: string) =>
+    (slotsFor === itemId ? tocSeeds.get(langCode) : '') ?? '';
+
+  /**
+   * This text's TABLE-OF-CONTENTS ENTRY in one edition, on the same terms as the cover's slots.
+   *
+   * Left equal to what the text supplies, nothing is stored and the entry goes on FOLLOWING the
+   * text — so blurring an untouched field cannot quietly freeze a copy of the title, and
+   * emptying the box hands the entry back rather than printing a blank line. Both sides pass
+   * through the same sanitizer, so a difference can only ever be one the user actually made.
+   */
+  const saveTocTitle = async (itemId: number, langCode: string, html: string) => {
+    const seed = cleanSpecimenHtml(tocSeed(itemId, langCode)).trim();
+    const next = html.trim();
+    await saveFurniture(itemId, langCode, next === seed ? '' : next);
+  };
+
   /**
    * Fill a cover's zones from one of the booklet's aligned texts.
    *
@@ -906,6 +942,10 @@ export const DocumentsView: React.FC = () => {
                   // Text items get an editable per-language TOC title; furniture items
                   // get their per-language authored content.
                   const isTextItem = it.kind === 'text';
+                  // Every page that RENDERS a text — the booklet's own and a reused aligned
+                  // text page alike. `isTextItem` is only the former, which is why the
+                  // contents-title field used to miss every booklet built out of text pages.
+                  const isText = isTextRow(it);
                   // An ALIGNED TEXT in a booklet is a 'textpage' item, and it too has a panel
                   // now: the title it carries can head a page of its own — its inner cover —
                   // and those fields are edited here, beside the text they belong to.
@@ -1153,6 +1193,50 @@ export const DocumentsView: React.FC = () => {
                             </div>
                           );
                         })()}
+                        {/* THE CONTENTS ENTRY — what this text is called on the table of
+                            contents, per edition. Its own block rather than part of the
+                            free-form body below, because a text that also shows an inner cover
+                            has both, and both belong on its panel: one is the entry in the
+                            list, the other the title page itself. */}
+                        {isText && current.languages.length > 0 && (
+                          <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
+                               style={{ borderBottom: '1px solid var(--cline)' }}>
+                            <div className="text-[11px] text-ink-soft">
+                              Table-of-contents title — per language
+                            </div>
+                            {current.languages.map(code => {
+                              // Read by BOTH ids, as the page does: a row written before this
+                              // text was extracted into its own page carries the layout id, and
+                              // looking it up by one id only showed an override on the page that
+                              // the box swore was not there.
+                              const own = furnitureBodyOf(furniture, it, code) ?? '';
+                              const seed = tocSeed(it.id, code);
+                              return (
+                                <div key={code} className="flex items-start gap-2">
+                                  <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
+                                  <RichLine
+                                    // Re-seed when the override appears or goes: the box is
+                                    // uncontrolled, so "reset" would otherwise leave the old
+                                    // words sitting in it, contradicting the page.
+                                    key={`toc-${it.id}-${code}-${own ? 'own' : 'src'}-${seed}`}
+                                    html={own || seed}
+                                    placeholder={slotsFor === it.id ? 'follows the text' : 'loading…'}
+                                    onCommit={h => void saveTocTitle(it.id, code, h)} />
+                                  {own ? (
+                                    <button type="button"
+                                            onClick={() => void saveFurniture(it.id, code, '')}
+                                            className="text-[10px] text-lapis hover:underline shrink-0"
+                                            title="Discard this entry and follow the text's own title again">
+                                      reset
+                                    </button>
+                                  ) : (
+                                    <span className="text-[10px] text-jade shrink-0">following</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         {hasTitleBlocks(it) && (
                           <div className="flex flex-col gap-1 pb-1.5 mb-0.5"
                                style={{ borderBottom: '1px solid var(--cline)' }}>
@@ -1310,21 +1394,16 @@ export const DocumentsView: React.FC = () => {
                         {/* The free-form body. The cover has none: every one of its elements
                             is a named slot above, and the generic box it used to show was
                             never rendered on the page at all. */}
-                        {!hasTitleBlocks(it) && (
+                        {!hasTitleBlocks(it) && !isTextRow(it) && (
                         <div className="text-[11px] text-ink-soft">
-                          {isTextItem
-                            ? 'Table-of-contents title — per language (blank = the text’s own title)'
-                            : it.kind === 'image_page'
-                              ? 'Caption — per language (optional; select text for italic/bold, Enter for a new line)'
-                              : 'Back-cover text — per language (optional; select text for italic/bold, Enter for a new line)'}
+                          {it.kind === 'image_page'
+                            ? 'Caption — per language (optional; select text for italic/bold, Enter for a new line)'
+                            : 'Back-cover text — per language (optional; select text for italic/bold, Enter for a new line)'}
                         </div>
                         )}
                         {current.languages.length === 0 && (
                           <span className="text-[11px] text-vermilion">Set the document's languages first.</span>
                         )}
-                        {/* TOC title: a plain one-line field. Other furniture bodies (back cover,
-                            image caption) use the same rich editor as the title slots — what you
-                            see is what prints, with italic/bold and line breaks, no HTML tags. */}
                         {/* The org's copyright template. The page was already seeded from it
                             when it was added; this is for an edition added since, a template
                             written since, or words cleared and wanted back. */}
@@ -1346,25 +1425,14 @@ export const DocumentsView: React.FC = () => {
                         {/* A plain <div>, NOT a <label>: a label around the contentEditable
                             RichLine re-targets the click on mouse-up and blurs it the instant you
                             click in (the title-slot rows are <div>s for the same reason). */}
-                        {!hasTitleBlocks(it) && current.languages.map(code => (
+                        {!hasTitleBlocks(it) && !isTextRow(it) && current.languages.map(code => (
                           <div key={code} className="flex items-start gap-2">
                             <span className="w-6 shrink-0 text-[11px] text-ink-soft pt-1.5">{code}</span>
-                            {isTextItem ? (
-                              <textarea
-                                defaultValue={furnitureBody(it.id, code)}
-                                onBlur={e => void saveFurniture(it.id, code, e.target.value)}
-                                rows={1}
-                                placeholder="e.g. Essence of Accomplishment"
-                                className="flex-1 px-2 py-1 rounded-md bg-white text-xs resize-y"
-                                style={{ border: '1px solid var(--cline)' }}
-                              />
-                            ) : (
-                              <RichLine
-                                key={`body-${it.id}-${code}-${fillEpoch}`}
-                                html={bodyToRich(furnitureBody(it.id, code))}
-                                placeholder={it.kind === 'backcover' ? 'e.g. Copyright © …' : 'Caption…'}
-                                onCommit={h => void saveFurniture(it.id, code, h)} />
-                            )}
+                            <RichLine
+                              key={`body-${it.id}-${code}-${fillEpoch}`}
+                              html={bodyToRich(furnitureBody(it.id, code))}
+                              placeholder={it.kind === 'backcover' ? 'e.g. Copyright © …' : 'Caption…'}
+                              onCommit={h => void saveFurniture(it.id, code, h)} />
                           </div>
                         ))}
                       </div>

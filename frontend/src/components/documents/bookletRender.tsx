@@ -1902,10 +1902,6 @@ export function deriveBooklet(
     && (it.kind === 'text' || it.kind === 'textpage'));
   const firstTextPos = textItems.length ? Math.min(...textItems.map((i) => i.position)) : Infinity;
   const lastTextPos = textItems.length ? Math.max(...textItems.map((i) => i.position)) : -Infinity;
-  // The id a text page's LINES carry: its own item, or — when the booklet reuses an aligned
-  // text — that text page's item, which is what its alignment is keyed by. Every join between
-  // a line and its item goes through this, so the two never drift into separate id spaces.
-  const layoutIdOf = (it: DocumentItem) => it.layout_item_id ?? it.id;
   const firstTextItemId = firstTextPos !== Infinity
     ? layoutIdOf(textItems.find((i) => i.position === firstTextPos)!) : null;
   // WHOSE TITLE THE COVER CARRIES — the pivot of the whole title system, and the reason the
@@ -1982,14 +1978,7 @@ export function deriveBooklet(
   const orderedTexts = [...textItems].sort((a, b) => a.position - b.position);
   const tocRows: TocRow[] = orderedTexts.map((it) => {
     const custom = furniture && lang != null ? furnitureBodyOf(furniture, it, lang) : null;
-    let title: string;
-    if (custom && custom.trim()) {
-      title = inlineHtml(custom);
-    } else {
-      const tl = titleByItem.get(layoutIdOf(it)) ?? [];
-      const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
-      title = main ? inlineHtml(main) : (it.text_title || '');
-    }
+    const title = custom && custom.trim() ? inlineHtml(custom) : tocTitleSeed(titleByItem, it);
     // The text's start folio: its internal title page (2nd+ texts) or its first body page.
     const titleUnit = bodyUnits.findIndex((u) => u.kind === 'title' && u.item.id === it.id);
     const startLine = itemStartLine.get(layoutIdOf(it));
@@ -2065,6 +2054,27 @@ export function deriveBooklet(
  * collide with it: a language code is never empty.
  */
 export const TIBETAN_LANG = '';
+
+/** The id a text page's LINES carry: its own item, or — when the booklet reuses an aligned
+ *  text — that text page's item, which is what its alignment is keyed by. Every join between a
+ *  line and its item goes through this, so the two never drift into separate id spaces. */
+export const layoutIdOf = (it: DocumentItem) => it.layout_item_id ?? it.id;
+
+/**
+ * THE TOC TITLE A TEXT SUPPLIES OF ITS OWN — its compiled main title, else its DB title.
+ *
+ * What an unauthored entry prints, and therefore exactly what the editor's box is seeded with:
+ * the panel and the page call this same function, so the words you are shown to edit are the
+ * words on the page. Block tags are flattened and inline emphasis kept (`inlineHtml`), because
+ * a TOC entry is one line that may still carry an italicised work-name.
+ */
+export function tocTitleSeed(
+  titleByItem: Map<number, DocLine[]>, item: DocumentItem,
+): string {
+  const tl = titleByItem.get(layoutIdOf(item)) ?? [];
+  const main = tl.find((t) => t.paragraphs?.length)?.paragraphs?.[0] ?? tl[0]?.translation;
+  return main ? inlineHtml(main) : (item.text_title || '');
+}
 
 export function furnitureBodyOf(
   furniture: DocumentFurnitureRow[], item: DocumentItem, lang: string, block = '',
