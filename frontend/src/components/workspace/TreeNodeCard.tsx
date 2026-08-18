@@ -76,6 +76,7 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
   const moveNode = useTreeNodeStore(s => s.moveNode);
   const deleteNode = useTreeNodeStore(s => s.deleteNode);
   const createNode = useTreeNodeStore(s => s.createNode);
+  const allNodes = useTreeNodeStore(s => s.nodes);
   const activeNodeId = useTreeNodeStore(s => s.activeNodeId);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
   const setEditingAppend = useTreeNodeStore(s => s.setEditingAppend);
@@ -133,16 +134,10 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
 
   const docId = currentText!.id;
 
-  // `position` orders siblings within ONE owner. On a level that interleaves inherited
-  // sections, an own node's place among them comes from its anchor (the server splices
-  // it where its segment sits), so up/down is not a thing it can do — offering arrows
-  // that then 400 was the bug. Reordering stays available among this text's OWN nodes.
-  const ownRun = parentChildren.filter(c => (c.owner_text_id ?? c.text_id) === docId);
-  const ownIdx = ownRun.findIndex(c => c.id === node.id);
-  const levelMixed = ownRun.length !== parentChildren.length;
-  const orderIsDerived = levelMixed && (node.segment_start != null || node.passage_id != null);
-  const canMoveUp = !orderIsDerived && ownIdx > 0;
-  const canMoveDown = !orderIsDerived && ownIdx >= 0 && ownIdx < ownRun.length - 1;
+  // Explicit display slots now let an owned node override anchor-derived placement,
+  // so linked nodes can also be moved deliberately among inherited siblings.
+  const canMoveUp = !node.inherited && idx > 0;
+  const canMoveDown = !node.inherited && idx < parentChildren.length - 1;
   const canIndent = idx > 0; // a previous sibling exists to nest under
   const canOutdent = parentNode !== null; // not at the root
 
@@ -167,11 +162,19 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
   // interleaved, and only the former is a position the server will accept.
   const handleMoveUp = async () => {
     if (!canMoveUp) return;
-    await moveNode(node.id, node.parent_id, ownRun[ownIdx - 1].position);
+    const before = parentChildren[idx - 1];
+    const newPosition = parentChildren.slice(0, idx - 1)
+      .filter(c => (c.owner_text_id ?? c.text_id) === docId).length;
+    await moveNode(node.id, node.parent_id, newPosition, before.id);
   };
   const handleMoveDown = async () => {
     if (!canMoveDown) return;
-    await moveNode(node.id, node.parent_id, ownRun[ownIdx + 1].position);
+    const before = parentChildren[idx + 2] ?? null;
+    const withoutSelf = parentChildren.filter(c => c.id !== node.id);
+    const insertion = Math.min(idx + 1, withoutSelf.length);
+    const newPosition = withoutSelf.slice(0, insertion)
+      .filter(c => (c.owner_text_id ?? c.text_id) === docId).length;
+    await moveNode(node.id, node.parent_id, newPosition, before?.id ?? null);
   };
 
   const handleIndent = async () => {
@@ -188,7 +191,9 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
     if (!canOutdent || !parentNode) return;
     // Move to immediately after parent in grandparent's children.
     const newParentId = grandparentNode ? grandparentNode.id : null;
-    await moveNode(node.id, newParentId, parentNode.position + 1);
+    const ownAtNewLevel = allNodes.filter(n => n.parent_id === newParentId
+      && (n.owner_text_id ?? n.text_id) === docId && n.id !== node.id).length;
+    await moveNode(node.id, newParentId, ownAtNewLevel);
   };
 
   const handleDelete = async () => {
@@ -566,48 +571,47 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
           )}
 
         {/* Action buttons — overlay the content area on hover so they don't
-            steal horizontal space from the preview text. Hidden entirely in
-            session mode and consult mode (both are read-only for the tree). */}
+            steal horizontal space from the preview text. An inherited node is
+            immutable here, but it is still a valid parent for a node owned by
+            the current secondary text, so it keeps a restricted Options menu. */}
         <div
-          className={`absolute top-1 right-1 z-10 flex items-start ${readOnly ? 'hidden' : (isBodyHovered ? 'opacity-100' : 'opacity-0')} transition-opacity bg-cream-hi/95 backdrop-blur-sm rounded shadow-sm`}
+          className={`absolute top-1 right-1 z-10 flex items-start ${sessionMode || consultMode ? 'hidden' : (isBodyHovered ? 'opacity-100' : 'opacity-0')} transition-opacity bg-cream-hi/95 backdrop-blur-sm rounded shadow-sm`}
           style={{ border: '1px solid var(--cline)' }}
         >
-          <button
-            onClick={(e) => { e.stopPropagation(); handleMoveUp(); }}
-            disabled={!canMoveUp}
-            className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title={orderIsDerived
-              ? 'This section follows the segment it is linked to — link it elsewhere to move it'
-              : 'Move up'}
-          >
-            <ArrowUp size={13} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleMoveDown(); }}
-            disabled={!canMoveDown}
-            className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title={orderIsDerived
-              ? 'This section follows the segment it is linked to — link it elsewhere to move it'
-              : 'Move down'}
-          >
-            <ArrowDown size={13} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleOutdent(); }}
-            disabled={!canOutdent}
-            className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title="Outdent (Shift+Tab)"
-          >
-            <Outdent size={13} />
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); handleIndent(); }}
-            disabled={!canIndent}
-            className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
-            title="Indent (Tab)"
-          >
-            <Indent size={13} />
-          </button>
+          {!node.inherited && <>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleMoveUp(); }}
+              disabled={!canMoveUp}
+              className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
+              title="Move up"
+            >
+              <ArrowUp size={13} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleMoveDown(); }}
+              disabled={!canMoveDown}
+              className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
+              title="Move down"
+            >
+              <ArrowDown size={13} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleOutdent(); }}
+              disabled={!canOutdent}
+              className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
+              title="Outdent (Shift+Tab)"
+            >
+              <Outdent size={13} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleIndent(); }}
+              disabled={!canIndent}
+              className="p-1 text-bronze hover:text-vermilion disabled:opacity-30 disabled:hover:text-bronze transition-colors"
+              title="Indent (Tab)"
+            >
+              <Indent size={13} />
+            </button>
+          </>}
 
           {/* Three-dot menu */}
           <div className="relative">
@@ -639,16 +643,16 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
                       style={{ top, left, border: '1px solid var(--cline)' }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button
-                        onClick={() => { setRenameValue(node.title || ''); setIsRenaming(true); setMenuOpen(false); }}
-                        className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
-                      >
-                        <Edit2 size={12} /> Rename
-                      </button>
+                      {!node.inherited && <button
+                          onClick={() => { setRenameValue(node.title || ''); setIsRenaming(true); setMenuOpen(false); }}
+                          className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2"
+                        >
+                          <Edit2 size={12} /> Rename
+                        </button>}
                       <button onClick={handleAddChild} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
                         <Plus size={12} /> Add child
                       </button>
-                      <button onClick={handleToggleTransparent} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
+                      {!node.inherited && <><button onClick={handleToggleTransparent} className="w-full text-left px-3 py-1.5 text-sm text-ink hover:bg-cream flex items-center gap-2">
                         {node.transparent ? <Eye size={12} /> : <EyeOff size={12} />}
                         {node.transparent ? 'Remove transparent' : 'Mark transparent'}
                       </button>
@@ -665,6 +669,7 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
                       <button onClick={handleDelete} className="w-full text-left px-3 py-1.5 text-sm text-vermilion-deep hover:bg-vermilion/10 flex items-center gap-2">
                         <Trash2 size={12} /> Delete (promote children)
                       </button>
+                      </>}
                     </div>
                   </>
                 );
@@ -696,6 +701,7 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
             parentId={node.id}
             position={ownRunPosition(node.children, 0, docId)}
             mixed={levelIsMixed(node.children, docId)}
+            beforeNodeId={node.children[0]?.id ?? null}
           />
           {node.children.map((child, i) => (
             <React.Fragment key={child.id}>
@@ -711,6 +717,7 @@ export const TreeNodeCard = React.memo(function TreeNodeCard({
                 parentId={node.id}
                 position={ownRunPosition(node.children, i + 1, docId)}
                 mixed={levelIsMixed(node.children, docId)}
+                beforeNodeId={node.children[i + 1]?.id ?? null}
               />
             </React.Fragment>
           ))}

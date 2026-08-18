@@ -14,6 +14,8 @@ interface Props {
   /** True when the level interleaves inherited nodes: the new section's final place is
    *  then decided by the segment it gets linked to, not by this slot. */
   mixed?: boolean;
+  /** Rendered sibling that should remain immediately after the new node. */
+  beforeNodeId?: number | null;
 }
 
 /**
@@ -23,7 +25,7 @@ interface Props {
  * position (siblings >= `position` shift down by one, handled by the backend
  * via _shift_siblings).
  */
-export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position, mixed }) => {
+export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position, mixed, beforeNodeId }) => {
   const currentText = useTextStore(s => s.currentText);
   const createNode = useTreeNodeStore(s => s.createNode);
   const setActiveNode = useTreeNodeStore(s => s.setActiveNode);
@@ -39,6 +41,7 @@ export const SiblingInsertSlot: React.FC<Props> = ({ parentId, position, mixed }
         parent_id: parentId,
         position,
         title: 'New section',
+        display_before_node_id: beforeNodeId,
       });
       setActiveNode(node.id);
     } catch (err: any) {

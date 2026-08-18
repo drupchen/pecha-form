@@ -305,6 +305,7 @@ class TreeNodeCreate(TreeNodeBase):
     # Part 6: syllable-native boundary (preferred) — the syllable the segment
     # starts at. Derives `segment_start` server-side.
     segment_start_syl_id: Optional[str] = None
+    display_before_node_id: Optional[int] = None
 
 class TreeNodeUpdate(BaseModel):
     title: Optional[str] = None
@@ -320,6 +321,7 @@ class TreeNodeUpdate(BaseModel):
 class TreeNodeMove(BaseModel):
     new_parent_id: Optional[int] = None
     new_position: int
+    display_before_node_id: Optional[int] = None
 
 class TreeNodeReorder(BaseModel):
     parent_id: Optional[int] = None

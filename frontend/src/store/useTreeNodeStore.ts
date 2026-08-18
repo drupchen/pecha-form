@@ -72,6 +72,7 @@ interface TreeNodeState {
     /** Part 6: syllable that starts the linked segment (preferred over segment_start). */
     segment_start_syl_id?: string | null;
     transparent?: boolean;
+    display_before_node_id?: number | null;
   }) => Promise<TreeNode>;
   updateNode: (nodeId: number, params: {
     title?: string | null;
@@ -83,7 +84,7 @@ interface TreeNodeState {
     /** Link the node to a passage occurrence (clears the segment link); null unlinks. */
     passage_id?: number | null;
   }) => Promise<TreeNode | undefined>;
-  moveNode: (nodeId: number, new_parent_id: number | null, new_position: number) => Promise<void>;
+  moveNode: (nodeId: number, new_parent_id: number | null, new_position: number, display_before_node_id?: number | null) => Promise<void>;
   reorderSiblings: (textId: number, parent_id: number | null, ordered_ids: number[]) => Promise<void>;
   deleteNode: (nodeId: number, onChildren?: 'promote' | 'cascade') => Promise<void>;
 
@@ -132,6 +133,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
           segment_start: params.segment_start ?? null,
           segment_start_syl_id: params.segment_start_syl_id ?? null,
           transparent: params.transparent ?? false,
+          display_before_node_id: params.display_before_node_id ?? null,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -193,7 +195,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
     }
   },
 
-  moveNode: async (nodeId, new_parent_id, new_position) => {
+  moveNode: async (nodeId, new_parent_id, new_position, display_before_node_id = null) => {
     const before = get().nodes.find(n => n.id === nodeId);
     if (before?.inherited) { set({ error: INHERITED_READ_ONLY }); return; }
     const oldParent = before?.parent_id ?? null;
@@ -203,7 +205,7 @@ export const useTreeNodeStore = create<TreeNodeState>((set, get) => ({
       const res = await apiFetch(`${API_BASE}/tree-nodes/${nodeId}/move`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ new_parent_id, new_position }),
+        body: JSON.stringify({ new_parent_id, new_position, display_before_node_id }),
       });
       if (!res.ok) throw new Error(await res.text());
       // Refetch — moves cascade position changes to siblings

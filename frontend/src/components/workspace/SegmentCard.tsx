@@ -83,6 +83,7 @@ export const SegmentCard = React.memo(function SegmentCard({ segment, nextSegmen
   const isLinkHovered = useLinkStore(s => s.hoveredKey === segment.start);
   const allPassages = usePassageStore(s => s.passages);
   const editPassage = usePassageStore(s => s.editPassage);
+  const removePassage = usePassageStore(s => s.removePassage);
   const splitPassageAt = usePassageStore(s => s.splitPassageAt);
   const createMarker = useMarkerStore(s => s.createMarker);
   const pendingPassageSource = useUIStore(s => s.pendingPassageSource);
@@ -427,6 +428,22 @@ export const SegmentCard = React.memo(function SegmentCard({ segment, nextSegmen
           style={p.color ? ({ ['--passage-fg' as any]: p.color }) : undefined}
           title="Linked passage — the same text as its source (tags are shared; notes are per-occurrence)"
         >
+          {!consultMode && !p.inherited && (
+            <span role="button" tabIndex={0} title="Remove this passage"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm('Remove this passage from the text?')) void removePassage(p.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault(); e.stopPropagation();
+                    if (confirm('Remove this passage from the text?')) void removePassage(p.id);
+                  }}
+                  className="align-super text-[9px] px-0.5 mx-0.5 rounded cursor-pointer select-none"
+                  style={{ color: p.color || '#A28348', border: '1px solid currentColor' }}>
+              ✕
+            </span>
+          )}
           {syls.map((s, si) => {
             const off = srcOffsets.get(s.syl_id);
             const ro = off ? off[0] : -1;
@@ -696,7 +713,7 @@ export const SegmentCard = React.memo(function SegmentCard({ segment, nextSegmen
     passagesByAnchor.atEnd.forEach(renderPassage);
     renderHairlinesAt(segment.end);
     return out;
-  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, verseVertical, sapcheNewlines, mantraNewlines, lineBreaksOn, breakOverrides, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
+  }, [segment, visibleAnnotations, sessionOpenHairlines, searchMatchesInSegment, currentSearchMatch, consultMode, passagesByAnchor, texts, loadText, deleteSuggestion, removePassage, verseVertical, sapcheNewlines, mantraNewlines, lineBreaksOn, breakOverrides, pendingPassageSource, editorTokensAll, allSpansFull, allNotesFull]);
 
   const handleMouseUp = () => {
     // In session mode, the pane-level handler in TaggerPane takes over so it

@@ -38,6 +38,7 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
   const nodes = useTreeNodeStore(s => s.nodes);
   const updateNode = useTreeNodeStore(s => s.updateNode);
   const editPassage = usePassageStore(s => s.editPassage);
+  const removePassage = usePassageStore(s => s.removePassage);
   const splitPassageAt = usePassageStore(s => s.splitPassageAt);
   const setHovered = useLinkStore(s => s.setHovered);
   // Boolean, not the raw key: hovering one card must not re-render every card.
@@ -246,7 +247,25 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
           data-text-container
           title="Linked passage — the same text as its source (tags are shared; notes are per-occurrence)"
         >
-          {group.map(p => p.members.flatMap(m => m.syllables).map((s, si) => {
+          {group.flatMap(p => {
+            const remove = !consultMode && !p.inherited ? (
+              <span key={`pc-remove-${p.id}`} role="button" tabIndex={0}
+                    title="Remove this passage"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm('Remove this passage from the text?')) void removePassage(p.id);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                      e.preventDefault(); e.stopPropagation();
+                      if (confirm('Remove this passage from the text?')) void removePassage(p.id);
+                    }}
+                    className="align-super text-[9px] px-0.5 mx-0.5 rounded cursor-pointer select-none"
+                    style={{ color: p.color || '#A28348', border: '1px solid currentColor' }}>
+                ✕
+              </span>
+            ) : null;
+            const tokens = p.members.flatMap(m => m.syllables).map((s, si) => {
             const off = srcOffsets.get(s.syl_id);
             const ro = off ? off[0] : -1;
             const reo = off ? off[1] : -1;
@@ -307,8 +326,10 @@ export const PassageCard: React.FC<{ group: Passage[] }> = ({ group }) => {
                   </span>
                 )}
               </React.Fragment>
-            );
-          }))}
+              );
+            });
+            return remove ? [remove, ...tokens] : tokens;
+          })}
         </div>
       </div>
 

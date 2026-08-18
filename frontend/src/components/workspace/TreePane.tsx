@@ -141,6 +141,7 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
                   parentId={null}
                   position={ownRunPosition(roots, 0, currentText.id)}
                   mixed={levelIsMixed(roots, currentText.id)}
+                  beforeNodeId={roots[0]?.id ?? null}
                 />
                 {roots.map((root, i) => (
                   <React.Fragment key={root.id}>
@@ -156,6 +157,7 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
                       parentId={null}
                       position={ownRunPosition(roots, i + 1, currentText.id)}
                       mixed={levelIsMixed(roots, currentText.id)}
+                      beforeNodeId={roots[i + 1]?.id ?? null}
                     />
                   </React.Fragment>
                 ))}

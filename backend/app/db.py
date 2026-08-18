@@ -146,6 +146,13 @@ CREATE TABLE IF NOT EXISTS tree_nodes (
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_text ON tree_nodes(text_id);
 CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent   ON tree_nodes(parent_id);
 
+-- Display placement for an owned node among inherited siblings.  `position` cannot
+-- express this because each text owns an independent position sequence.
+CREATE TABLE IF NOT EXISTS tree_node_display_slots (
+    node_id        INTEGER PRIMARY KEY,
+    before_node_id INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS suggestions (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     text_id    INTEGER NOT NULL REFERENCES texts(id) ON DELETE CASCADE,

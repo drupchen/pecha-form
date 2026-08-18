@@ -174,6 +174,8 @@ def _gathered_tree_rows(conn, text_id: int) -> list[dict]:
         pass
 
     gathered: dict[int, dict] = {}
+    display_slots = {r["node_id"]: r["before_node_id"] for r in cursor.execute(
+        "SELECT node_id, before_node_id FROM tree_node_display_slots").fetchall()}
     for origin in [text_id] + source_texts(cursor, text_id):
         inherited = origin != text_id
         for r in cursor.execute(
@@ -186,6 +188,7 @@ def _gathered_tree_rows(conn, text_id: int) -> list[dict]:
             # actually owns it — what ordering and position arithmetic key on.
             d["text_id"] = text_id
             d["inherited"] = inherited
+            d["display_before_node_id"] = display_slots.get(r["id"])
             gathered[r["id"]] = d
 
     # Directly-applicable: anchor resolves in this stream.
@@ -264,7 +267,10 @@ def _order_level(nodes: list[dict], own_text_id: int) -> list[dict]:
     after = len(out)  # default landing spot for an unanchored own node: the end
     for n in own:
         o = n.get("segment_start")
-        if o is None:
+        before_id = n.get("display_before_node_id")
+        if before_id is not None and any(x["id"] == before_id for x in out):
+            idx = next(i for i, x in enumerate(out) if x["id"] == before_id)
+        elif o is None:
             idx = after
         else:
             idx = 0
@@ -372,6 +378,13 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
         conn.close()
         raise HTTPException(400, "title or segment_start must be provided")
 
+    if payload.display_before_node_id is not None:
+        visible = {n["id"]: n for n in _gathered_tree_rows(conn, text_id)}
+        before = visible.get(payload.display_before_node_id)
+        if before is None or before["parent_id"] != payload.parent_id:
+            conn.close()
+            raise HTTPException(400, "display target must be a visible sibling")
+
     if payload.position is None:
         position = _max_sibling_position(cursor, payload.parent_id, text_id)
     else:
@@ -394,6 +407,11 @@ def create_tree_node(text_id: int, payload: TreeNodeCreate):
             ),
         )
         new_id = cursor.lastrowid
+        if payload.display_before_node_id is not None:
+            cursor.execute(
+                "INSERT INTO tree_node_display_slots (node_id, before_node_id) VALUES (?, ?)",
+                (new_id, payload.display_before_node_id),
+            )
         conn.commit()
     except sqlite3.IntegrityError as e:
         conn.rollback()
@@ -518,6 +536,13 @@ def move_tree_node(node_id: int, payload: TreeNodeMove):
         conn.close()
         raise HTTPException(409, "Move would create a cycle")
 
+    if payload.display_before_node_id is not None:
+        visible = {n["id"]: n for n in _gathered_tree_rows(conn, text_id)}
+        before = visible.get(payload.display_before_node_id)
+        if before is None or before["parent_id"] != new_parent or before["id"] == node_id:
+            conn.close()
+            raise HTTPException(400, "display target must be a visible sibling")
+
     # Compute valid range for new_position.
     # When same-parent move, removing the node first reduces sibling count by 1.
     same_parent = old_parent == new_parent
@@ -547,6 +572,12 @@ def move_tree_node(node_id: int, payload: TreeNodeMove):
             "WHERE id = ?",
             (new_parent, payload.new_position, node_id),
         )
+        cursor.execute("DELETE FROM tree_node_display_slots WHERE node_id = ?", (node_id,))
+        if payload.display_before_node_id is not None:
+            cursor.execute(
+                "INSERT INTO tree_node_display_slots (node_id, before_node_id) VALUES (?, ?)",
+                (node_id, payload.display_before_node_id),
+            )
         conn.commit()
     except sqlite3.IntegrityError as e:
         conn.rollback()
