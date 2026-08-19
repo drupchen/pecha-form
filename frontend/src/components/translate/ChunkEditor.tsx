@@ -14,7 +14,15 @@ import { useCan } from '../../store/usePermissions';
  * active TipTap editor with a mini-toolbar: Bold, Italic, and Note° — a note
  * rides the text as `span.fn[data-note]` and becomes a per-page FOOTNOTE in the
  * paginated booklet (numbering assigned at pagination, never stored).
+ *
+ * The toolbar itself shows on EVERY editable chunk, active or not: the buttons
+ * were invisible until you had already clicked into a box, so nothing announced
+ * that translations could carry formatting or footnotes at all. Only the
+ * ProseMirror instance is lazy — pressing a button on a resting chunk mounts the
+ * editor and runs the command as the first thing it does.
  */
+
+type Cmd = 'bold' | 'italic' | 'note';
 
 const FnNote = Mark.create({
   name: 'fnNote',
@@ -60,10 +68,50 @@ function focusAdjacentTbox(from: HTMLElement, dir: 1 | -1) {
   boxes[i + dir]?.focus();
 }
 
+/** The mini-toolbar, rendered in both states. `isActive` reports the mark under the
+ *  caret; a resting chunk has no editor and no caret, so it answers false for all
+ *  three and the buttons render in their neutral state. */
+const Toolbar: React.FC<{
+  isActive: (mark: Cmd) => boolean;
+  onCommand: (cmd: Cmd) => void;
+}> = ({ isActive, onCommand }) => (
+  <div className="flex items-center gap-1">
+    <button
+      type="button"
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => onCommand('bold')}
+      className={`p-1 rounded ${isActive('bold') ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}
+      title="Bold (Ctrl+B)"
+    >
+      <Bold size={12} />
+    </button>
+    <button
+      type="button"
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => onCommand('italic')}
+      className={`p-1 rounded ${isActive('italic') ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}
+      title="Italic (Ctrl+I)"
+    >
+      <Italic size={12} />
+    </button>
+    <button
+      type="button"
+      onMouseDown={e => e.preventDefault()}
+      onClick={() => onCommand('note')}
+      className={`p-1 rounded flex items-center gap-1 text-[10px] ${isActive('note') ? 'bg-gold/30 text-amber-robe' : 'text-ink-soft hover:bg-cream'}`}
+      title="Note on the selection — becomes a footnote on the printed page"
+    >
+      <MessageSquarePlus size={12} /> note°
+    </button>
+  </div>
+);
+
 const InnerEditor: React.FC<{
   initial: string;
   onDone: (html: string) => void;
-}> = ({ initial, onDone }) => {
+  /** A toolbar button pressed while the chunk was resting: run it once mounted. */
+  pending: Cmd | null;
+}> = ({ initial, onDone, pending }) => {
   const [notePopover, setNotePopover] = useState<{ existing: string } | null>(null);
   const [noteText, setNoteText] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -127,6 +175,15 @@ const InnerEditor: React.FC<{
     },
   });
 
+  const runCmd = (cmd: Cmd) => {
+    if (!editor) return;
+    if (cmd === 'bold') { editor.chain().focus().toggleBold().run(); return; }
+    if (cmd === 'italic') { editor.chain().focus().toggleItalic().run(); return; }
+    const existing = editor.getAttributes('fnNote').note as string | undefined;
+    setNoteText(existing ?? '');
+    setNotePopover({ existing: existing ?? '' });
+  };
+
   // Place the caret at the end WITHOUT scrolling: TipTap's built-in autofocus
   // scrolls the freshly-mounted box into view, jumping the page on every click.
   // ProseMirror's focus() already uses preventScroll on the DOM node, so with
@@ -134,6 +191,14 @@ const InnerEditor: React.FC<{
   useEffect(() => {
     editor?.commands.focus('end', { scrollIntoView: false });
   }, [editor]);
+
+  // The press that mounted this editor. It runs after the caret lands, so bold/italic
+  // set the stored mark the next keystroke picks up — the same as pressing the button
+  // with the caret parked in an empty selection.
+  useEffect(() => {
+    if (editor && pending) runCmd(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, pending]);
 
   // Commit when focus leaves the editor+toolbar+popover entirely. An empty result commits
   // only when the user EMPTIED the box themselves: clearing a translation is a legitimate
@@ -163,12 +228,6 @@ const InnerEditor: React.FC<{
 
   if (!editor) return null;
 
-  const openNotePopover = () => {
-    const existing = editor.getAttributes('fnNote').note as string | undefined;
-    setNoteText(existing ?? '');
-    setNotePopover({ existing: existing ?? '' });
-  };
-
   const applyNote = () => {
     if (noteText.trim()) {
       editor.chain().focus().extendMarkRange('fnNote')
@@ -181,35 +240,10 @@ const InnerEditor: React.FC<{
 
   return (
     <div ref={wrapRef} data-tbox className="flex flex-col gap-1">
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          onMouseDown={e => e.preventDefault()}
-          onClick={() => editor.chain().focus().toggleBold().run()}
-          className={`p-1 rounded ${editor.isActive('bold') ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}
-          title="Bold (Ctrl+B)"
-        >
-          <Bold size={12} />
-        </button>
-        <button
-          type="button"
-          onMouseDown={e => e.preventDefault()}
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-          className={`p-1 rounded ${editor.isActive('italic') ? 'bg-lapis text-cream-hi' : 'text-ink-soft hover:bg-cream'}`}
-          title="Italic (Ctrl+I)"
-        >
-          <Italic size={12} />
-        </button>
-        <button
-          type="button"
-          onMouseDown={e => e.preventDefault()}
-          onClick={openNotePopover}
-          className={`p-1 rounded flex items-center gap-1 text-[10px] ${editor.isActive('fnNote') ? 'bg-gold/30 text-amber-robe' : 'text-ink-soft hover:bg-cream'}`}
-          title="Note on the selection — becomes a footnote on the printed page"
-        >
-          <MessageSquarePlus size={12} /> note°
-        </button>
-      </div>
+      <Toolbar
+        isActive={m => editor.isActive(m === 'note' ? 'fnNote' : m)}
+        onCommand={runCmd}
+      />
       {notePopover && (
         <div
           className="flex items-center gap-1 p-1.5 rounded-md bg-cream-hi"
@@ -253,6 +287,8 @@ export const ChunkEditor: React.FC<{
   onSave: (html: string) => void;
 }> = ({ value, placeholder, onSave }) => {
   const [editing, setEditing] = useState(false);
+  // Set by a toolbar press on the resting box, consumed by the editor it mounts.
+  const [pending, setPending] = useState<Cmd | null>(null);
   // Permission-read on Translate: the box never activates — the static body
   // renders exactly as it would while inactive. Gated here (not at the call
   // sites) so every mount of the editor is covered at once.
@@ -261,12 +297,13 @@ export const ChunkEditor: React.FC<{
     return (
       <InnerEditor
         initial={value}
-        onDone={(html) => { setEditing(false); onSave(html); }}
+        pending={pending}
+        onDone={(html) => { setEditing(false); setPending(null); onSave(html); }}
       />
     );
   }
   const html = sanitizeTranslationHtml(value);
-  return (
+  const box = (
     <div
       {...(canEdit ? { 'data-tbox': true, role: 'button', tabIndex: 0 } : {})}
       onClick={() => canEdit && setEditing(true)}
@@ -279,6 +316,15 @@ export const ChunkEditor: React.FC<{
       {html
         ? <div dangerouslySetInnerHTML={{ __html: html }} />
         : <span className="text-ink-soft/60">{placeholder}</span>}
+    </div>
+  );
+  if (!canEdit) return box;
+  // Same wrapper the active editor uses, so activating a chunk swaps the box in place
+  // instead of pushing everything below it down by the height of a toolbar.
+  return (
+    <div className="flex flex-col gap-1">
+      <Toolbar isActive={() => false} onCommand={(cmd) => { setPending(cmd); setEditing(true); }} />
+      {box}
     </div>
   );
 };
