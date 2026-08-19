@@ -8,7 +8,7 @@ import { useDisplayBreakStore } from '../../store/useDisplayBreakStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { useTranslationStore, rangeKey, ovKey } from '../../store/useTranslationStore';
-import { TreePane } from '../workspace/TreePane';
+import { TreeSidebar } from '../workspace/TreeSidebar';
 import { deriveChunks, moveDisplays, applyMoveDisplays, insertTitleChunks, insertPassageChunks,
          retrievedPassageBody, ownToken, type DerivedChunk } from './chunks';
 import { usePassageStore } from '../../store/usePassageStore';
@@ -977,12 +977,7 @@ export const TranslateView: React.FC = () => {
 
       {/* Body: read-only sapche pane (orientation) + chunk rows */}
       <div className="flex-1 flex overflow-hidden">
-        <div
-          className="w-80 shrink-0 h-full overflow-hidden"
-          style={{ borderRight: '1px solid var(--cline)' }}
-        >
-          <TreePane forceConsult />
-        </div>
+        <TreeSidebar storageKey="tr-tree-open" />
         <div ref={listRef} onScroll={onListScroll}
              className="translate-list flex-1 overflow-y-auto px-5 py-4 relative"
              style={{ ['--tr-size-bo' as any]: `${boSize}rem`, ['--tr-size-tr' as any]: `${trSize}rem` }}>

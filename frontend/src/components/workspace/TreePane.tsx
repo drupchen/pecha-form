@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Focus, ChevronsDownUp, ChevronsUpDown } from 'lucide-react';
+import { Focus, ChevronsDownUp, ChevronsUpDown, ChevronLeft } from 'lucide-react';
 import { useTextStore } from '../../store/useTextStore';
 import {
   useTreeNodeStore, buildNestedTree, levelIsMixed, ownRunPosition,
@@ -11,7 +11,12 @@ import { TreeConsultContext } from './treeConsult';
 import { AddNodeButton } from './AddNodeButton';
 import { SiblingInsertSlot } from './SiblingInsertSlot';
 
-export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = false }) => {
+/** `onCollapse` is supplied only by `TreeSidebar` (the translate and phonetics benches); the
+ *  workspace mount passes nothing and renders exactly as before. */
+export const TreePane: React.FC<{ forceConsult?: boolean; onCollapse?: () => void }> = ({
+  forceConsult = false,
+  onCollapse,
+}) => {
   const currentText = useTextStore(s => s.currentText);
   const nodes = useTreeNodeStore(s => s.nodes);
   const loading = useTreeNodeStore(s => s.loading);
@@ -90,17 +95,33 @@ export const TreePane: React.FC<{ forceConsult?: boolean }> = ({ forceConsult = 
   return (
     <TreeConsultContext.Provider value={forceConsult}>
     <div className="h-full w-full flex flex-col overflow-hidden bg-cream-hi">
+      {/* `workspaceFullscreen` hiding this bar also hides the collapse chevron, and that is
+          fine: the flag is only settable from the workspace, whose own header is hidden while
+          it is on, so no bench can be reached in that state — and expanding never depends on
+          this bar (the rail carries its own button). */}
       {!fullscreen && (
         <div
-          className="px-4 py-2 bg-cream shrink-0 flex items-center justify-between"
+          className="px-4 py-2 bg-cream shrink-0 flex items-center justify-between gap-2"
           style={{ borderBottom: '1px solid var(--cline)' }}
         >
           <h3 className="font-display text-lg text-lapis">Tree</h3>
-          <span className="text-[10px] text-bronze">
-            {consultMode
-              ? 'read-only — click a section to jump there'
-              : 'Tab to indent · Shift+Tab to outdent · click any title to rename'}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-bronze">
+              {consultMode
+                ? 'read-only — click a section to jump there'
+                : 'Tab to indent · Shift+Tab to outdent · click any title to rename'}
+            </span>
+            {onCollapse && (
+              <button
+                type="button"
+                onClick={onCollapse}
+                className="p-1 -mr-1 text-bronze hover:text-vermilion"
+                title="Hide the tree"
+              >
+                <ChevronLeft size={16} />
+              </button>
+            )}
+          </div>
         </div>
       )}
       <div className="flex-1 relative">

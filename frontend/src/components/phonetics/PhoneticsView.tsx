@@ -12,7 +12,7 @@ import { usePhoneticsStore, phonKey } from '../../store/usePhoneticsStore';
 import { useTranslationStore } from '../../store/useTranslationStore';
 import { useTreeNodeStore } from '../../store/useTreeNodeStore';
 import { deriveChunks, insertTitleChunks } from '../translate/chunks';
-import { TreePane } from '../workspace/TreePane';
+import { TreeSidebar } from '../workspace/TreeSidebar';
 import { AutoGrowTextarea } from '../ui/AutoGrowTextarea';
 import { deriveLines, kindOf, type PhoneticLine } from './lines';
 import { useCan } from '../../store/usePermissions';
@@ -692,10 +692,7 @@ export const PhoneticsView: React.FC = () => {
 
       {/* Body: sapche sidebar (orientation + click-to-jump) + the phonetics rows */}
       <div className="flex-1 flex overflow-hidden">
-        <div className="w-80 shrink-0 h-full overflow-hidden"
-             style={{ borderRight: '1px solid var(--cline)' }}>
-          <TreePane forceConsult />
-        </div>
+        <TreeSidebar storageKey="ph-tree-open" />
         <div ref={listRef} onScroll={onListScroll} className="flex-1 overflow-auto px-5 py-3">
         {shown.length === 0 ? (
           <div className="text-ink-soft text-sm py-8 text-center">
